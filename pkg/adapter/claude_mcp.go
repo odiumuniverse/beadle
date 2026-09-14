@@ -1,6 +1,13 @@
 package adapter
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+
 	"github.com/odiumuniverse/agents-sync/pkg/mcp"
 )
 
@@ -44,4 +51,41 @@ func claudeToEntry(server mcp.Server) map[string]any {
 	mergeExtension(entry, server.Extensions, claudeID)
 
 	return entry
+}
+
+func (c *ClaudeCode) ProjectMCP(dir string) (mcp.Servers, bool, error) {
+	return exportMCPDocument(filepath.Join(dir, ".mcp.json"), claudeFromEntry)
+}
+
+func (c *ClaudeCode) LocalProjectMCP(dir string) (mcp.Servers, bool, error) {
+	data, err := os.ReadFile(c.configPath())
+	if errors.Is(err, fs.ErrNotExist) {
+		return mcp.Servers{}, false, nil
+	}
+
+	if err != nil {
+		return nil, false, fmt.Errorf("read %s: %w", c.configPath(), err)
+	}
+
+	var doc struct {
+		Projects map[string]struct {
+			MCPServers map[string]map[string]any `json:"mcpServers"`
+		} `json:"projects"`
+	}
+
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, false, fmt.Errorf("parse %s: %w", c.configPath(), err)
+	}
+
+	entry, ok := doc.Projects[dir]
+	if !ok || len(entry.MCPServers) == 0 {
+		return mcp.Servers{}, false, nil
+	}
+
+	servers := make(mcp.Servers, len(entry.MCPServers))
+	for name, raw := range entry.MCPServers {
+		servers[name] = claudeFromEntry(raw)
+	}
+
+	return servers, true, nil
 }

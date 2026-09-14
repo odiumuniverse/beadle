@@ -1,6 +1,7 @@
 package sync_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -438,6 +439,49 @@ func TestDoctor(t *testing.T) {
 	require.True(t, hasIssue(issues, syncer.SeverityError, "broken symlink"), "missing broken symlink: %v", issues)
 	require.True(t, hasIssue(issues, syncer.SeverityError, "collision"), "missing collision: %v", issues)
 	require.True(t, hasIssue(issues, syncer.SeverityWarn, "rules differ"), "missing drift: %v", issues)
+}
+
+func TestDoctorProjectScope(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	f := newFixture(t)
+
+	f.write(t, f.claudeConfig(), `{"mcpServers": {"proj-srv": {"type": "stdio", "command": "vault-cmd"}}}`)
+	f.write(t, f.openCodeConfig(), `{"mcp": {}}`)
+	f.write(t, f.claudeRules(), "# r\n")
+	f.write(t, f.openCodeRules(), "# r\n")
+
+	_, err := f.engine.Run(t.Context(), syncer.ModeSync)
+	require.NoError(t, err)
+	require.Contains(t, f.vaultServers(t), "proj-srv")
+
+	issues, err := f.engine.Doctor(t.Context())
+	require.NoError(t, err)
+
+	for _, issue := range issues {
+		require.NotContains(t, issue.Message, ".mcp.json")
+		require.NotContains(t, issue.Message, "projects[")
+	}
+
+	repo := t.TempDir()
+	t.Chdir(repo)
+
+	dir, err := os.Getwd()
+	require.NoError(t, err)
+
+	f.write(t, filepath.Join(repo, ".mcp.json"), `{"mcpServers": {
+		"proj-srv": {"type": "stdio", "command": "repo-cmd"},
+		"repo-only": {"type": "stdio", "command": "repo"}
+	}}`)
+	f.write(t, f.claudeConfig(), fmt.Sprintf(`{"mcpServers": {"proj-srv": {"type": "stdio", "command": "vault-cmd"}},
+		"projects": {%q: {"mcpServers": {"local-srv": {"type": "stdio", "command": "local"}}}}}`, dir))
+
+	issues, err = f.engine.Doctor(t.Context())
+	require.NoError(t, err)
+
+	require.True(t, hasIssue(issues, syncer.SeverityWarn, "proj-srv"), "missing collision warning: %v", issues)
+	require.True(t, hasIssue(issues, syncer.SeverityInfo, "repo-only"), "missing repo-only info: %v", issues)
+	require.True(t, hasIssue(issues, syncer.SeverityInfo, "local-srv"), "missing local-srv info: %v", issues)
 }
 
 func TestSecretsExtractedFromLiteralAndPushedBack(t *testing.T) {

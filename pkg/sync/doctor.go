@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/odiumuniverse/agents-sync/pkg/adapter"
 	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
+	"github.com/odiumuniverse/agents-sync/pkg/mcp"
 )
 
 const (
@@ -50,8 +53,96 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 
 	issues = append(issues, e.checkSkillNameCollisions(active)...)
 	issues = append(issues, e.checkSecrets(state)...)
+	issues = append(issues, e.checkProjectScope(active, state)...)
 
 	return issues, nil
+}
+
+func (e *Engine) checkProjectScope(active []adapter.Adapter, state *canon) []Issue {
+	dir, err := os.Getwd()
+	if err != nil {
+		return nil
+	}
+
+	var claude *adapter.ClaudeCode
+
+	for _, a := range active {
+		if c, ok := a.(*adapter.ClaudeCode); ok {
+			claude = c
+
+			break
+		}
+	}
+
+	if claude == nil {
+		return nil
+	}
+
+	var issues []Issue
+
+	repo, present, err := claude.ProjectMCP(dir)
+	if err != nil {
+		issues = append(issues, Issue{
+			Severity: SeverityWarn,
+			Resource: ResourceMCP,
+			Agent:    claude.ID(),
+			Message:  fmt.Sprintf("cannot read .mcp.json in %s: %v (project scope is not managed by agent-sync)", dir, err),
+		})
+	} else if present {
+		issues = append(issues, projectScopeIssues(".mcp.json", repo, state.servers, claude.ID())...)
+	}
+
+	local, present, err := claude.LocalProjectMCP(dir)
+	if err != nil {
+		issues = append(issues, Issue{
+			Severity: SeverityWarn,
+			Resource: ResourceMCP,
+			Agent:    claude.ID(),
+			Message:  fmt.Sprintf("cannot read ~/.claude.json projects for %s: %v (project scope is not managed by agent-sync)", dir, err),
+		})
+	} else if present {
+		issues = append(issues, projectScopeIssues(fmt.Sprintf("~/.claude.json projects[%q]", dir), local, state.servers, claude.ID())...)
+	}
+
+	return issues
+}
+
+func projectScopeIssues(source string, scope, vault mcp.Servers, agentID string) []Issue {
+	var issues []Issue
+
+	var extra []string
+
+	for _, name := range slices.Sorted(maps.Keys(scope)) {
+		if _, ok := vault[name]; ok {
+			issues = append(issues, Issue{
+				Severity: SeverityWarn,
+				Resource: ResourceMCP,
+				Agent:    agentID,
+				Message: fmt.Sprintf(
+					"MCP server %q collides with a vault server via %s: Claude Code prefers the project scope, which is not managed by agent-sync",
+					name, source,
+				),
+			})
+
+			continue
+		}
+
+		extra = append(extra, name)
+	}
+
+	if len(extra) > 0 {
+		issues = append(issues, Issue{
+			Severity: SeverityInfo,
+			Resource: ResourceMCP,
+			Agent:    agentID,
+			Message: fmt.Sprintf(
+				"%s defines MCP servers outside the vault (project scope, read-only, not managed by agent-sync): %s",
+				source, strings.Join(extra, ", "),
+			),
+		})
+	}
+
+	return issues
 }
 
 func (e *Engine) checkVault() []Issue {
