@@ -9,6 +9,7 @@ import (
 
 	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
 	"github.com/odiumuniverse/agents-sync/pkg/permission"
+	"github.com/odiumuniverse/agents-sync/pkg/secret"
 )
 
 const FileName = "config.json"
@@ -45,6 +46,15 @@ type Config struct {
 	Agents      map[string]Agent `json:"agents,omitempty"`
 	Permissions string           `json:"permissions,omitempty"`
 	History     string           `json:"history,omitempty"`
+	Secrets     string           `json:"secrets,omitempty"`
+}
+
+func (c *Config) SecretsMode() string {
+	if c.Secrets == secret.ModeEnv {
+		return secret.ModeEnv
+	}
+
+	return secret.ModeLiteral
 }
 
 func (c *Config) HistoryMode() string {

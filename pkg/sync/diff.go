@@ -41,7 +41,7 @@ type RuleChange struct {
 }
 
 func (e *Engine) Diff(ctx context.Context) (DiffReport, error) {
-	active, err := e.activeAdapters()
+	active, snapshots, err := e.exportAll(ctx)
 	if err != nil {
 		return DiffReport{}, err
 	}
@@ -59,10 +59,7 @@ func (e *Engine) Diff(ctx context.Context) (DiffReport, error) {
 	}
 
 	for _, a := range active {
-		snapshot, err := a.Export(ctx)
-		if err != nil {
-			return DiffReport{}, err
-		}
+		snapshot := snapshots[a.ID()]
 
 		if a.RulesPush() {
 			report.Rules[a.ID()] = rulesDiff(a.ID(), string(snapshot.Rules), string(state.rules))

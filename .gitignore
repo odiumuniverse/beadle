@@ -31,6 +31,7 @@ go.work.sum
 
 # Local agent knowledge base (not for the repo)
 KNOWLEDGE.md
+SPEC.md
 
 # Environment files
 .env

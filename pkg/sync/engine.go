@@ -23,6 +23,7 @@ import (
 	"github.com/odiumuniverse/agents-sync/pkg/mcp"
 	"github.com/odiumuniverse/agents-sync/pkg/permission"
 	"github.com/odiumuniverse/agents-sync/pkg/registry"
+	"github.com/odiumuniverse/agents-sync/pkg/secret"
 	"github.com/odiumuniverse/agents-sync/pkg/skill"
 	"github.com/odiumuniverse/agents-sync/pkg/vault"
 )
@@ -34,6 +35,7 @@ type Engine struct {
 	config          *config.Config
 	adapters        []adapter.Adapter
 	log             embedlog.Logger
+	secrets         *secret.Store
 	sharedSkillsDir string
 	prune           bool
 }
@@ -57,10 +59,16 @@ type canon struct {
 	servers     mcp.Servers
 	skills      map[string]skill.Tree
 	permissions permission.Rules
+	extracted   bool
 }
 
 func New(v *vault.Vault, cfg *config.Config, adapters []adapter.Adapter, log embedlog.Logger, opts ...Option) (*Engine, error) {
 	state, err := registry.Load(v.RegistryPath())
+	if err != nil {
+		return nil, err
+	}
+
+	secrets, err := secret.Load(v.SecretsPath())
 	if err != nil {
 		return nil, err
 	}
@@ -72,6 +80,7 @@ func New(v *vault.Vault, cfg *config.Config, adapters []adapter.Adapter, log emb
 		config:   cfg,
 		adapters: adapters,
 		log:      log,
+		secrets:  secrets,
 	}
 
 	for _, opt := range opts {
@@ -84,20 +93,9 @@ func New(v *vault.Vault, cfg *config.Config, adapters []adapter.Adapter, log emb
 func (e *Engine) Run(ctx context.Context, mode Mode) (Report, error) {
 	report := Report{Mode: mode, Actions: map[string]AgentActions{}}
 
-	active, err := e.activeAdapters()
+	_, snapshots, err := e.exportAll(ctx)
 	if err != nil {
 		return report, err
-	}
-
-	snapshots := make(map[string]adapter.Snapshot, len(active))
-
-	for _, a := range active {
-		snapshot, err := a.Export(ctx)
-		if err != nil {
-			return report, fmt.Errorf("export %s: %w", a.ID(), err)
-		}
-
-		snapshots[a.ID()] = snapshot
 	}
 
 	state, err := e.loadCanon()
@@ -124,6 +122,10 @@ func (e *Engine) Run(ctx context.Context, mode Mode) (Report, error) {
 		}
 	}
 
+	if err := e.secrets.Save(); err != nil {
+		return report, err
+	}
+
 	if err := e.updateRegistry(state, snapshots, &report, merged); err != nil {
 		return report, err
 	}
@@ -135,6 +137,32 @@ func (e *Engine) Run(ctx context.Context, mode Mode) (Report, error) {
 	e.commitHistory(ctx)
 
 	return report, nil
+}
+
+func (e *Engine) exportAll(ctx context.Context) ([]adapter.Adapter, map[string]adapter.Snapshot, error) {
+	active, err := e.activeAdapters()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	snapshots := make(map[string]adapter.Snapshot, len(active))
+
+	for _, a := range active {
+		snapshot, err := a.Export(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("export %s: %w", a.ID(), err)
+		}
+
+		servers, _, err := secret.Extract(snapshot.MCP, e.secrets)
+		if err != nil {
+			return nil, nil, fmt.Errorf("extract %s secrets: %w", a.ID(), err)
+		}
+
+		snapshot.MCP = servers
+		snapshots[a.ID()] = snapshot
+	}
+
+	return active, snapshots, nil
 }
 
 func (e *Engine) commitHistory(ctx context.Context) {
@@ -165,6 +193,11 @@ func (e *Engine) loadCanon() (*canon, error) {
 		return nil, err
 	}
 
+	servers, extracted, err := secret.Extract(servers, e.secrets)
+	if err != nil {
+		return nil, err
+	}
+
 	skills, err := skill.ReadDir(filepath.Join(e.vault.Root(), "skills"))
 	if err != nil {
 		return nil, err
@@ -175,7 +208,13 @@ func (e *Engine) loadCanon() (*canon, error) {
 		return nil, err
 	}
 
-	return &canon{rules: rules, servers: servers, skills: skills, permissions: permissions}, nil
+	return &canon{
+		rules:       rules,
+		servers:     servers,
+		skills:      skills,
+		permissions: permissions,
+		extracted:   extracted,
+	}, nil
 }
 
 func (e *Engine) loadBase() (*canon, error) {
@@ -198,6 +237,11 @@ func (e *Engine) loadBase() (*canon, error) {
 	}
 
 	base.servers, err = mcp.ParseCanonical(serversData)
+	if err != nil {
+		return nil, err
+	}
+
+	base.servers, _, err = secret.Extract(base.servers, e.secrets)
 	if err != nil {
 		return nil, err
 	}
@@ -336,7 +380,7 @@ func (e *Engine) persistCanon(state *canon, changed canonChanges) error {
 		}
 	}
 
-	if changed.servers {
+	if changed.servers || state.extracted {
 		data, err := state.servers.MarshalCanonical()
 		if err != nil {
 			return err
@@ -345,6 +389,8 @@ func (e *Engine) persistCanon(state *canon, changed canonChanges) error {
 		if err := fsutil.WriteFileAtomic(filepath.Join(e.vault.Root(), "mcp", "servers.json"), data, 0o600); err != nil {
 			return fmt.Errorf("write vault servers: %w", err)
 		}
+
+		state.extracted = false
 	}
 
 	for name := range changed.skills {

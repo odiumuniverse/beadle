@@ -1,5 +1,10 @@
 package sync
 
+import (
+	"maps"
+	"slices"
+)
+
 type Mode int
 
 const (
@@ -26,12 +31,37 @@ const (
 )
 
 type Report struct {
-	Mode        Mode
-	Rules       ResourceReport
-	MCP         ResourceReport
-	Skills      ResourceReport
-	Permissions ResourceReport
-	Actions     map[string]AgentActions
+	Mode           Mode
+	Rules          ResourceReport
+	MCP            ResourceReport
+	Skills         ResourceReport
+	Permissions    ResourceReport
+	Actions        map[string]AgentActions
+	MissingSecrets map[string][]string
+}
+
+func (r *Report) addMissingSecrets(agent string, names []string) {
+	if r.MissingSecrets == nil {
+		r.MissingSecrets = map[string][]string{}
+	}
+
+	r.MissingSecrets[agent] = names
+}
+
+func (r Report) MissingSecretNames() []string {
+	if len(r.MissingSecrets) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+
+	for _, names := range r.MissingSecrets {
+		for _, name := range names {
+			seen[name] = struct{}{}
+		}
+	}
+
+	return slices.Sorted(maps.Keys(seen))
 }
 
 type ResourceReport struct {

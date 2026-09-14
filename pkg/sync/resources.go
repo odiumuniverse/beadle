@@ -15,6 +15,7 @@ import (
 	"github.com/odiumuniverse/agents-sync/pkg/mcp"
 	"github.com/odiumuniverse/agents-sync/pkg/merge"
 	"github.com/odiumuniverse/agents-sync/pkg/registry"
+	"github.com/odiumuniverse/agents-sync/pkg/secret"
 	"github.com/odiumuniverse/agents-sync/pkg/skill"
 )
 
@@ -207,28 +208,38 @@ func (e *Engine) pushAgent(ctx context.Context, state *canon, agentID string, sn
 		return err
 	}
 
-	if emptyUpdate(update) {
-		report.Actions[agentID] = AgentActions{Rules: ActionNoop, MCP: ActionNoop}
+	actions, applyErr := e.applyUpdate(ctx, agentID, update)
 
-		return nil
+	if len(report.MissingSecrets[agentID]) > 0 {
+		actions.MCP = ActionSkipped
 	}
 
-	applyErr := e.adapterByID(agentID).Apply(ctx, update)
+	report.Actions[agentID] = actions
 
-	switch {
-	case applyErr == nil:
-		report.Actions[agentID] = setAction(AgentActions{}, update, ActionPushed)
-	case errors.Is(applyErr, adapter.ErrNotConfigured):
-		e.log.Print(ctx, "agent config not found, skipping", "agent", agentID, "err", applyErr)
-
-		report.Actions[agentID] = setAction(AgentActions{}, update, ActionSkipped)
-	default:
-		report.Actions[agentID] = setAction(AgentActions{}, update, ActionError)
-
+	if applyErr != nil {
 		return fmt.Errorf("apply %s: %w", agentID, applyErr)
 	}
 
 	return nil
+}
+
+func (e *Engine) applyUpdate(ctx context.Context, agentID string, update adapter.Update) (AgentActions, error) {
+	if emptyUpdate(update) {
+		return AgentActions{Rules: ActionNoop, MCP: ActionNoop}, nil
+	}
+
+	err := e.adapterByID(agentID).Apply(ctx, update)
+
+	switch {
+	case err == nil:
+		return setAction(AgentActions{}, update, ActionPushed), nil
+	case errors.Is(err, adapter.ErrNotConfigured):
+		e.log.Print(ctx, "agent config not found, skipping", "agent", agentID, "err", err)
+
+		return setAction(AgentActions{}, update, ActionSkipped), nil
+	default:
+		return setAction(AgentActions{}, update, ActionError), err
+	}
 }
 
 func (e *Engine) agentUpdate(agentID string, state *canon, snap adapter.Snapshot, report *Report) (adapter.Update, error) {
@@ -239,7 +250,16 @@ func (e *Engine) agentUpdate(agentID string, state *canon, snap adapter.Snapshot
 	}
 
 	if e.shouldPushMCP(agentID, state, snap, report) {
-		update.MCP = state.servers
+		servers, missing, err := secret.Resolve(state.servers, e.secrets, e.config.SecretsMode())
+		if err != nil {
+			return adapter.Update{}, fmt.Errorf("resolve secrets for %s: %w", agentID, err)
+		}
+
+		if len(missing) > 0 {
+			report.addMissingSecrets(agentID, missing)
+		} else {
+			update.MCP = servers
+		}
 	}
 
 	if skills := e.skillsToPush(agentID, state, snap, report); skills != nil {

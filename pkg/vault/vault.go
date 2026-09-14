@@ -6,12 +6,18 @@ import (
 	"path/filepath"
 
 	"github.com/odiumuniverse/agents-sync/pkg/config"
+	"github.com/odiumuniverse/agents-sync/pkg/secret"
 )
 
 const (
 	DefaultDirName = ".agent-sync"
 	EnvHome        = "AGENTSYNC_HOME"
 )
+
+const gitIgnore = `# AgentSync: credentials and runtime state stay on this machine.
+mcp/secrets.json
+state/
+`
 
 var dirs = []string{
 	"conflicts",
@@ -71,6 +77,10 @@ func (v *Vault) ConflictsDir() string {
 	return filepath.Join(v.root, "conflicts")
 }
 
+func (v *Vault) SecretsPath() string {
+	return filepath.Join(v.root, "mcp", secret.FileName)
+}
+
 func (v *Vault) Initialized() bool {
 	_, err := os.Stat(v.ConfigPath())
 
@@ -84,9 +94,27 @@ func (v *Vault) Init() error {
 		}
 	}
 
+	if err := v.ensureGitIgnore(); err != nil {
+		return err
+	}
+
 	if v.Initialized() {
 		return nil
 	}
 
 	return config.Default().Save(v.ConfigPath())
+}
+
+func (v *Vault) ensureGitIgnore() error {
+	path := filepath.Join(v.root, ".gitignore")
+
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+
+	if err := os.WriteFile(path, []byte(gitIgnore), 0o600); err != nil {
+		return fmt.Errorf("write .gitignore: %w", err)
+	}
+
+	return nil
 }

@@ -57,6 +57,7 @@ func newRootCmd(opts Options) *cobra.Command {
 		a.newRestoreCmd(),
 		a.newWatchCmd(),
 		a.newDaemonCmd(),
+		a.newSecretsCmd(),
 	)
 
 	return root

@@ -33,7 +33,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.checkBaseBlobs()...)
 	issues = append(issues, e.checkConflicts()...)
 
-	active, err := e.activeAdapters()
+	active, snapshots, err := e.exportAll(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -45,16 +45,11 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 
 	for _, a := range active {
 		issues = append(issues, checkSymlinks(a)...)
-
-		snapshot, err := a.Export(ctx)
-		if err != nil {
-			return nil, err
-		}
-
-		issues = append(issues, e.driftIssues(a.ID(), snapshot, state)...)
+		issues = append(issues, e.driftIssues(a.ID(), snapshots[a.ID()], state)...)
 	}
 
 	issues = append(issues, e.checkSkillNameCollisions(active)...)
+	issues = append(issues, e.checkSecrets(state)...)
 
 	return issues, nil
 }
@@ -96,7 +91,29 @@ func (e *Engine) checkVault() []Issue {
 		}
 	}
 
+	issues = append(issues, e.checkSecretsFile()...)
+
 	return issues
+}
+
+func (e *Engine) checkSecretsFile() []Issue {
+	path := e.vault.SecretsPath()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil
+	}
+
+	perm := info.Mode().Perm()
+	if perm&0o077 == 0 {
+		return nil
+	}
+
+	return []Issue{{
+		Severity: SeverityWarn,
+		Resource: ResourceMCP,
+		Message:  fmt.Sprintf("%s has mode %04o, expected 0600", path, perm),
+	}}
 }
 
 func (e *Engine) checkBaseBlobs() []Issue {

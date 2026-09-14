@@ -14,6 +14,7 @@ import (
 	"github.com/odiumuniverse/agents-sync/pkg/config"
 	"github.com/odiumuniverse/agents-sync/pkg/mcp"
 	"github.com/odiumuniverse/agents-sync/pkg/permission"
+	"github.com/odiumuniverse/agents-sync/pkg/secret"
 	syncer "github.com/odiumuniverse/agents-sync/pkg/sync"
 	"github.com/odiumuniverse/agents-sync/pkg/vault"
 )
@@ -338,6 +339,123 @@ func TestDoctor(t *testing.T) {
 	require.True(t, hasIssue(issues, syncer.SeverityError, "broken symlink"), "missing broken symlink: %v", issues)
 	require.True(t, hasIssue(issues, syncer.SeverityError, "collision"), "missing collision: %v", issues)
 	require.True(t, hasIssue(issues, syncer.SeverityWarn, "rules differ"), "missing drift: %v", issues)
+}
+
+func TestSecretsExtractedFromLiteralAndPushedBack(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	f := newFixture(t)
+
+	f.write(t, f.claudeConfig(), `{"mcpServers": {"ctx7": {"type": "http", "url": "https://mcp.example.com",
+	  "headers": {"Authorization": "Bearer abc123", "Accept": "application/json"}}}}`)
+	f.write(t, f.openCodeConfig(), `{"mcp": {}}`)
+
+	report, err := f.engine.Run(t.Context(), syncer.ModeSync)
+	require.NoError(t, err)
+	require.Empty(t, report.MCP.Conflicts)
+	require.Empty(t, report.MissingSecretNames())
+
+	vaultRaw := string(read(t, filepath.Join(f.vaultRoot, "mcp", "servers.json")))
+	require.NotContains(t, vaultRaw, "abc123")
+	require.Contains(t, vaultRaw, "{secret:AUTHORIZATION}")
+
+	value, ok := f.engine.Secrets().Get("AUTHORIZATION")
+	require.True(t, ok)
+	require.Equal(t, "Bearer abc123", value)
+
+	info, err := os.Stat(filepath.Join(f.vaultRoot, "mcp", "secrets.json"))
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+
+	require.Contains(t, string(read(t, filepath.Join(f.vaultRoot, ".gitignore"))), "mcp/secrets.json")
+
+	openCode := string(read(t, f.openCodeConfig()))
+	require.Contains(t, openCode, "abc123")
+	require.NotContains(t, openCode, "{secret:")
+
+	require.Contains(t, openCode, "application/json")
+
+	report, err = f.engine.Run(t.Context(), syncer.ModeSync)
+	require.NoError(t, err)
+	require.False(t, report.MCP.Changed)
+	require.Equal(t, syncer.ActionNoop, report.Actions["claude-code"].MCP)
+	require.Equal(t, syncer.ActionNoop, report.Actions["opencode"].MCP)
+}
+
+func TestSecretsMissingValueSkipsPushWithoutCorruption(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	f := newFixture(t)
+
+	f.write(t, filepath.Join(f.vaultRoot, "mcp", "servers.json"),
+		`{"ctx7":{"transport":"http","url":"https://mcp.example.com","headers":{"Authorization":"{secret:AUTHORIZATION}"}}}`)
+	f.write(t, f.claudeConfig(), `{"mcpServers": {"ctx7": {"type": "http", "url": "https://mcp.example.com",
+	  "headers": {"Authorization": "{secret:AUTHORIZATION}"}}}}`)
+	f.write(t, f.openCodeConfig(), `{"mcp": {}}`)
+
+	require.False(t, f.engine.Secrets().Has("AUTHORIZATION"))
+
+	report, err := f.engine.Run(t.Context(), syncer.ModeSync)
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"AUTHORIZATION"}, report.MissingSecretNames())
+	require.Equal(t, syncer.ActionSkipped, report.Actions["opencode"].MCP)
+
+	require.JSONEq(t, `{"mcp": {}}`, string(read(t, f.openCodeConfig())))
+
+	issues, err := f.engine.Doctor(t.Context())
+	require.NoError(t, err)
+	require.True(t, hasIssue(issues, syncer.SeverityError, "AUTHORIZATION"), "missing secret should surface in doctor: %v", issues)
+}
+
+func TestSecretsEnvModeRendersReferenceNotLiteral(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	f := newFixture(t)
+	f.config.Secrets = secret.ModeEnv
+
+	f.write(t, f.claudeConfig(), `{"mcpServers": {"ctx7": {"type": "http", "url": "https://mcp.example.com",
+	  "headers": {"Authorization": "Bearer abc123"}}}}`)
+	f.write(t, f.openCodeConfig(), `{"mcp": {}}`)
+
+	_, err := f.engine.Run(t.Context(), syncer.ModeSync)
+	require.NoError(t, err)
+
+	openCode := string(read(t, f.openCodeConfig()))
+	require.Contains(t, openCode, "{env:AUTHORIZATION}")
+	require.NotContains(t, openCode, "abc123")
+
+	value, ok := f.engine.Secrets().Get("AUTHORIZATION")
+	require.True(t, ok)
+	require.Equal(t, "Bearer abc123", value)
+}
+
+func TestSecretsPrune(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	f := newFixture(t)
+
+	f.write(t, f.claudeConfig(), `{"mcpServers": {"ctx7": {"type": "http", "url": "https://mcp.example.com",
+	  "headers": {"Authorization": "Bearer abc123"}}}}`)
+	f.write(t, f.openCodeConfig(), `{"mcp": {}}`)
+
+	_, err := f.engine.Run(t.Context(), syncer.ModeSync)
+	require.NoError(t, err)
+	require.True(t, f.engine.Secrets().Has("AUTHORIZATION"))
+
+	f.write(t, f.claudeConfig(), `{"mcpServers": {}}`)
+
+	_, err = f.engine.Run(t.Context(), syncer.ModeSync)
+	require.NoError(t, err)
+
+	issues, err := f.engine.Doctor(t.Context())
+	require.NoError(t, err)
+	require.True(t, hasIssue(issues, syncer.SeverityInfo, "AUTHORIZATION"), "orphan secret should be reported: %v", issues)
+
+	removed, err := f.engine.PruneSecrets()
+	require.NoError(t, err)
+	require.Equal(t, []string{"AUTHORIZATION"}, removed)
+	require.False(t, f.engine.Secrets().Has("AUTHORIZATION"))
 }
 
 func TestRestore(t *testing.T) {

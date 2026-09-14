@@ -3,6 +3,7 @@ package cli
 import (
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -93,6 +94,11 @@ func printReport(cmd *cobra.Command, report syncer.Report) {
 	if report.Rules.ConflictCount() > 0 || report.MCP.ConflictCount() > 0 ||
 		report.Skills.ConflictCount() > 0 || report.Permissions.ConflictCount() > 0 {
 		cmd.Println("conflicts detected: resolve them with `agent-sync resolve <rules|mcp|skills|permissions>`")
+	}
+
+	if missing := report.MissingSecretNames(); len(missing) > 0 {
+		cmd.Printf("secrets: missing %s\n", strings.Join(missing, ", "))
+		cmd.Println("  mcp push skipped for affected agents; run `agent-sync secrets set <name> <value>`")
 	}
 }
 
