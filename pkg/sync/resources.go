@@ -21,20 +21,13 @@ import (
 
 type frozenResources struct {
 	rules       bool
-	mcp         bool
 	skills      bool
 	permissions bool
 }
 
-func (e *Engine) merge(state *canon, snapshots map[string]adapter.Snapshot, report *Report) (bool, error) {
-	base, err := e.loadBase()
-	if err != nil {
-		return false, err
-	}
-
+func (e *Engine) merge(base, state *canon, snapshots map[string]adapter.Snapshot, report *Report) (bool, error) {
 	frozen := frozenResources{
 		rules:       e.resourceConflicted(ResourceRules),
-		mcp:         e.resourceConflicted(ResourceMCP),
 		skills:      e.resourceConflicted(ResourceSkills),
 		permissions: e.resourceConflicted(ResourcePermissions),
 	}
@@ -60,9 +53,7 @@ func (e *Engine) merge(state *canon, snapshots map[string]adapter.Snapshot, repo
 		e.ensureEntry(ResourceRules).Conflict = report.Rules.ConflictCount() > 0 || hasMarkers(state.rules)
 	}
 
-	if !frozen.mcp {
-		e.ensureEntry(ResourceMCP).Conflict = report.MCP.ConflictCount() > 0
-	}
+	e.ensureEntry(ResourceMCP).Conflict = report.MCP.ConflictCount() > 0
 
 	if !frozen.skills {
 		e.ensureEntry(ResourceSkills).Conflict = report.Skills.ConflictCount() > 0
@@ -99,8 +90,8 @@ func (e *Engine) mergeAgentRules(base, state *canon, agentID string, snap adapte
 	return e.mergeRules(base, state, agentID, snap, report, changed)
 }
 
-func (e *Engine) mergeAgentMCP(base, state *canon, agentID string, snap adapter.Snapshot, report *Report, changed *canonChanges, frozen frozenResources) error {
-	if frozen.mcp || !snap.MCPPresent {
+func (e *Engine) mergeAgentMCP(base, state *canon, agentID string, snap adapter.Snapshot, report *Report, changed *canonChanges, _ frozenResources) error {
+	if !snap.MCPPresent {
 		return nil
 	}
 
@@ -185,10 +176,15 @@ func (e *Engine) mergeSkills(base, state *canon, agentID string, snap adapter.Sn
 }
 
 func (e *Engine) push(ctx context.Context, state *canon, snapshots map[string]adapter.Snapshot, report *Report) error {
+	conflictedServers, err := e.conflictedMCPServerNames()
+	if err != nil {
+		return err
+	}
+
 	var errs []error
 
 	for _, agentID := range e.orderedAgents(snapshots) {
-		if err := e.pushAgent(ctx, state, agentID, snapshots[agentID], report); err != nil {
+		if err := e.pushAgent(ctx, state, agentID, snapshots[agentID], report, conflictedServers); err != nil {
 			errs = append(errs, err)
 		}
 
@@ -202,8 +198,10 @@ func (e *Engine) push(ctx context.Context, state *canon, snapshots map[string]ad
 	return errors.Join(errs...)
 }
 
-func (e *Engine) pushAgent(ctx context.Context, state *canon, agentID string, snap adapter.Snapshot, report *Report) error {
-	update, err := e.agentUpdate(agentID, state, snap, report)
+func (e *Engine) pushAgent(
+	ctx context.Context, state *canon, agentID string, snap adapter.Snapshot, report *Report, conflictedServers map[string]struct{},
+) error {
+	update, err := e.agentUpdate(agentID, state, snap, report, conflictedServers)
 	if err != nil {
 		return err
 	}
@@ -242,15 +240,19 @@ func (e *Engine) applyUpdate(ctx context.Context, agentID string, update adapter
 	}
 }
 
-func (e *Engine) agentUpdate(agentID string, state *canon, snap adapter.Snapshot, report *Report) (adapter.Update, error) {
+func (e *Engine) agentUpdate(
+	agentID string, state *canon, snap adapter.Snapshot, report *Report, conflictedServers map[string]struct{},
+) (adapter.Update, error) {
 	update := adapter.Update{}
 
 	if e.shouldPushRules(agentID, state, snap, report) {
 		update.Rules = state.rules
 	}
 
-	if e.shouldPushMCP(agentID, state, snap, report) {
-		servers, missing, err := secret.Resolve(state.servers, e.secrets, e.config.SecretsMode())
+	payload := mcpPushPayload(state.servers, snap.MCP, conflictedServers)
+
+	if shouldPushMCP(snap, payload) {
+		servers, missing, err := secret.Resolve(payload, e.secrets, e.config.SecretsMode())
 		if err != nil {
 			return adapter.Update{}, fmt.Errorf("resolve secrets for %s: %w", agentID, err)
 		}
@@ -338,12 +340,33 @@ func (e *Engine) shouldPushRules(agentID string, state *canon, snap adapter.Snap
 	return !bytes.Equal(snap.Rules, state.rules)
 }
 
-func (e *Engine) shouldPushMCP(agentID string, state *canon, snap adapter.Snapshot, report *Report) bool {
-	if !snap.MCPPresent || report.MCP.conflictedAgent(agentID) || e.resourceConflicted(ResourceMCP) {
+func shouldPushMCP(snap adapter.Snapshot, payload mcp.Servers) bool {
+	if !snap.MCPPresent {
 		return false
 	}
 
-	return !serversEqual(snap.MCP, state.servers)
+	return !serversEqual(snap.MCP, payload)
+}
+
+func mcpPushPayload(canonServers, agentServers mcp.Servers, conflictedServers map[string]struct{}) mcp.Servers {
+	if len(conflictedServers) == 0 {
+		return canonServers
+	}
+
+	payload := maps.Clone(canonServers)
+	if payload == nil {
+		payload = mcp.Servers{}
+	}
+
+	for name := range conflictedServers {
+		if current, ok := agentServers[name]; ok {
+			payload[name] = current
+		} else {
+			delete(payload, name)
+		}
+	}
+
+	return payload
 }
 
 func (e *Engine) skillsToPush(agentID string, state *canon, snap adapter.Snapshot, report *Report) map[string]skill.Tree {
@@ -372,12 +395,12 @@ func (e *Engine) skillsToPush(agentID string, state *canon, snap adapter.Snapsho
 	return diff
 }
 
-func (e *Engine) updateRegistry(state *canon, snapshots map[string]adapter.Snapshot, report *Report, merged bool) error {
+func (e *Engine) updateRegistry(base, state *canon, snapshots map[string]adapter.Snapshot, report *Report, merged bool) error {
 	if err := e.updateRulesRegistry(state, snapshots, report, merged); err != nil {
 		return err
 	}
 
-	if err := e.updateMCPRegistry(state, snapshots, report, merged); err != nil {
+	if err := e.updateMCPRegistry(base, state, snapshots, report, merged); err != nil {
 		return err
 	}
 
@@ -414,23 +437,31 @@ func (e *Engine) updateRulesRegistry(state *canon, snapshots map[string]adapter.
 	return nil
 }
 
-func (e *Engine) updateMCPRegistry(state *canon, snapshots map[string]adapter.Snapshot, report *Report, merged bool) error {
+func (e *Engine) updateMCPRegistry(base, state *canon, snapshots map[string]adapter.Snapshot, report *Report, merged bool) error {
 	serversData, err := state.servers.MarshalCanonical()
 	if err != nil {
 		return err
 	}
 
-	serversHash := cas.HashOf(serversData)
-
 	entry := e.ensureEntry(ResourceMCP)
-	entry.Vault = serversHash
+	entry.Vault = cas.HashOf(serversData)
+
+	conflicted, err := e.conflictedMCPServerNames()
+	if err != nil {
+		return err
+	}
 
 	if merged {
-		if _, err := e.store.Put(serversData); err != nil {
+		baseData, err := pinConflictedServers(state.servers, base.servers, conflicted).MarshalCanonical()
+		if err != nil {
 			return err
 		}
 
-		entry.Base = serversHash
+		if _, err := e.store.Put(baseData); err != nil {
+			return err
+		}
+
+		entry.Base = cas.HashOf(baseData)
 	}
 
 	for _, agentID := range e.orderedAgents(snapshots) {
@@ -443,7 +474,7 @@ func (e *Engine) updateMCPRegistry(state *canon, snapshots map[string]adapter.Sn
 
 		servers := snap.MCP
 		if actions.MCP == ActionPushed || actions.MCP == ActionNoop {
-			servers = state.servers
+			servers = mcpPushPayload(state.servers, snap.MCP, conflicted)
 		}
 
 		data, err := servers.MarshalCanonical()
@@ -634,6 +665,27 @@ func fromAny(value any) mcp.Servers {
 
 func serversEqual(a, b mcp.Servers) bool {
 	return reflect.DeepEqual(a, b)
+}
+
+func pinConflictedServers(canonServers, oldBase mcp.Servers, conflictedServers map[string]struct{}) mcp.Servers {
+	if len(conflictedServers) == 0 {
+		return canonServers
+	}
+
+	pinned := maps.Clone(canonServers)
+	if pinned == nil {
+		pinned = mcp.Servers{}
+	}
+
+	for name := range conflictedServers {
+		if original, ok := oldBase[name]; ok {
+			pinned[name] = original
+		} else {
+			delete(pinned, name)
+		}
+	}
+
+	return pinned
 }
 
 func treesEqual(a, b skill.Tree) bool {

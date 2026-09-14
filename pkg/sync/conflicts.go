@@ -263,6 +263,31 @@ func (e *Engine) clearConflictArtifacts(resource string) error {
 	return nil
 }
 
+func (e *Engine) conflictedMCPServerNames() (map[string]struct{}, error) {
+	agents, err := e.conflictedAgents(ResourceMCP)
+	if err != nil {
+		return nil, err
+	}
+
+	names := map[string]struct{}{}
+
+	for _, agent := range agents {
+		conflicts, err := readJSONConflictFile(e.conflictPath(ResourceMCP, agent))
+		if err != nil {
+			return nil, err
+		}
+
+		for _, conflict := range conflicts.Conflicts {
+			name, _, _ := strings.Cut(conflict.Path, ".")
+			if name != "" {
+				names[name] = struct{}{}
+			}
+		}
+	}
+
+	return names, nil
+}
+
 func (e *Engine) conflictedAgents(resource string) ([]string, error) {
 	entries, err := os.ReadDir(e.vault.ConflictsDir())
 	if err != nil {

@@ -154,6 +154,52 @@ func TestMCPConflictKeepAgent(t *testing.T) {
 	require.Contains(t, string(read(t, f.openCodeConfig())), "v3")
 }
 
+func TestMCPConflictDoesNotFreezeOtherServers(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	f := newFixture(t)
+
+	f.write(t, f.claudeConfig(), `{"mcpServers": {"gamma": {"type": "stdio", "command": "v1"}, "alpha": {"type": "stdio", "command": "a"}}}`)
+	f.write(t, f.openCodeConfig(), `{"mcp": {}}`)
+
+	_, err := f.engine.Run(t.Context(), syncer.ModeSync)
+	require.NoError(t, err)
+
+	f.write(t, f.claudeConfig(), `{"mcpServers": {"gamma": {"type": "stdio", "command": "v2"}, "alpha": {"type": "stdio", "command": "a"}}}`)
+	f.write(t, f.openCodeConfig(), `{"mcp": {"gamma": {"type": "local", "command": ["v3"]}, "beta": {"type": "local", "command": ["b"]}}}`)
+
+	report, err := f.engine.Run(t.Context(), syncer.ModeSync)
+	require.NoError(t, err)
+	require.NotEmpty(t, report.MCP.Conflicts, "gamma must still be reported as conflicted")
+
+	require.Contains(t, f.vaultServers(t), "beta")
+	require.Contains(t, string(read(t, f.claudeConfig())), "beta")
+
+	require.Contains(t, string(read(t, f.claudeConfig())), `"command":"v2"`)
+	require.Contains(t, string(read(t, f.openCodeConfig())), `"v3"`)
+
+	for range 2 {
+		report, err = f.engine.Run(t.Context(), syncer.ModeSync)
+		require.NoError(t, err)
+		require.NotEmpty(t, report.MCP.Conflicts, "an unresolved conflict must survive repeated syncs")
+	}
+
+	require.Contains(t, string(read(t, f.claudeConfig())), `"command":"v2"`)
+	require.Contains(t, string(read(t, f.openCodeConfig())), `"v3"`)
+
+	require.NoError(t, f.engine.Resolve(t.Context(), syncer.ResourceMCP, syncer.ResolveOptions{KeepAgent: true, Agent: "opencode"}))
+
+	require.Contains(t, string(read(t, f.claudeConfig())), `"v3"`)
+	require.Contains(t, string(read(t, f.openCodeConfig())), `"v3"`)
+
+	report, err = f.engine.Run(t.Context(), syncer.ModeSync)
+	require.NoError(t, err)
+	require.Empty(t, report.MCP.Conflicts)
+	require.False(t, report.MCP.Changed)
+	require.Equal(t, syncer.ActionNoop, report.Actions["claude-code"].MCP)
+	require.Equal(t, syncer.ActionNoop, report.Actions["opencode"].MCP)
+}
+
 func TestSkillsSync(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 

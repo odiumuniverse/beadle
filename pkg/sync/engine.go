@@ -103,10 +103,17 @@ func (e *Engine) Run(ctx context.Context, mode Mode) (Report, error) {
 		return report, err
 	}
 
+	var base *canon
+
 	merged := false
 
 	if mode != ModePush {
-		merged, err = e.merge(state, snapshots, &report)
+		base, err = e.loadBase()
+		if err != nil {
+			return report, err
+		}
+
+		merged, err = e.merge(base, state, snapshots, &report)
 		if err != nil {
 			return report, err
 		}
@@ -126,7 +133,7 @@ func (e *Engine) Run(ctx context.Context, mode Mode) (Report, error) {
 		return report, err
 	}
 
-	if err := e.updateRegistry(state, snapshots, &report, merged); err != nil {
+	if err := e.updateRegistry(base, state, snapshots, &report, merged); err != nil {
 		return report, err
 	}
 
