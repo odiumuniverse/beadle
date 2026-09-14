@@ -272,6 +272,59 @@ func TestSkillsConflictKeepAgent(t *testing.T) {
 	require.Equal(t, "opencode-edit\n", string(read(t, filepath.Join(f.claudeSkillsDir(), "shared", "SKILL.md"))))
 }
 
+func TestSkillsConflictDoesNotFreezeOtherSkills(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	f := newFixture(t)
+
+	f.write(t, f.claudeConfig(), `{"mcpServers": {}}`)
+	f.write(t, f.openCodeConfig(), `{"mcp": {}}`)
+	f.write(t, f.claudeRules(), "# r\n")
+	f.write(t, f.openCodeRules(), "# r\n")
+	f.write(t, filepath.Join(f.claudeSkillsDir(), "shared", "SKILL.md"), "v1\n")
+	f.write(t, filepath.Join(f.openCodeSkillsDir(), "shared", "SKILL.md"), "v1\n")
+
+	_, err := f.engine.Run(t.Context(), syncer.ModeSync)
+	require.NoError(t, err)
+
+	f.write(t, filepath.Join(f.claudeSkillsDir(), "shared", "SKILL.md"), "claude-edit\n")
+	f.write(t, filepath.Join(f.openCodeSkillsDir(), "shared", "SKILL.md"), "opencode-edit\n")
+	f.write(t, filepath.Join(f.openCodeSkillsDir(), "beta", "SKILL.md"), "beta\n")
+
+	report, err := f.engine.Run(t.Context(), syncer.ModeSync)
+	require.NoError(t, err)
+	require.NotEmpty(t, report.Skills.Conflicts, "shared must still be reported as conflicted")
+
+	require.Equal(t, "beta\n", string(read(t, filepath.Join(f.vaultRoot, "skills", "beta", "SKILL.md"))))
+	require.Equal(t, "beta\n", string(read(t, filepath.Join(f.claudeSkillsDir(), "beta", "SKILL.md"))))
+	require.Equal(t, "beta\n", string(read(t, filepath.Join(f.sharedSkillsDir(), "beta", "SKILL.md"))))
+
+	require.Equal(t, "claude-edit\n", string(read(t, filepath.Join(f.vaultRoot, "skills", "shared", "SKILL.md"))))
+	require.Equal(t, "claude-edit\n", string(read(t, filepath.Join(f.claudeSkillsDir(), "shared", "SKILL.md"))))
+	require.Equal(t, "opencode-edit\n", string(read(t, filepath.Join(f.openCodeSkillsDir(), "shared", "SKILL.md"))))
+
+	for range 2 {
+		report, err = f.engine.Run(t.Context(), syncer.ModeSync)
+		require.NoError(t, err)
+		require.NotEmpty(t, report.Skills.Conflicts, "an unresolved conflict must survive repeated syncs")
+	}
+
+	require.Equal(t, "claude-edit\n", string(read(t, filepath.Join(f.claudeSkillsDir(), "shared", "SKILL.md"))))
+	require.Equal(t, "opencode-edit\n", string(read(t, filepath.Join(f.openCodeSkillsDir(), "shared", "SKILL.md"))))
+	require.Equal(t, "beta\n", string(read(t, filepath.Join(f.claudeSkillsDir(), "beta", "SKILL.md"))))
+
+	require.NoError(t, f.engine.Resolve(t.Context(), syncer.ResourceSkills, syncer.ResolveOptions{KeepAgent: true, Agent: "opencode"}))
+
+	require.Equal(t, "opencode-edit\n", string(read(t, filepath.Join(f.vaultRoot, "skills", "shared", "SKILL.md"))))
+	require.Equal(t, "opencode-edit\n", string(read(t, filepath.Join(f.claudeSkillsDir(), "shared", "SKILL.md"))))
+	require.Equal(t, "opencode-edit\n", string(read(t, filepath.Join(f.sharedSkillsDir(), "shared", "SKILL.md"))))
+
+	report, err = f.engine.Run(t.Context(), syncer.ModeSync)
+	require.NoError(t, err)
+	require.Empty(t, report.Skills.Conflicts)
+	require.False(t, report.Skills.Changed)
+}
+
 func TestPermissionsSync(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 

@@ -288,6 +288,30 @@ func (e *Engine) conflictedMCPServerNames() (map[string]struct{}, error) {
 	return names, nil
 }
 
+func (e *Engine) conflictedSkillNames() (map[string]struct{}, error) {
+	agents, err := e.conflictedAgents(ResourceSkills)
+	if err != nil {
+		return nil, err
+	}
+
+	names := map[string]struct{}{}
+
+	for _, agent := range agents {
+		conflicts, err := readSkillsConflictFile(e.conflictPath(ResourceSkills, agent))
+		if err != nil {
+			return nil, err
+		}
+
+		for _, conflict := range conflicts.Conflicts {
+			if conflict.Skill != "" {
+				names[conflict.Skill] = struct{}{}
+			}
+		}
+	}
+
+	return names, nil
+}
+
 func (e *Engine) conflictedAgents(resource string) ([]string, error) {
 	entries, err := os.ReadDir(e.vault.ConflictsDir())
 	if err != nil {

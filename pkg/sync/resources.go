@@ -21,14 +21,12 @@ import (
 
 type frozenResources struct {
 	rules       bool
-	skills      bool
 	permissions bool
 }
 
 func (e *Engine) merge(base, state *canon, snapshots map[string]adapter.Snapshot, report *Report) (bool, error) {
 	frozen := frozenResources{
 		rules:       e.resourceConflicted(ResourceRules),
-		skills:      e.resourceConflicted(ResourceSkills),
 		permissions: e.resourceConflicted(ResourcePermissions),
 	}
 
@@ -55,9 +53,7 @@ func (e *Engine) merge(base, state *canon, snapshots map[string]adapter.Snapshot
 
 	e.ensureEntry(ResourceMCP).Conflict = report.MCP.ConflictCount() > 0
 
-	if !frozen.skills {
-		e.ensureEntry(ResourceSkills).Conflict = report.Skills.ConflictCount() > 0
-	}
+	e.ensureEntry(ResourceSkills).Conflict = report.Skills.ConflictCount() > 0
 
 	if !frozen.permissions {
 		e.ensureEntry(ResourcePermissions).Conflict = report.Permissions.ConflictCount() > 0
@@ -98,8 +94,8 @@ func (e *Engine) mergeAgentMCP(base, state *canon, agentID string, snap adapter.
 	return e.mergeMCP(base, state, agentID, snap, report, changed)
 }
 
-func (e *Engine) mergeAgentSkills(base, state *canon, agentID string, snap adapter.Snapshot, report *Report, changed *canonChanges, frozen frozenResources) error {
-	if frozen.skills || snap.Skills == nil || e.skillMode(agentID) == config.SkillsOff {
+func (e *Engine) mergeAgentSkills(base, state *canon, agentID string, snap adapter.Snapshot, report *Report, changed *canonChanges, _ frozenResources) error {
+	if snap.Skills == nil || e.skillMode(agentID) == config.SkillsOff {
 		return nil
 	}
 
@@ -181,10 +177,15 @@ func (e *Engine) push(ctx context.Context, state *canon, snapshots map[string]ad
 		return err
 	}
 
+	conflictedSkills, err := e.conflictedSkillNames()
+	if err != nil {
+		return err
+	}
+
 	var errs []error
 
 	for _, agentID := range e.orderedAgents(snapshots) {
-		if err := e.pushAgent(ctx, state, agentID, snapshots[agentID], report, conflictedServers); err != nil {
+		if err := e.pushAgent(ctx, state, agentID, snapshots[agentID], report, conflictedServers, conflictedSkills); err != nil {
 			errs = append(errs, err)
 		}
 
@@ -199,9 +200,9 @@ func (e *Engine) push(ctx context.Context, state *canon, snapshots map[string]ad
 }
 
 func (e *Engine) pushAgent(
-	ctx context.Context, state *canon, agentID string, snap adapter.Snapshot, report *Report, conflictedServers map[string]struct{},
+	ctx context.Context, state *canon, agentID string, snap adapter.Snapshot, report *Report, conflictedServers, conflictedSkills map[string]struct{},
 ) error {
-	update, err := e.agentUpdate(agentID, state, snap, report, conflictedServers)
+	update, err := e.agentUpdate(agentID, state, snap, report, conflictedServers, conflictedSkills)
 	if err != nil {
 		return err
 	}
@@ -241,7 +242,7 @@ func (e *Engine) applyUpdate(ctx context.Context, agentID string, update adapter
 }
 
 func (e *Engine) agentUpdate(
-	agentID string, state *canon, snap adapter.Snapshot, report *Report, conflictedServers map[string]struct{},
+	agentID string, state *canon, snap adapter.Snapshot, report *Report, conflictedServers, conflictedSkills map[string]struct{},
 ) (adapter.Update, error) {
 	update := adapter.Update{}
 
@@ -264,7 +265,7 @@ func (e *Engine) agentUpdate(
 		}
 	}
 
-	if skills := e.skillsToPush(agentID, state, snap, report); skills != nil {
+	if skills := e.skillsToPush(agentID, state, snap, conflictedSkills); skills != nil {
 		update.Skills = skills
 	}
 
@@ -290,10 +291,9 @@ func (e *Engine) syncSharedSkills(state *canon, report *Report) error {
 		return nil
 	}
 
-	if e.resourceConflicted(ResourceSkills) {
-		report.Actions[sharedSkillsAgent] = AgentActions{Skills: ActionSkipped}
-
-		return nil
+	conflicted, err := e.conflictedSkillNames()
+	if err != nil {
+		return err
 	}
 
 	current, err := skill.ReadDir(e.sharedSkillsDir)
@@ -302,8 +302,15 @@ func (e *Engine) syncSharedSkills(state *canon, report *Report) error {
 	}
 
 	written := 0
+	skipped := false
 
 	for name, tree := range state.skills {
+		if _, ok := conflicted[name]; ok {
+			skipped = true
+
+			continue
+		}
+
 		if treesEqual(current[name], tree) {
 			continue
 		}
@@ -315,13 +322,14 @@ func (e *Engine) syncSharedSkills(state *canon, report *Report) error {
 		written++
 	}
 
-	if written == 0 {
+	switch {
+	case written > 0:
+		report.Actions[sharedSkillsAgent] = AgentActions{Skills: ActionPushed}
+	case skipped:
+		report.Actions[sharedSkillsAgent] = AgentActions{Skills: ActionSkipped}
+	default:
 		report.Actions[sharedSkillsAgent] = AgentActions{Skills: ActionNoop}
-
-		return nil
 	}
-
-	report.Actions[sharedSkillsAgent] = AgentActions{Skills: ActionPushed}
 
 	return nil
 }
@@ -369,20 +377,20 @@ func mcpPushPayload(canonServers, agentServers mcp.Servers, conflictedServers ma
 	return payload
 }
 
-func (e *Engine) skillsToPush(agentID string, state *canon, snap adapter.Snapshot, report *Report) map[string]skill.Tree {
+func (e *Engine) skillsToPush(agentID string, state *canon, snap adapter.Snapshot, conflictedNames map[string]struct{}) map[string]skill.Tree {
 	a := e.adapterByID(agentID)
 
 	if a == nil || !a.SkillsPush() || e.skillMode(agentID) != config.SkillsSync || len(state.skills) == 0 {
 		return nil
 	}
 
-	if report.Skills.conflictedAgent(agentID) || e.resourceConflicted(ResourceSkills) {
-		return nil
-	}
-
 	diff := map[string]skill.Tree{}
 
 	for name, tree := range state.skills {
+		if _, ok := conflictedNames[name]; ok {
+			continue
+		}
+
 		if !treesEqual(snap.Skills[name], tree) {
 			diff[name] = tree
 		}
@@ -404,7 +412,7 @@ func (e *Engine) updateRegistry(base, state *canon, snapshots map[string]adapter
 		return err
 	}
 
-	if err := e.updateSkillsRegistry(state, snapshots, report, merged); err != nil {
+	if err := e.updateSkillsRegistry(base, state, snapshots, report, merged); err != nil {
 		return err
 	}
 
@@ -488,20 +496,35 @@ func (e *Engine) updateMCPRegistry(base, state *canon, snapshots map[string]adap
 	return nil
 }
 
-func (e *Engine) updateSkillsRegistry(state *canon, snapshots map[string]adapter.Snapshot, report *Report, merged bool) error {
+func (e *Engine) updateSkillsRegistry(base, state *canon, snapshots map[string]adapter.Snapshot, report *Report, merged bool) error {
 	data, err := skillsManifest(state.skills)
 	if err != nil {
 		return err
 	}
 
+	entry := e.ensureEntry(ResourceSkills)
+	entry.Vault = cas.HashOf(data)
+
+	conflicted, err := e.conflictedSkillNames()
+	if err != nil {
+		return err
+	}
+
 	if merged {
-		for _, tree := range state.skills {
-			for _, content := range tree {
-				if _, err := e.store.Put(content); err != nil {
-					return err
-				}
-			}
+		if err := e.storeSkillTrees(state.skills); err != nil {
+			return err
 		}
+
+		if _, err := e.store.Put(data); err != nil {
+			return err
+		}
+
+		baseHash, err := e.storePinnedSkillsBase(base, state, conflicted)
+		if err != nil {
+			return err
+		}
+
+		entry.Base = baseHash
 	}
 
 	hashes := map[string]cas.Hash{}
@@ -516,7 +539,7 @@ func (e *Engine) updateSkillsRegistry(state *canon, snapshots map[string]adapter
 
 		agentSkills := snap.Skills
 		if actions.Skills == ActionPushed || actions.Skills == ActionNoop {
-			agentSkills = state.skills
+			agentSkills = skillsPushPayload(state.skills, snap.Skills, conflicted)
 		}
 
 		agentData, err := skillsManifest(agentSkills)
@@ -527,7 +550,40 @@ func (e *Engine) updateSkillsRegistry(state *canon, snapshots map[string]adapter
 		hashes[agentID] = cas.HashOf(agentData)
 	}
 
-	return e.updateResourceRegistry(ResourceSkills, data, hashes, merged)
+	maps.Copy(entry.Agents, hashes)
+
+	return nil
+}
+
+func (e *Engine) storeSkillTrees(skills map[string]skill.Tree) error {
+	for _, tree := range skills {
+		for _, content := range tree {
+			if _, err := e.store.Put(content); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func (e *Engine) storePinnedSkillsBase(base, state *canon, conflicted map[string]struct{}) (cas.Hash, error) {
+	pinned := pinConflictedSkills(state.skills, base.skills, conflicted)
+
+	if err := e.storeSkillTrees(pinned); err != nil {
+		return "", err
+	}
+
+	pinnedData, err := skillsManifest(pinned)
+	if err != nil {
+		return "", err
+	}
+
+	if _, err := e.store.Put(pinnedData); err != nil {
+		return "", err
+	}
+
+	return cas.HashOf(pinnedData), nil
 }
 
 func (e *Engine) updateResourceRegistry(resource string, data []byte, agentHashes map[string]cas.Hash, merged bool) error {
@@ -686,6 +742,48 @@ func pinConflictedServers(canonServers, oldBase mcp.Servers, conflictedServers m
 	}
 
 	return pinned
+}
+
+func pinConflictedSkills(canonSkills, oldBase map[string]skill.Tree, conflictedNames map[string]struct{}) map[string]skill.Tree {
+	if len(conflictedNames) == 0 {
+		return canonSkills
+	}
+
+	pinned := maps.Clone(canonSkills)
+	if pinned == nil {
+		pinned = map[string]skill.Tree{}
+	}
+
+	for name := range conflictedNames {
+		if original, ok := oldBase[name]; ok {
+			pinned[name] = original
+		} else {
+			delete(pinned, name)
+		}
+	}
+
+	return pinned
+}
+
+func skillsPushPayload(canonSkills, agentSkills map[string]skill.Tree, conflictedNames map[string]struct{}) map[string]skill.Tree {
+	if len(conflictedNames) == 0 {
+		return canonSkills
+	}
+
+	payload := maps.Clone(canonSkills)
+	if payload == nil {
+		payload = map[string]skill.Tree{}
+	}
+
+	for name := range conflictedNames {
+		if current, ok := agentSkills[name]; ok {
+			payload[name] = current
+		} else {
+			delete(payload, name)
+		}
+	}
+
+	return payload
 }
 
 func treesEqual(a, b skill.Tree) bool {
