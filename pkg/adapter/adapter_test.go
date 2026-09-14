@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -282,7 +283,8 @@ func TestGeminiRoundTrip(t *testing.T) {
 	settings := `{
   "mcpServers": {
     "stdio-srv": {"command": "npx", "args": ["-y", "pkg"], "env": {"K": "V"}, "timeout": 600000},
-    "http-srv": {"httpUrl": "https://example.com/mcp", "headers": {"Authorization": "Bearer x"}, "trust": true}
+    "http-srv": {"httpUrl": "https://example.com/mcp", "headers": {"Authorization": "Bearer x"}, "trust": true},
+    "sse-srv": {"url": "https://example.com/sse", "headers": {"X-Token": "y"}}
   }
 }`
 	require.NoError(t, os.WriteFile(filepath.Join(home, ".gemini", "settings.json"), []byte(settings), 0o600))
@@ -297,12 +299,17 @@ func TestGeminiRoundTrip(t *testing.T) {
 	require.Equal(t, "https://example.com/mcp", snapshot.MCP["http-srv"].URL)
 	require.Contains(t, string(snapshot.MCP["http-srv"].Extensions["gemini-cli"]), "true")
 
+	require.Equal(t, "sse", snapshot.MCP["sse-srv"].Transport)
+	require.Equal(t, "https://example.com/sse", snapshot.MCP["sse-srv"].URL)
+
 	require.NoError(t, a.Apply(context.Background(), adapter.Update{MCP: snapshot.MCP}))
 
 	text := string(mustReadFile(t, filepath.Join(home, ".gemini", "settings.json")))
 	require.Contains(t, text, `"httpUrl"`)
 	require.Contains(t, text, `"timeout"`)
 	require.Contains(t, text, `"trust"`)
+	require.Contains(t, text, `"type":"sse"`)
+	require.Equal(t, 1, strings.Count(text, `"httpUrl"`), "the SSE server must not gain an httpUrl: %s", text)
 }
 
 func TestCursorRoundTrip(t *testing.T) {

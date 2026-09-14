@@ -25,6 +25,8 @@ func (g *GeminiCLI) SkillsPush() bool { return true }
 
 func (g *GeminiCLI) RulesPush() bool { return true }
 
+func (g *GeminiCLI) PermissionKinds() []string { return []string{permission.KindBash} }
+
 func (g *GeminiCLI) Detect() (bool, error) {
 	return anyExists(
 		filepath.Join(g.home, ".gemini", "settings.json"),

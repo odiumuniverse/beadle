@@ -25,6 +25,10 @@ func (c *ClaudeCode) SkillsPush() bool { return true }
 
 func (c *ClaudeCode) RulesPush() bool { return true }
 
+func (c *ClaudeCode) PermissionKinds() []string {
+	return []string{permission.KindTool, permission.KindBash, permission.KindMCP}
+}
+
 func (c *ClaudeCode) Paths() []string {
 	return []string{c.rulesPath(), c.settingsPath(), c.configPath(), c.skillsDir()}
 }

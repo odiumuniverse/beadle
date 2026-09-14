@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -37,14 +38,26 @@ func (e *Engine) loadPermissions() (permission.Rules, error) {
 }
 
 func (e *Engine) mergePermissions(base, state *canon, agentID string, snap adapter.Snapshot, report *Report, changed *canonChanges) error {
-	mergedAny, conflicts := merge.JSON(rulesToAny(base.permissions), rulesToAny(state.permissions), rulesToAny(snap.Permissions))
-	mergedRules := rulesFromAny(mergedAny)
+	a := e.adapterByID(agentID)
+	if a == nil {
+		return nil
+	}
 
-	if !rulesEqual(mergedRules, state.permissions) {
+	kinds := a.PermissionKinds()
+
+	baseSubset := filterRulesByKind(base.permissions, kinds)
+	vaultSubset := filterRulesByKind(state.permissions, kinds)
+
+	mergedAny, conflicts := merge.JSON(rulesToAny(baseSubset), rulesToAny(vaultSubset), rulesToAny(snap.Permissions))
+	mergedSubset := rulesFromAny(mergedAny)
+
+	newState := replaceRulesByKind(state.permissions, kinds, mergedSubset)
+
+	if !rulesEqual(newState, state.permissions) {
 		changed.permissions = true
 	}
 
-	state.permissions = mergedRules
+	state.permissions = newState
 
 	if err := e.writeOverride(agentID, snap.PermissionsOverride); err != nil {
 		return err
@@ -59,6 +72,38 @@ func (e *Engine) mergePermissions(base, state *canon, agentID string, snap adapt
 	return e.writeJSONConflict(ResourcePermissions, agentID, conflicts)
 }
 
+func filterRulesByKind(rules permission.Rules, kinds []string) permission.Rules {
+	out := make(permission.Rules, len(rules))
+
+	for key, effect := range rules {
+		kind, _, _, ok := permission.Split(key)
+		if !ok || !slices.Contains(kinds, kind) {
+			continue
+		}
+
+		out[key] = effect
+	}
+
+	return out
+}
+
+func replaceRulesByKind(current permission.Rules, kinds []string, replacement permission.Rules) permission.Rules {
+	out := make(permission.Rules, len(current)+len(replacement))
+
+	for key, effect := range current {
+		kind, _, _, ok := permission.Split(key)
+		if ok && slices.Contains(kinds, kind) {
+			continue
+		}
+
+		out[key] = effect
+	}
+
+	maps.Copy(out, replacement)
+
+	return out
+}
+
 func (e *Engine) permissionsToPush(agentID string, state *canon, snap adapter.Snapshot, report *Report) (permission.Rules, permission.Override, bool, error) {
 	if !e.permissionsEnabled() || !snap.PermissionsPresent {
 		return nil, permission.Override{}, false, nil
@@ -68,7 +113,12 @@ func (e *Engine) permissionsToPush(agentID string, state *canon, snap adapter.Sn
 		return nil, permission.Override{}, false, nil
 	}
 
-	if rulesEqual(snap.Permissions, state.permissions) {
+	a := e.adapterByID(agentID)
+	if a == nil {
+		return nil, permission.Override{}, false, nil
+	}
+
+	if rulesEqual(snap.Permissions, filterRulesByKind(state.permissions, a.PermissionKinds())) {
 		return nil, permission.Override{}, false, nil
 	}
 
@@ -98,7 +148,7 @@ func (e *Engine) updatePermissionsRegistry(state *canon, snapshots map[string]ad
 
 		rules := snap.Permissions
 		if actions.Permissions == ActionPushed || actions.Permissions == ActionNoop {
-			rules = state.permissions
+			rules = filterRulesByKind(state.permissions, e.adapterByID(agentID).PermissionKinds())
 		}
 
 		agentData, err := rules.Marshal()

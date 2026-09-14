@@ -23,6 +23,7 @@ type Adapter interface {
 	Apply(ctx context.Context, update Update) error
 	SkillsPush() bool
 	RulesPush() bool
+	PermissionKinds() []string
 	Paths() []string
 	SkillsDir() string
 	WatchPaths() []string

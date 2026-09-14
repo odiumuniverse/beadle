@@ -24,6 +24,8 @@ func geminiFromEntry(entry map[string]any) mcp.Server {
 	if url := stringField(entry, fieldHTTPURL); url != "" {
 		server.URL = url
 		server.Transport = transportHTTP
+	} else if _, hasType := entry[fieldType]; !hasType && server.URL != "" {
+		server.Transport = transportSSE
 	}
 
 	server.Env = mapValues(server.Env, geminiCanonicalizeRefs)

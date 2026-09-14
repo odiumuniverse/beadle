@@ -401,6 +401,78 @@ func TestPermissionsConflictKeepAgent(t *testing.T) {
 	require.Contains(t, string(read(t, filepath.Join(f.home, ".claude", "settings.json"))), "Bash(git commit:*)")
 }
 
+func TestPermissionsForeignKindsSurviveLimitedAgents(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	f := newFixture(t)
+	f.config.Permissions = permission.ModeSync
+
+	f.write(t, f.claudeConfig(), `{"mcpServers": {}}`)
+	f.write(t, f.openCodeConfig(), `{"mcp": {}}`)
+	f.write(t, f.claudeRules(), "# r\n")
+	f.write(t, f.openCodeRules(), "# r\n")
+	f.write(t, filepath.Join(f.home, ".claude", "settings.json"), `{
+  "permissions": {
+    "allow": ["WebFetch", "Bash(git status)"],
+    "ask": [],
+    "deny": []
+  }
+}`)
+	f.write(t, f.openCodeConfig(), `{
+  "mcp": {},
+  "permission": {
+    "bash": {"git status": "allow"},
+    "codegraph_*": "allow"
+  }
+}`)
+
+	_, err := f.engine.Run(t.Context(), syncer.ModeSync)
+	require.NoError(t, err)
+
+	vaultRules := func(t *testing.T) permission.Rules {
+		t.Helper()
+
+		rules, err := permission.Parse(read(t, filepath.Join(f.vaultRoot, "permissions", "rules.json")))
+		require.NoError(t, err)
+
+		return rules
+	}
+
+	require.Equal(t, "allow", vaultRules(t)["tool:webfetch"])
+	require.Equal(t, "allow", vaultRules(t)["bash:git status"])
+	require.Equal(t, "allow", vaultRules(t)["mcp:codegraph:*"])
+
+	f.config.Enable("gemini-cli")
+	f.config.Enable("cursor")
+	f.write(t, filepath.Join(f.home, ".gemini", "settings.json"), `{
+  "mcpServers": {},
+  "tools": {"allowed": ["run_shell_command(git status)"], "confirmationRequired": [], "exclude": []}
+}`)
+	f.write(t, filepath.Join(f.home, ".cursor", "cli-config.json"), `{
+  "permissions": {"allow": ["Shell(git status)", "Mcp(codegraph:*)"], "deny": []}
+}`)
+
+	for i := range 3 {
+		report, err := f.engine.Run(t.Context(), syncer.ModeSync)
+		require.NoError(t, err)
+		require.Empty(t, report.Permissions.Conflicts, "run %d: no conflict expected", i)
+
+		rules := vaultRules(t)
+		require.Equal(t, "allow", rules["tool:webfetch"], "run %d: tool rule must survive", i)
+		require.Equal(t, "allow", rules["mcp:codegraph:*"], "run %d: mcp rule must survive Gemini", i)
+		require.Equal(t, "allow", rules["bash:git status"], "run %d", i)
+	}
+
+	require.Contains(t, string(read(t, filepath.Join(f.home, ".claude", "settings.json"))), "WebFetch")
+	require.Contains(t, string(read(t, filepath.Join(f.home, ".claude", "settings.json"))), "mcp__codegraph__*")
+
+	report, err := f.engine.Run(t.Context(), syncer.ModeSync)
+	require.NoError(t, err)
+	require.Empty(t, report.Permissions.Conflicts)
+	require.NotEqual(t, syncer.ActionPushed, report.Actions["gemini-cli"].Permissions)
+	require.NotEqual(t, syncer.ActionPushed, report.Actions["cursor"].Permissions)
+}
+
 func TestDoctor(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 

@@ -29,6 +29,10 @@ func (o *OpenCode) SkillsPush() bool { return false }
 
 func (o *OpenCode) RulesPush() bool { return true }
 
+func (o *OpenCode) PermissionKinds() []string {
+	return []string{permission.KindTool, permission.KindBash, permission.KindMCP}
+}
+
 func (o *OpenCode) Paths() []string {
 	return []string{o.rulesPath(), o.configDir(), o.skillsDir()}
 }

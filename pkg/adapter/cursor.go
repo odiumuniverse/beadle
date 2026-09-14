@@ -25,6 +25,10 @@ func (c *Cursor) SkillsPush() bool { return false }
 
 func (c *Cursor) RulesPush() bool { return false }
 
+func (c *Cursor) PermissionKinds() []string {
+	return []string{permission.KindBash, permission.KindMCP}
+}
+
 func (c *Cursor) Detect() (bool, error) {
 	return anyExists(
 		filepath.Join(c.home, ".cursor", "mcp.json"),
