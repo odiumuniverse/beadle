@@ -25,6 +25,15 @@ const (
 	KindMCP  = "mcp"
 )
 
+func ValidEffect(effect string) bool {
+	switch effect {
+	case EffectAllow, EffectAsk, EffectDeny:
+		return true
+	default:
+		return false
+	}
+}
+
 type Rules map[string]string
 
 func BashKey(pattern string) string { return KindBash + ":" + pattern }

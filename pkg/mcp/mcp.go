@@ -6,16 +6,71 @@ import (
 	"fmt"
 )
 
+const (
+	TransportStdio = "stdio"
+	TransportHTTP  = "http"
+	TransportSSE   = "sse"
+	TransportWS    = "ws"
+)
+
 type Server struct {
-	Transport  string                     `json:"transport,omitempty"`
-	Command    []string                   `json:"command,omitempty"`
-	Env        map[string]string          `json:"env,omitempty"`
-	URL        string                     `json:"url,omitempty"`
-	Headers    map[string]string          `json:"headers,omitempty"`
-	Extensions map[string]json.RawMessage `json:"extensions,omitempty"`
+	Transport string            `json:"transport,omitempty"`
+	Command   []string          `json:"command,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	URL       string            `json:"url,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+}
+
+func (s Server) Remote() bool {
+	return s.URL != "" && s.Transport != TransportStdio
+}
+
+func (s Server) Valid() bool {
+	return len(s.Command) > 0 || s.URL != ""
 }
 
 type Servers map[string]Server
+
+func Encode(s Server) []byte {
+	fields := map[string]any{}
+
+	if s.Transport != "" {
+		fields["transport"] = s.Transport
+	}
+
+	if len(s.Command) > 0 {
+		fields["command"] = s.Command
+	}
+
+	if len(s.Env) > 0 {
+		fields["env"] = s.Env
+	}
+
+	if s.URL != "" {
+		fields["url"] = s.URL
+	}
+
+	if len(s.Headers) > 0 {
+		fields["headers"] = s.Headers
+	}
+
+	data, err := json.Marshal(fields)
+	if err != nil {
+		panic(fmt.Sprintf("encode mcp server: %v", err))
+	}
+
+	return data
+}
+
+func Decode(data []byte) (Server, error) {
+	var s Server
+
+	if err := json.Unmarshal(data, &s); err != nil {
+		return Server{}, fmt.Errorf("decode mcp server: %w", err)
+	}
+
+	return s, nil
+}
 
 func (s Servers) MarshalCanonical() ([]byte, error) {
 	data, err := json.MarshalIndent(s, "", "  ")

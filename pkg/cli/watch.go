@@ -2,15 +2,11 @@ package cli
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/odiumuniverse/agents-sync/pkg/adapter"
-	"github.com/odiumuniverse/agents-sync/pkg/config"
-	syncer "github.com/odiumuniverse/agents-sync/pkg/sync"
+	"github.com/odiumuniverse/agents-sync/pkg/engine"
 	"github.com/odiumuniverse/agents-sync/pkg/watch"
 )
 
@@ -22,9 +18,14 @@ func (a *app) newWatchCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "watch",
-		Short: "Watch configuration files and synchronize continuously",
+		Short: "Watch agent configs and the vault, and synchronize on every change",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			paths, err := a.watchPaths()
+			e, err := a.engine()
+			if err != nil {
+				return err
+			}
+
+			paths, err := e.WatchPaths(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -45,77 +46,27 @@ func (a *app) newWatchCmd() *cobra.Command {
 	return cmd
 }
 
-func (a *app) watchPaths() ([]string, error) {
-	v, err := a.resolveVault()
-	if err != nil {
-		return nil, err
-	}
-
-	cfg, err := config.Load(v.ConfigPath())
-	if err != nil {
-		return nil, err
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-
-	paths := []string{
-		filepath.Join(v.Root(), "rules"),
-		filepath.Join(v.Root(), "skills"),
-		filepath.Join(v.Root(), "mcp", "servers.json"),
-		filepath.Join(v.Root(), "permissions", "rules.json"),
-		filepath.Join(v.Root(), "permissions", "override"),
-	}
-
-	for _, item := range adapter.All(home) {
-		if !cfg.Agents[item.ID()].Enabled {
-			continue
-		}
-
-		detected, err := item.Detect()
-		if err != nil {
-			return nil, err
-		}
-
-		if !detected {
-			continue
-		}
-
-		paths = append(paths, item.WatchPaths()...)
-	}
-
-	return paths, nil
-}
-
 func (a *app) watchSync(ctx context.Context) error {
-	engine, err := a.engine()
+	e, err := a.engine()
 	if err != nil {
 		return err
 	}
 
-	report, err := engine.Run(ctx, syncer.ModeSync)
+	report, err := e.Sync(ctx, engine.SyncOptions{})
 	if err != nil {
 		return err
 	}
 
-	conflicts := report.Rules.ConflictCount() + report.MCP.ConflictCount() +
-		report.Skills.ConflictCount() + report.Permissions.ConflictCount()
-
-	if conflicts > 0 {
-		a.logger.Error(ctx, "conflicts detected", "conflicts", conflicts)
-
-		return nil
+	for _, message := range report.Errors() {
+		a.logger.Error(ctx, "sync error", "error", message)
 	}
 
-	if report.Rules.Changed || report.MCP.Changed || report.Skills.Changed || report.Permissions.Changed {
-		a.logger.Print(ctx, "synced",
-			"rules", report.Rules.Changed,
-			"mcp", report.MCP.Changed,
-			"skills", report.Skills.Changed,
-			"permissions", report.Permissions.Changed,
-		)
+	if n := len(report.Conflicts); n > 0 {
+		a.logger.Error(ctx, "open conflicts wait for agent-sync resolve", "conflicts", n)
+	}
+
+	if report.VaultChanged() || report.Pushed() {
+		a.logger.Print(ctx, "synced", "vault_changed", report.VaultChanged(), "pushed", report.Pushed())
 	}
 
 	return nil

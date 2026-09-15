@@ -49,11 +49,20 @@ func TestInit(t *testing.T) {
 
 	require.FileExists(t, v.ConfigPath())
 	require.DirExists(t, v.ObjectsDir())
-	require.DirExists(t, filepath.Join(root, "rules", "override"))
-	require.DirExists(t, filepath.Join(root, "mcp", "override"))
-	require.DirExists(t, filepath.Join(root, "skills"))
-	require.DirExists(t, filepath.Join(root, "conflicts"))
+	require.DirExists(t, v.SkillsDir())
+	require.DirExists(t, v.ConflictsDir())
+	require.DirExists(t, filepath.Join(root, "rules"))
+	require.DirExists(t, filepath.Join(root, "mcp"))
 	require.DirExists(t, filepath.Join(root, "state"))
+
+	info, err := os.Stat(root)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o700), info.Mode().Perm(), "the vault holds credentials: owner only")
+
+	ignore, err := os.ReadFile(filepath.Join(root, ".gitignore")) //nolint:gosec // G304: test reads its own temp file
+	require.NoError(t, err)
+	require.Contains(t, string(ignore), "mcp/secrets.json")
+	require.Contains(t, string(ignore), "objects/")
 
 	require.NoError(t, v.Init(), "init must be idempotent")
 }

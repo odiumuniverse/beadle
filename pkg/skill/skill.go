@@ -55,12 +55,36 @@ func ReadDir(dir string) (map[string]Tree, error) {
 	return skills, nil
 }
 
+var junkNames = map[string]struct{}{
+	".DS_Store":    {},
+	"Thumbs.db":    {},
+	".git":         {},
+	"node_modules": {},
+	"__pycache__":  {},
+}
+
+func skipJunk(root, path string, entry fs.DirEntry) (bool, error) {
+	if _, junk := junkNames[entry.Name()]; !junk || path == root {
+		return false, nil
+	}
+
+	if entry.IsDir() {
+		return true, filepath.SkipDir
+	}
+
+	return true, nil
+}
+
 func ReadTree(root string) (Tree, error) {
 	tree := Tree{}
 
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+
+		if skip, walkErr := skipJunk(root, path, entry); skip {
+			return walkErr
 		}
 
 		if entry.IsDir() || entry.Type()&fs.ModeSymlink != 0 {
@@ -124,6 +148,10 @@ func SyncTree(dir, name string, tree Tree) error {
 			return err
 		}
 
+		if skip, walkErr := skipJunk(root, path, entry); skip {
+			return walkErr
+		}
+
 		if entry.IsDir() || entry.Type()&fs.ModeSymlink != 0 {
 			return nil
 		}
@@ -150,6 +178,37 @@ func SyncTree(dir, name string, tree Tree) error {
 	}
 
 	return nil
+}
+
+func Group(items map[string][]byte) map[string]Tree {
+	trees := map[string]Tree{}
+
+	for key, data := range items {
+		name, rel, ok := strings.Cut(key, "/")
+		if !ok {
+			continue
+		}
+
+		if trees[name] == nil {
+			trees[name] = Tree{}
+		}
+
+		trees[name][rel] = data
+	}
+
+	return trees
+}
+
+func Flatten(skills map[string]Tree) map[string][]byte {
+	items := map[string][]byte{}
+
+	for name, tree := range skills {
+		for rel, data := range tree {
+			items[name+"/"+rel] = data
+		}
+	}
+
+	return items
 }
 
 func FilePath(dir, name, rel string) (string, error) {

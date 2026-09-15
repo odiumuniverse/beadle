@@ -1,111 +1,91 @@
 package cli
 
 import (
-	"maps"
-	"slices"
-	"strings"
+	"fmt"
 
 	"github.com/spf13/cobra"
 
-	syncer "github.com/odiumuniverse/agents-sync/pkg/sync"
+	"github.com/odiumuniverse/agents-sync/pkg/config"
+	"github.com/odiumuniverse/agents-sync/pkg/engine"
 )
 
 func (a *app) newSyncCmd() *cobra.Command {
-	var prune bool
+	var (
+		dryRun bool
+		kinds  []string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "sync",
-		Short: "Pull agent changes, merge them into the vault and push the result back",
+		Short: "Take agent changes into the vault and write the result into every agent",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return a.runSync(cmd, syncer.ModeSync, prune)
+			return a.runSync(cmd, engine.SyncOptions{DryRun: dryRun}, kinds)
 		},
 	}
 
-	cmd.Flags().BoolVar(&prune, "prune", false, "delete agent skills that are absent from the vault")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would change without writing anything")
+	cmd.Flags().StringSliceVar(&kinds, "kind", nil, "only these kinds (rules, mcp, skills, permissions)")
 
 	return cmd
 }
 
 func (a *app) newPullCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "pull",
-		Short: "Pull agent changes into the vault only",
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return a.runSync(cmd, syncer.ModePull, false)
-		},
-	}
-}
-
-func (a *app) newPushCmd() *cobra.Command {
-	var prune bool
+	var dryRun bool
 
 	cmd := &cobra.Command{
-		Use:   "push",
-		Short: "Push vault content to agents only",
+		Use:   "pull",
+		Short: "Take agent changes into the vault without writing any agent",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return a.runSync(cmd, syncer.ModePush, prune)
+			return a.runSync(cmd, engine.SyncOptions{DryRun: dryRun, Direction: config.ModePull}, nil)
 		},
 	}
 
-	cmd.Flags().BoolVar(&prune, "prune", false, "delete agent skills that are absent from the vault")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would change without writing anything")
 
 	return cmd
 }
 
-func (a *app) runSync(cmd *cobra.Command, mode syncer.Mode, prune bool) error {
-	var opts []syncer.Option
+func (a *app) newPushCmd() *cobra.Command {
+	var dryRun bool
 
-	if prune {
-		opts = append(opts, syncer.WithPrune())
+	cmd := &cobra.Command{
+		Use:   "push",
+		Short: "Write the vault into every agent, overwriting their local changes",
+		Long: "push makes every agent hold exactly the vault content. Changes made in an agent\n" +
+			"since the last sync are overwritten, not merged: use `agent-sync sync` for that.",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return a.runSync(cmd, engine.SyncOptions{DryRun: dryRun, Direction: config.ModePush}, nil)
+		},
 	}
 
-	engine, err := a.engine(opts...)
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would change without writing anything")
+
+	return cmd
+}
+
+func (a *app) runSync(cmd *cobra.Command, opts engine.SyncOptions, kindNames []string) error {
+	ids, err := parseKinds(kindNames)
 	if err != nil {
 		return err
 	}
 
-	report, runErr := engine.Run(cmd.Context(), mode)
+	opts.Kinds = ids
 
-	printReport(cmd, report)
-
-	return runErr
-}
-
-func printReport(cmd *cobra.Command, report syncer.Report) {
-	cmd.Printf("rules:  changed=%t conflicts=%d\n", report.Rules.Changed, report.Rules.ConflictCount())
-	cmd.Printf("mcp:    changed=%t conflicts=%d\n", report.MCP.Changed, report.MCP.ConflictCount())
-	cmd.Printf("skills: changed=%t conflicts=%d\n", report.Skills.Changed, report.Skills.ConflictCount())
-	cmd.Printf("perms:  changed=%t conflicts=%d\n", report.Permissions.Changed, report.Permissions.ConflictCount())
-
-	for _, id := range slices.Sorted(maps.Keys(report.Actions)) {
-		actions := report.Actions[id]
-
-		if actions.Rules == syncer.ActionNoop && actions.MCP == syncer.ActionNoop &&
-			actions.Skills == syncer.ActionNoop && actions.Permissions == syncer.ActionNoop {
-			cmd.Printf("%s: no changes\n", id)
-
-			continue
-		}
-
-		cmd.Printf("%s: rules=%s mcp=%s skills=%s perms=%s\n", id,
-			actionName(actions.Rules), actionName(actions.MCP), actionName(actions.Skills), actionName(actions.Permissions))
+	e, err := a.engine()
+	if err != nil {
+		return err
 	}
 
-	if report.Rules.ConflictCount() > 0 || report.MCP.ConflictCount() > 0 ||
-		report.Skills.ConflictCount() > 0 || report.Permissions.ConflictCount() > 0 {
-		cmd.Println("conflicts detected: resolve them with `agent-sync resolve <rules|mcp|skills|permissions>`")
+	report, err := e.Sync(cmd.Context(), opts)
+	if err != nil {
+		return err
 	}
 
-	if missing := report.MissingSecretNames(); len(missing) > 0 {
-		cmd.Printf("secrets: missing %s\n", strings.Join(missing, ", "))
-		cmd.Println("  mcp push skipped for affected agents; run `agent-sync secrets set <name> <value>`")
-	}
-}
+	printReport(cmd.OutOrStdout(), report)
 
-func actionName(action string) string {
-	if action == "" {
-		return "-"
+	if errs := report.Errors(); len(errs) > 0 {
+		return fmt.Errorf("%d error(s) during sync", len(errs))
 	}
 
-	return action
+	return nil
 }

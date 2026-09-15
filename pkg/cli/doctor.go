@@ -5,42 +5,44 @@ import (
 
 	"github.com/spf13/cobra"
 
-	syncer "github.com/odiumuniverse/agents-sync/pkg/sync"
+	"github.com/odiumuniverse/agents-sync/pkg/engine"
 )
 
 func (a *app) newDoctorCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
-		Short: "Diagnose vault and agent configuration problems",
+		Short: "Diagnose vault, sync state and agent configuration problems",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			engine, err := a.engine()
+			e, err := a.engine()
 			if err != nil {
 				return err
 			}
 
-			issues, err := engine.Doctor(cmd.Context())
+			issues, err := e.Doctor(cmd.Context())
 			if err != nil {
 				return err
 			}
+
+			out := cmd.OutOrStdout()
 
 			if len(issues) == 0 {
-				cmd.Println("no issues found")
+				fmt.Fprintln(out, "no issues found")
 
 				return nil
 			}
 
-			errors := 0
+			errorCount := 0
 
 			for _, issue := range issues {
-				cmd.Printf("[%-5s] %-24s %s\n", issue.Severity, issueScope(issue), issue.Message)
+				fmt.Fprintf(out, "[%-5s] %-26s %s\n", issue.Severity, issueScope(issue), issue.Message)
 
-				if issue.Severity == syncer.SeverityError {
-					errors++
+				if issue.Severity == engine.SeverityError {
+					errorCount++
 				}
 			}
 
-			if errors > 0 {
-				return fmt.Errorf("doctor found %d error(s)", errors)
+			if errorCount > 0 {
+				return fmt.Errorf("doctor found %d error(s)", errorCount)
 			}
 
 			return nil
@@ -48,15 +50,15 @@ func (a *app) newDoctorCmd() *cobra.Command {
 	}
 }
 
-func issueScope(issue syncer.Issue) string {
+func issueScope(issue engine.Issue) string {
 	switch {
-	case issue.Agent != "" && issue.Resource != "":
-		return issue.Agent + "/" + issue.Resource
+	case issue.Agent != "" && issue.Kind != "":
+		return issue.Agent + "/" + string(issue.Kind)
 	case issue.Agent != "":
 		return issue.Agent
-	case issue.Resource != "":
-		return issue.Resource
+	case issue.Kind != "":
+		return string(issue.Kind)
 	default:
-		return "general"
+		return "vault"
 	}
 }

@@ -6,9 +6,10 @@ import (
 
 	"github.com/vmkteam/embedlog"
 
-	"github.com/odiumuniverse/agents-sync/pkg/adapter"
+	"github.com/odiumuniverse/agents-sync/pkg/agent"
 	"github.com/odiumuniverse/agents-sync/pkg/config"
-	syncer "github.com/odiumuniverse/agents-sync/pkg/sync"
+	"github.com/odiumuniverse/agents-sync/pkg/engine"
+	"github.com/odiumuniverse/agents-sync/pkg/kind"
 	"github.com/odiumuniverse/agents-sync/pkg/vault"
 )
 
@@ -31,13 +32,22 @@ func (a *app) resolveVault() (*vault.Vault, error) {
 	return v, nil
 }
 
-func (a *app) engine(opts ...syncer.Option) (*syncer.Engine, error) {
+func (a *app) loadConfig() (*vault.Vault, *config.Config, error) {
 	v, err := a.resolveVault()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	cfg, err := config.Load(v.ConfigPath())
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return v, cfg, nil
+}
+
+func (a *app) engine() (*engine.Engine, error) {
+	v, cfg, err := a.loadConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -47,5 +57,29 @@ func (a *app) engine(opts ...syncer.Option) (*syncer.Engine, error) {
 		return nil, err
 	}
 
-	return syncer.New(v, cfg, adapter.All(home), a.logger, opts...)
+	return engine.New(v, cfg, agent.All(home), engine.WithLogger(a.logger), engine.WithHome(home))
+}
+
+func allAgents() ([]*agent.Agent, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+
+	return agent.All(home), nil
+}
+
+func parseKinds(names []string) ([]kind.ID, error) {
+	ids := make([]kind.ID, 0, len(names))
+
+	for _, name := range names {
+		id, err := kind.Parse(name)
+		if err != nil {
+			return nil, err
+		}
+
+		ids = append(ids, id)
+	}
+
+	return ids, nil
 }

@@ -1,19 +1,27 @@
 package cli
 
 import (
+	"fmt"
+	"io"
 	"os"
+	"slices"
 
 	"github.com/spf13/cobra"
 
-	"github.com/odiumuniverse/agents-sync/pkg/adapter"
+	"github.com/odiumuniverse/agents-sync/pkg/agent"
 	"github.com/odiumuniverse/agents-sync/pkg/config"
 	"github.com/odiumuniverse/agents-sync/pkg/vault"
 )
 
 func (a *app) newInitCmd() *cobra.Command {
-	return &cobra.Command{
+	var agentIDs []string
+
+	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Create the vault and register detected agents",
+		Short: "Create the vault and enable the agents installed on this machine",
+		Long: "init creates the vault (default ~/.agent-sync) and enables every detected agent.\n" +
+			"It writes nothing into any agent: run `agent-sync sync --dry-run` to preview the\n" +
+			"first synchronization, then `agent-sync sync`.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			root, err := vault.ResolveRoot(a.vaultPath, os.Getenv(vault.EnvHome))
 			if err != nil {
@@ -30,34 +38,103 @@ func (a *app) newInitCmd() *cobra.Command {
 				return err
 			}
 
-			home, err := os.UserHomeDir()
+			agents, err := allAgents()
 			if err != nil {
 				return err
 			}
 
-			cmd.Printf("vault: %s\n", v.Root())
+			if err := validateAgentIDs(agents, agentIDs); err != nil {
+				return err
+			}
 
-			for _, adapterItem := range adapter.All(home) {
-				detected, err := adapterItem.Detect()
-				if err != nil {
+			out := cmd.OutOrStdout()
+
+			fmt.Fprintf(out, "vault: %s\n\nagents:\n", v.Root())
+
+			for _, ag := range agents {
+				if err := enableOnInit(out, cfg, ag, agentIDs); err != nil {
 					return err
 				}
-
-				if !detected {
-					continue
-				}
-
-				cfg.Enable(adapterItem.ID())
-				cmd.Printf("detected: %s (%s)\n", adapterItem.DisplayName(), adapterItem.ID())
 			}
 
 			if err := cfg.Save(v.ConfigPath()); err != nil {
 				return err
 			}
 
-			cmd.Println("done")
+			fmt.Fprintln(out)
+			printModes(out, cfg, agents)
+			fmt.Fprint(out, "\nnext:\n"+
+				"  agent-sync sync --dry-run   # preview the first synchronization, nothing is written\n"+
+				"  agent-sync sync             # synchronize; conflicts wait for `agent-sync resolve`\n"+
+				"  agent-sync daemon install   # keep everything in sync in the background\n")
 
 			return nil
 		},
+	}
+
+	cmd.Flags().StringSliceVar(&agentIDs, "agents", nil, "enable exactly these agents instead of the detected ones")
+
+	return cmd
+}
+
+func enableOnInit(out io.Writer, cfg *config.Config, ag *agent.Agent, requested []string) error {
+	detected, err := ag.Detect()
+	if err != nil {
+		return err
+	}
+
+	enable := detected && !ag.OptIn
+	if len(requested) > 0 {
+		enable = slices.Contains(requested, ag.ID)
+	}
+
+	switch {
+	case enable:
+		cfg.Enable(ag.ID)
+		fmt.Fprintf(out, "  [x] %-34s %s\n", ag.Name, ag.ID)
+	case ag.OptIn:
+		fmt.Fprintf(out, "  [ ] %-34s %s (opt-in: agent-sync agents enable %s)\n", ag.Name, ag.ID, ag.ID)
+	case !detected:
+		fmt.Fprintf(out, "  [ ] %-34s %s (not installed)\n", ag.Name, ag.ID)
+	default:
+		fmt.Fprintf(out, "  [ ] %-34s %s\n", ag.Name, ag.ID)
+	}
+
+	return nil
+}
+
+func validateAgentIDs(agents []*agent.Agent, ids []string) error {
+	for _, id := range ids {
+		if agent.ByID(agents, id) == nil {
+			return fmt.Errorf("unknown agent %q (see agent-sync agents)", id)
+		}
+	}
+
+	return nil
+}
+
+func printModes(out io.Writer, cfg *config.Config, agents []*agent.Agent) {
+	fmt.Fprintln(out, "what is synchronized:")
+
+	for _, ag := range agents {
+		if !cfg.Agents[ag.ID].Enabled {
+			continue
+		}
+
+		fmt.Fprintf(out, "  %s\n", ag.Name)
+
+		for _, surface := range ag.Surfaces {
+			mode := cfg.ModeFor(ag.ID, surface.Kind(), surface.Traits().DefaultMode)
+			if !cfg.KindEnabled(surface.Kind()) {
+				mode = config.ModeOff + " (kind disabled)"
+			}
+
+			line := fmt.Sprintf("    %-12s %-22s %s", surface.Kind(), mode, surface.Path())
+			if note := surface.Traits().Note; note != "" {
+				line += "\n" + fmt.Sprintf("    %-12s %-22s %s", "", "", "note: "+note)
+			}
+
+			fmt.Fprintln(out, line)
+		}
 	}
 }

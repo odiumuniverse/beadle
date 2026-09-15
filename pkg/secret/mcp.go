@@ -126,6 +126,114 @@ func Refs(servers mcp.Servers) ([]string, error) {
 	return slices.Sorted(maps.Keys(names)), nil
 }
 
+func ExtractJSON(data []byte, store *Store) ([]byte, bool, error) {
+	var tree any
+
+	if err := json.Unmarshal(data, &tree); err != nil {
+		return nil, false, fmt.Errorf("decode server: %w", err)
+	}
+
+	replaced := 0
+
+	out := walkStrings(tree, "", func(key, value string) string {
+		if name, ok := ParseEnvRef(value); ok {
+			if store.Has(name) {
+				replaced++
+
+				return Ref(name)
+			}
+
+			return value
+		}
+
+		if !IsSecret(key, value) {
+			return value
+		}
+
+		name := store.NameFor(key, value)
+		store.Set(name, value)
+
+		replaced++
+
+		return Ref(name)
+	})
+
+	if replaced == 0 {
+		return data, false, nil
+	}
+
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		return nil, false, fmt.Errorf("encode server: %w", err)
+	}
+
+	return encoded, true, nil
+}
+
+func ResolveJSON(data []byte, store *Store, mode string) ([]byte, []string, error) {
+	var tree any
+
+	if err := json.Unmarshal(data, &tree); err != nil {
+		return nil, nil, fmt.Errorf("decode server: %w", err)
+	}
+
+	missing := map[string]struct{}{}
+	refs := 0
+
+	out := walkStrings(tree, "", func(_, value string) string {
+		name, ok := ParseRef(value)
+		if !ok {
+			return value
+		}
+
+		refs++
+
+		if mode == ModeEnv {
+			return EnvRef(name)
+		}
+
+		stored, ok := store.Get(name)
+		if !ok {
+			missing[name] = struct{}{}
+
+			return value
+		}
+
+		return stored
+	})
+
+	if refs == 0 {
+		return data, nil, nil
+	}
+
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode server: %w", err)
+	}
+
+	return encoded, slices.Sorted(maps.Keys(missing)), nil
+}
+
+func RefsJSON(data []byte) ([]string, error) {
+	var tree any
+
+	if err := json.Unmarshal(data, &tree); err != nil {
+		return nil, fmt.Errorf("decode server: %w", err)
+	}
+
+	names := map[string]struct{}{}
+
+	walkStrings(tree, "", func(_, value string) string {
+		if name, ok := ParseRef(value); ok {
+			names[name] = struct{}{}
+		}
+
+		return value
+	})
+
+	return slices.Sorted(maps.Keys(names)), nil
+}
+
 func walkStrings(node any, key string, fn func(key, value string) string) any {
 	switch typed := node.(type) {
 	case map[string]any:

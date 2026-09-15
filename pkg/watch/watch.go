@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -62,19 +63,14 @@ func Run(ctx context.Context, opts Options) error {
 		watchPath(watcher, path, files, opts.Log)
 	}
 
-	debounced, cancelDebounce := lo.NewDebounce(max(debounce, 0), func() {
-		if err := opts.Sync(ctx); err != nil {
-			opts.Log.Error(ctx, "sync failed", "err", err)
-		}
-	})
+	run := serialize(ctx, opts.Sync, opts.Log)
 
+	debounced, cancelDebounce := lo.NewDebounce(max(debounce, 0), run)
 	defer cancelDebounce()
 
 	opts.Log.Print(ctx, "watching", "paths", len(opts.Paths))
 
-	if err := opts.Sync(ctx); err != nil {
-		opts.Log.Error(ctx, "initial sync failed", "err", err)
-	}
+	run()
 
 	var ticks <-chan time.Time
 
@@ -85,17 +81,67 @@ func Run(ctx context.Context, opts Options) error {
 		ticks = ticker.C
 	}
 
-	return loop(ctx, opts, watcher, files, debounced, ticks, debounce)
+	trigger := debounced
+	if debounce < 0 {
+		trigger = run
+	}
+
+	return loop(ctx, opts, watcher, files, trigger, ticks)
 }
+
+func serialize(ctx context.Context, sync func(context.Context) error, log embedlog.Logger) func() {
+	var (
+		mu      syncMutex
+		running bool
+		pending bool
+	)
+
+	return func() {
+		mu.Lock()
+
+		if running {
+			pending = true
+
+			mu.Unlock()
+
+			return
+		}
+
+		running = true
+
+		mu.Unlock()
+
+		for {
+			if err := sync(ctx); err != nil && ctx.Err() == nil {
+				log.Error(ctx, "sync failed", "err", err)
+			}
+
+			mu.Lock()
+
+			if !pending {
+				running = false
+
+				mu.Unlock()
+
+				return
+			}
+
+			pending = false
+
+			mu.Unlock()
+		}
+	}
+}
+
+type syncMutex = sync.Mutex
 
 func loop(
 	ctx context.Context,
 	opts Options,
 	watcher *fsnotify.Watcher,
 	files map[string]struct{},
-	debounced func(),
+	trigger func(),
 	ticks <-chan time.Time,
-	debounce time.Duration,
 ) error {
 	for {
 		select {
@@ -107,27 +153,22 @@ func loop(
 			}
 
 			handleEvent(watcher, event, files, opts.Log)
-
-			if debounce > 0 {
-				debounced()
-
-				continue
-			}
-
-			if err := opts.Sync(ctx); err != nil {
-				opts.Log.Error(ctx, "sync failed", "err", err)
-			}
+			trigger()
 		case err, ok := <-watcher.Errors:
 			if !ok {
 				return nil
 			}
 
 			opts.Log.Error(ctx, "watcher error, rescanning", "err", err)
-			debounced()
+			trigger()
 		case <-ticks:
 			opts.Log.Print(ctx, "periodic rescan")
 
-			debounced()
+			for _, path := range opts.Paths {
+				watchPath(watcher, path, files, opts.Log)
+			}
+
+			trigger()
 		}
 	}
 }

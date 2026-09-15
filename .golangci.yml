@@ -107,6 +107,12 @@ linters:
       threshold: 100
     errcheck:
       check-type-assertions: true
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    exhaustive:
+      default-signifies-exhaustive: true
     funlen:
       lines: 120
       statements: 80

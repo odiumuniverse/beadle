@@ -126,7 +126,7 @@ func (a *app) newSecretsPruneCmd() *cobra.Command {
 				return err
 			}
 
-			removed, err := engine.PruneSecrets()
+			removed, err := engine.PruneSecrets(cmd.Context())
 			if err != nil {
 				return err
 			}

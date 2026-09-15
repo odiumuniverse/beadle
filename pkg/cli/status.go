@@ -1,23 +1,28 @@
 package cli
 
 import (
+	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/odiumuniverse/agents-sync/pkg/adapter"
-	"github.com/odiumuniverse/agents-sync/pkg/cas"
+	"github.com/odiumuniverse/agents-sync/pkg/agent"
 	"github.com/odiumuniverse/agents-sync/pkg/config"
-	"github.com/odiumuniverse/agents-sync/pkg/registry"
-	syncer "github.com/odiumuniverse/agents-sync/pkg/sync"
+	"github.com/odiumuniverse/agents-sync/pkg/engine"
+	"github.com/odiumuniverse/agents-sync/pkg/state"
 	"github.com/odiumuniverse/agents-sync/pkg/vault"
 )
 
 func (a *app) newStatusCmd() *cobra.Command {
-	return &cobra.Command{
+	var check bool
+
+	cmd := &cobra.Command{
 		Use:   "status",
-		Short: "Show vault, agents and resource status",
+		Short: "Show agents, synchronization modes and open conflicts",
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			out := cmd.OutOrStdout()
+
 			root, err := vault.ResolveRoot(a.vaultPath, os.Getenv(vault.EnvHome))
 			if err != nil {
 				return err
@@ -25,10 +30,10 @@ func (a *app) newStatusCmd() *cobra.Command {
 
 			v := vault.New(root)
 
-			cmd.Printf("vault: %s\n", v.Root())
+			fmt.Fprintf(out, "vault: %s\n", v.Root())
 
 			if !v.Initialized() {
-				cmd.Println("state: not initialized (run agent-sync init)")
+				fmt.Fprintln(out, "state: not initialized (run agent-sync init)")
 
 				return nil
 			}
@@ -38,65 +43,91 @@ func (a *app) newStatusCmd() *cobra.Command {
 				return err
 			}
 
-			home, err := os.UserHomeDir()
+			agents, err := allAgents()
 			if err != nil {
 				return err
 			}
 
-			cmd.Println("agents:")
-
-			for _, adapterItem := range adapter.All(home) {
-				detected, err := adapterItem.Detect()
-				if err != nil {
-					return err
-				}
-
-				enabled := cfg.Agents[adapterItem.ID()].Enabled
-
-				cmd.Printf("  %-12s enabled=%-5t detected=%t\n", adapterItem.ID(), enabled, detected)
+			if err := printAgents(out, cfg, agents); err != nil {
+				return err
 			}
 
-			reg, err := registry.Load(v.RegistryPath())
+			st, err := state.Load(v.StatePath())
 			if err != nil {
 				return err
 			}
 
-			cmd.Println("resources:")
-
-			for _, resource := range []string{syncer.ResourceRules, syncer.ResourceMCP, syncer.ResourceSkills, syncer.ResourcePermissions} {
-				entry := reg.Resources[resource]
-				if entry == nil {
-					cmd.Printf("  %-11s not synced\n", resource)
-
-					continue
-				}
-
-				status := ""
-				if entry.Conflict {
-					status = "  CONFLICT"
-				}
-
-				cmd.Printf("  %-11s vault=%s agents=%d%s\n", resource, shortHash(entry.Vault), len(entry.Agents), status)
+			if conflicts := st.OpenConflicts(); len(conflicts) > 0 {
+				fmt.Fprintf(out, "conflicts: %d open (agent-sync conflicts)\n", len(conflicts))
+			} else {
+				fmt.Fprintln(out, "conflicts: none")
 			}
 
-			if reg.Conflicts() > 0 {
-				cmd.Println("resolve with: agent-sync resolve <rules|mcp|skills|permissions>")
+			if !check {
+				fmt.Fprintln(out, "pending changes: agent-sync status --check (or agent-sync diff)")
+
+				return nil
 			}
+
+			e, err := a.engine()
+			if err != nil {
+				return err
+			}
+
+			report, err := e.Sync(cmd.Context(), engine.SyncOptions{DryRun: true})
+			if err != nil {
+				return err
+			}
+
+			fmt.Fprintln(out)
+			printReport(out, report)
 
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&check, "check", false, "also compute pending changes (dry run)")
+
+	return cmd
 }
 
-func shortHash(h cas.Hash) string {
-	if h == "" {
-		return "-"
+func printAgents(out interface{ Write([]byte) (int, error) }, cfg *config.Config, agents []*agent.Agent) error {
+	fmt.Fprintln(out, "agents:")
+
+	for _, ag := range agents {
+		detected, err := ag.Detect()
+		if err != nil {
+			return err
+		}
+
+		fmt.Fprintf(out, "  %-12s %-9s %-14s %s\n", ag.ID,
+			onOff(cfg.Agents[ag.ID].Enabled, "enabled", "disabled"),
+			onOff(detected, "installed", "not installed"),
+			modesOf(cfg, ag))
 	}
 
-	name := string(h)
-	if len(name) > 8 {
-		return name[:8]
+	return nil
+}
+
+func modesOf(cfg *config.Config, ag *agent.Agent) string {
+	parts := make([]string, 0, len(ag.Surfaces))
+
+	for _, surface := range ag.Surfaces {
+		mode := cfg.ModeFor(ag.ID, surface.Kind(), surface.Traits().DefaultMode)
+		if !cfg.KindEnabled(surface.Kind()) {
+			mode = config.ModeOff
+		}
+
+		parts = append(parts, fmt.Sprintf("%s:%s", surface.Kind(), mode))
 	}
 
-	return name
+	return strings.Join(parts, " ")
+}
+
+func onOff(value bool, yes, no string) string {
+	if value {
+		return yes
+	}
+
+	return no
 }
