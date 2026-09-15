@@ -43,4 +43,17 @@ audit:
 	govulncheck ./...
 
 help:
-	@sed -n 's/^##//p' $(MAKEFILE_LIST) | column -t -s ':' | sed -e 's/^/ /'
+	@printf '  %-11s %s\n' \
+		all 'Format, lint, test and build' \
+		build 'Build the application' \
+		clean 'Clean build artifacts' \
+		test 'Run all tests with race detector' \
+		test-short 'Run tests without long-running ones' \
+		lint 'Run linter' \
+		lint-fix 'Run linter and auto-fix issues' \
+		fmt 'Format code' \
+		vet 'Run go vet' \
+		run 'Build and run the application' \
+		mod 'Tidy modules and vendor dependencies' \
+		audit 'Audit dependencies for known vulnerabilities' \
+		help 'Show this help message'
