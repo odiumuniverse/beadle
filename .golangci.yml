@@ -124,6 +124,12 @@ linters:
     nolintlint:
       require-explanation: true
       require-specific: true
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+        - name: package-comments
+          disabled: true
     wsl_v5:
       allow-first-in-block: true
       allow-whole-block: false

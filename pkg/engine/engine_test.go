@@ -1185,6 +1185,11 @@ func TestGitHistory(t *testing.T) {
 		t.Skip("git is not installed")
 	}
 
+	t.Setenv("GIT_AUTHOR_NAME", "agent-sync test")
+	t.Setenv("GIT_AUTHOR_EMAIL", "agent-sync@example.invalid")
+	t.Setenv("GIT_COMMITTER_NAME", "agent-sync test")
+	t.Setenv("GIT_COMMITTER_EMAIL", "agent-sync@example.invalid")
+
 	f := newFixture(t)
 	f.config.History = config.HistoryGit
 	f.emptyConfigs(t)
