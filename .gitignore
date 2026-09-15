@@ -33,6 +33,7 @@ go.work.sum
 KNOWLEDGE.md
 SPEC.md
 AGENTS.md
+docs/
 
 # Environment files
 .env

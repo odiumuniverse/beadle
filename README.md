@@ -116,7 +116,6 @@ make mod     # go mod tidy && go mod vendor (deps are vendored)
 ```
 
 Layout: `cmd/agentsync`, `pkg/{cli,vault,config,state,cas,fsutil,merge,kind,agent,engine,lock,watch,daemon,history,secret,mcp,skill,permission}`.
-Docs: [architecture](docs/ARCHITECTURE.md) · [roadmap](docs/PLAN.md) · [v2 audit](docs/AUDIT.md).
 
 ## License
 
