@@ -16,6 +16,7 @@ import (
 	"github.com/odiumuniverse/agents-sync/pkg/agent"
 	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
 	"github.com/odiumuniverse/agents-sync/pkg/kind"
+	"github.com/odiumuniverse/agents-sync/pkg/plugin"
 	"github.com/odiumuniverse/agents-sync/pkg/state"
 )
 
@@ -64,6 +65,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.skillCollisionIssues(active)...)
 	issues = append(issues, e.secretIssues()...)
 	issues = append(issues, e.projectScopeIssues(ctx, active)...)
+	issues = append(issues, e.pluginRefIssues(active)...)
 
 	return issues, nil
 }
@@ -377,6 +379,60 @@ func scopeIssues(source string, scope, vaultItems kind.Items) []Issue {
 
 func projectIssue(severity, message string) Issue {
 	return Issue{Severity: severity, Kind: kind.MCP, Agent: agent.ClaudeCodeID, Message: message}
+}
+
+func (e *Engine) pluginRefIssues(active []*agent.Agent) []Issue {
+	if e.home == "" {
+		return nil
+	}
+
+	seen := map[string]bool{}
+
+	var issues []Issue
+
+	for _, a := range active {
+		for _, surface := range a.Surfaces {
+			realPath := agent.RealPath(surface.Path())
+			if seen[realPath] {
+				continue
+			}
+
+			seen[realPath] = true
+
+			data, err := os.ReadFile(realPath) //nolint:gosec // G304: paths come from the agent definitions
+			if err != nil {
+				continue
+			}
+
+			refs, err := plugin.References(data, e.home)
+			if err != nil {
+				continue
+			}
+
+			for _, ref := range refs {
+				if fsutil.Exists(ref.Path) {
+					continue
+				}
+
+				issues = append(issues, Issue{
+					Severity: SeverityError,
+					Agent:    a.ID,
+					Message: fmt.Sprintf("broken plugin reference: %s (%s %s)",
+						displayHomePath(ref.Path, e.home), displayHomePath(realPath, e.home), ref.Pointer),
+				})
+			}
+		}
+	}
+
+	return issues
+}
+
+func displayHomePath(path, home string) string {
+	if home != "" && strings.HasPrefix(path, home+"/") {
+		return "~" + strings.TrimPrefix(path, home)
+	}
+
+	return path
 }
 
 func isDir(path string) bool {
