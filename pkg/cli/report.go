@@ -97,6 +97,10 @@ func printKind(w io.Writer, kr engine.KindReport, conflicts []state.Conflict) {
 		lines = append(lines, fmt.Sprintf("  ⚠ %-13s conflict %s on %s (%s)", c.Agent, c.ID(), c.TargetKey(), c.Reason))
 	}
 
+	for _, warning := range kr.Warnings {
+		lines = append(lines, "  ! "+warning)
+	}
+
 	if kr.Err != "" {
 		lines = append(lines, "  ✗ "+kr.Err)
 	}

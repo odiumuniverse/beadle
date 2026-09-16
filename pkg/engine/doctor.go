@@ -154,6 +154,10 @@ func planIssues(plan *Report) []Issue {
 			issues = append(issues, Issue{Severity: SeverityError, Kind: kr.Kind, Message: kr.Err})
 		}
 
+		for _, warning := range kr.Warnings {
+			issues = append(issues, Issue{Severity: SeverityInfo, Kind: kr.Kind, Message: warning})
+		}
+
 		pending := map[string]int{}
 
 		for _, change := range kr.Pulled {

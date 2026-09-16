@@ -58,6 +58,7 @@ type pluginLedgerRec struct {
 	Version   string    `json:"version"`
 	Sha       string    `json:"sha,omitempty"`
 	Target    string    `json:"target"`
+	Servers   []string  `json:"servers,omitempty"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -186,6 +187,7 @@ func (e *Engine) pivotPlugin(key string, group pluginGroup, prev pluginLedgerRec
 		Version:   record.Version,
 		Sha:       record.GitCommitSha,
 		Target:    target,
+		Servers:   prev.Servers,
 		UpdatedAt: e.now(),
 	}
 

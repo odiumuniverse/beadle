@@ -50,6 +50,7 @@ type KindReport struct {
 	VaultChanged bool          `json:"vault_changed"`
 	Pulled       []Change      `json:"pulled,omitempty"`
 	Agents       []AgentResult `json:"agents,omitempty"`
+	Warnings     []string      `json:"warnings,omitempty"`
 	Err          string        `json:"error,omitempty"`
 }
 

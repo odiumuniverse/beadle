@@ -17,15 +17,17 @@ import (
 )
 
 type view struct {
-	agent     *agent.Agent
-	surface   agent.Surface
-	mode      config.Mode
-	snap      agent.Snapshot
-	raw       kind.Items
-	base      kind.Items
-	holds     map[string]bool
-	conflicts []state.Conflict
-	blobs     [][]byte
+	agent           *agent.Agent
+	surface         agent.Surface
+	mode            config.Mode
+	snap            agent.Snapshot
+	raw             kind.Items
+	base            kind.Items
+	presented       kind.Items
+	presentedFailed bool
+	holds           map[string]bool
+	conflicts       []state.Conflict
+	blobs           [][]byte
 }
 
 func (v *view) frozen(spec kind.Spec, key string) bool {
@@ -44,12 +46,22 @@ func (e *Engine) syncKind(ctx context.Context, spec kind.Spec, agents []*agent.A
 		return report
 	}
 
+	var (
+		pluginPlan   pluginMCPPlan
+		pluginLedger pluginLedger
+	)
+
+	if spec.ID == kind.MCP {
+		pluginLedger, pluginPlan = e.loadPluginMCPPlan(vaultItems, &report)
+	}
+
 	views := e.readViews(ctx, spec, agents, st, opts, &report)
 	original := maps.Clone(vaultItems)
+	owned := e.ownedPluginMCP(spec, views, pluginPlan, pluginLedger, vaultItems, &report)
 
 	for _, v := range views {
 		if v.mode.Pulls() {
-			e.pull(spec, v, vaultItems, &report)
+			e.pull(spec, v, vaultItems, owned, &report)
 		}
 	}
 
@@ -68,6 +80,8 @@ func (e *Engine) syncKind(ctx context.Context, spec kind.Spec, agents []*agent.A
 			report.Err = err.Error()
 		}
 	}
+
+	e.maybePersistPluginMCP(spec, pluginPlan, pluginLedger, opts, &report)
 
 	for _, v := range views {
 		actual := e.push(ctx, spec, v, vaultItems, opts, &report)
@@ -153,39 +167,51 @@ func (e *Engine) readView(
 	return &view{agent: a, surface: surface, mode: mode, snap: snap, raw: raw, base: base, holds: map[string]bool{}}, nil
 }
 
-func (e *Engine) pull(spec kind.Spec, v *view, vaultItems kind.Items, report *KindReport) {
+func (e *Engine) pull(spec kind.Spec, v *view, vaultItems kind.Items, owned map[string]struct{}, report *KindReport) {
 	proj := project(vaultItems, v.surface)
 
 	var deleted []string
 
 	for _, key := range unionKeys(v.base, proj.items, v.snap.Items) {
-		base, current, local := value(v.base, key), value(proj.items, key), value(v.snap.Items, key)
-
-		switch {
-		case same(local, base), same(current, local):
+		if _, skip := owned[key]; skip {
 			continue
-		case same(current, base):
-			switch {
-			case local == nil:
-				if !spec.Singleton {
-					deleted = append(deleted, key)
-				}
-			case base == nil && proj.hides(key):
-				e.addConflict(spec, v, proj, key, state.ReasonHidden, base, vaultItems[key], local)
-			default:
-				adopt(spec, proj, vaultItems, v.agent.ID, key, local, report)
-			}
+		}
+
+		if e.pullKey(spec, v, proj, vaultItems, key, report) {
+			deleted = append(deleted, key)
+		}
+	}
+
+	e.pullDeletions(spec, v, proj, vaultItems, deleted, report)
+}
+
+func (e *Engine) pullKey(spec kind.Spec, v *view, proj projection, vaultItems kind.Items, key string, report *KindReport) bool {
+	base, current, local := value(v.base, key), value(proj.items, key), value(v.snap.Items, key)
+
+	switch {
+	case same(local, base), same(current, local):
+		return false
+	case same(current, base):
+		switch {
+		case local == nil:
+			return !spec.Singleton
+		case base == nil && proj.hides(key):
+			e.addConflict(spec, v, proj, key, state.ReasonHidden, base, vaultItems[key], local)
 		default:
-			if merged, ok := spec.Merge(base, current, local); ok {
-				adopt(spec, proj, vaultItems, v.agent.ID, key, merged, report)
-
-				continue
-			}
-
+			adopt(spec, proj, vaultItems, v.agent.ID, key, local, report)
+		}
+	default:
+		if merged, ok := spec.Merge(base, current, local); ok {
+			adopt(spec, proj, vaultItems, v.agent.ID, key, merged, report)
+		} else {
 			e.addConflict(spec, v, proj, key, reasonOf(base, current, local), base, current, local)
 		}
 	}
 
+	return false
+}
+
+func (e *Engine) pullDeletions(spec kind.Spec, v *view, proj projection, vaultItems kind.Items, deleted []string, report *KindReport) {
 	if len(deleted) == 0 {
 		return
 	}
@@ -335,7 +361,31 @@ func (e *Engine) desired(spec kind.Spec, v *view, vaultItems kind.Items) kind.It
 		}
 	}
 
+	e.mergePresented(spec, v, vaultItems, out)
+
 	return out
+}
+
+func (e *Engine) mergePresented(spec kind.Spec, v *view, vaultItems, out kind.Items) {
+	for key, data := range v.presented {
+		if _, taken := out[key]; taken || v.frozen(spec, key) {
+			continue
+		}
+
+		out[key] = data
+	}
+
+	if !v.presentedFailed {
+		return
+	}
+
+	for key, data := range v.snap.Items {
+		if _, canon := vaultItems[key]; canon || v.frozen(spec, key) {
+			continue
+		}
+
+		out[key] = data
+	}
 }
 
 func (e *Engine) write(ctx context.Context, spec kind.Spec, v *view, desired kind.Items) (kind.Items, Action, string) {
