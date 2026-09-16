@@ -112,15 +112,7 @@ func (e *Engine) sync(ctx context.Context, opts SyncOptions) (*Report, error) {
 	report := &Report{DryRun: opts.DryRun}
 
 	if !opts.DryRun {
-		results, warnings, err := e.reconcilePlugins(ctx)
-
-		report.Warnings = append(report.Warnings, warnings...)
-
-		if err != nil {
-			report.Warnings = append(report.Warnings, "plugins: "+err.Error())
-		}
-
-		report.Plugins = results
+		e.syncPluginSurfaces(ctx, report, active, opts)
 	}
 
 	for _, spec := range kind.All() {

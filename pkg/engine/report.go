@@ -72,6 +72,7 @@ type Report struct {
 	Kinds     []KindReport     `json:"kinds"`
 	Conflicts []state.Conflict `json:"conflicts,omitempty"`
 	Plugins   []PluginResult   `json:"plugins,omitempty"`
+	Farm      []FarmResult     `json:"farm,omitempty"`
 	Warnings  []string         `json:"warnings,omitempty"`
 }
 

@@ -22,7 +22,7 @@ func printReport(w io.Writer, report *engine.Report) {
 		printKind(w, kr, report.ConflictsOf(kr.Kind))
 	}
 
-	if lines := pluginLines(report.Plugins); len(lines) > 0 {
+	if lines := pluginLines(report.Plugins, report.Farm); len(lines) > 0 {
 		fmt.Fprintln(w, "\nplugins")
 
 		for _, line := range lines {
@@ -39,7 +39,7 @@ func printReport(w io.Writer, report *engine.Report) {
 	}
 }
 
-func pluginLines(results []engine.PluginResult) []string {
+func pluginLines(results []engine.PluginResult, farm []engine.FarmResult) []string {
 	var lines []string
 
 	for _, result := range results {
@@ -49,6 +49,18 @@ func pluginLines(results []engine.PluginResult) []string {
 		case engine.PluginSkipped:
 			lines = append(lines, fmt.Sprintf("  ! %s skipped: %s", result.Key, result.Note))
 		case engine.PluginNoop:
+		}
+	}
+
+	for _, result := range farm {
+		switch result.Action {
+		case engine.FarmLinked:
+			lines = append(lines, fmt.Sprintf("  ⇢ %-13s %s: linked %d", result.Agent, result.Plugin, result.Count))
+		case engine.FarmPruned:
+			lines = append(lines, fmt.Sprintf("  ⇠ %-13s %s: pruned %d", result.Agent, result.Plugin, result.Count))
+		case engine.FarmSkipped:
+			lines = append(lines, fmt.Sprintf("  ! %-13s %s: skipped (%s)", result.Agent, result.Plugin, result.Note))
+		case engine.FarmNoop:
 		}
 	}
 
