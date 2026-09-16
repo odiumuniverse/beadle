@@ -1066,6 +1066,73 @@ func TestSecretsEnvModeRendersReference(t *testing.T) {
 	require.NotContains(t, openCode, "abc123")
 }
 
+func TestSecretsModeSwitchRewritesFiles(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	f := newFixture(t)
+
+	write(t, f.claudeConfig(), `{"mcpServers": {"ctx7": {"type": "http", "url": "https://mcp.example.com", "headers": {"Authorization": "Bearer abc123"}}}}`)
+	write(t, f.openCodeConfig(), `{"mcp": {}}`)
+	f.sync(t)
+
+	require.Contains(t, read(t, f.openCodeConfig()), "abc123", "literal mode keeps working literals")
+
+	plan, err := f.engine.Sync(t.Context(), engine.SyncOptions{DryRun: true})
+	require.NoError(t, err)
+	require.Equal(t, engine.ActionNoop, plan.Action(kind.MCP, agent.ClaudeCodeID), "the plan is clean before the switch")
+
+	f.config.Secrets = secret.ModeEnv
+
+	plan, err = f.engine.Sync(t.Context(), engine.SyncOptions{DryRun: true})
+	require.NoError(t, err)
+
+	mcpPlan := plan.Kind(kind.MCP)
+	require.NotNil(t, mcpPlan)
+
+	result, ok := mcpPlan.Agent(agent.OpenCodeID)
+	require.True(t, ok)
+	require.Equal(t, engine.ActionWouldPush, result.Action, "a dry run sees the pending mode change")
+	require.NotEmpty(t, result.Changes, "the pending change lists the affected server")
+	require.NotContains(t, reportChanges(t, result), "abc123", "no secret value leaks into the report")
+
+	issues, err := f.engine.Doctor(t.Context())
+	require.NoError(t, err)
+	require.True(t, hasIssue(issues, engine.SeverityWarn, "differs from the vault"), "doctor sees the stale mode: %v", issues)
+
+	report := f.sync(t)
+	require.Equal(t, engine.ActionPushed, report.Action(kind.MCP, agent.ClaudeCodeID))
+	require.Equal(t, engine.ActionPushed, report.Action(kind.MCP, agent.OpenCodeID))
+
+	openCode := read(t, f.openCodeConfig())
+	require.Contains(t, openCode, "{env:AUTHORIZATION}")
+	require.NotContains(t, openCode, "abc123")
+
+	// The new form is stable: no ping-pong on the next run.
+	report = f.sync(t)
+	require.Equal(t, engine.ActionNoop, report.Action(kind.MCP, agent.ClaudeCodeID))
+	require.Equal(t, engine.ActionNoop, report.Action(kind.MCP, agent.OpenCodeID))
+
+	// Switching back rewrites the literals just the same.
+	f.config.Secrets = secret.ModeLiteral
+
+	report = f.sync(t)
+	require.Equal(t, engine.ActionPushed, report.Action(kind.MCP, agent.OpenCodeID))
+	require.Contains(t, read(t, f.openCodeConfig()), "abc123", "the literal comes back")
+}
+
+func reportChanges(t *testing.T, result engine.AgentResult) string {
+	t.Helper()
+
+	var out strings.Builder
+
+	for _, change := range result.Changes {
+		out.WriteString(string(change.Before))
+		out.WriteString(string(change.After))
+	}
+
+	return out.String()
+}
+
 func TestSecretsPrune(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 

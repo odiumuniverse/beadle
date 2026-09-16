@@ -21,6 +21,7 @@ type view struct {
 	surface   agent.Surface
 	mode      config.Mode
 	snap      agent.Snapshot
+	raw       kind.Items
 	base      kind.Items
 	holds     map[string]bool
 	conflicts []state.Conflict
@@ -135,6 +136,8 @@ func (e *Engine) readView(
 		return nil, err
 	}
 
+	raw := maps.Clone(snap.Items)
+
 	items, _, err := e.inbound(spec.ID, snap.Items)
 	if err != nil {
 		return nil, err
@@ -147,7 +150,7 @@ func (e *Engine) readView(
 		return nil, err
 	}
 
-	return &view{agent: a, surface: surface, mode: mode, snap: snap, base: base, holds: map[string]bool{}}, nil
+	return &view{agent: a, surface: surface, mode: mode, snap: snap, raw: raw, base: base, holds: map[string]bool{}}, nil
 }
 
 func (e *Engine) pull(spec kind.Spec, v *view, vaultItems kind.Items, report *KindReport) {
@@ -269,11 +272,29 @@ func (e *Engine) pushView(
 	}
 
 	desired := e.desired(spec, v, vaultItems)
-	if desired.Equal(v.snap.Items) {
+
+	// The ref-form comparison alone cannot see the secrets mode: both the
+	// snapshot and the desired projection hold {secret:NAME} references, so a
+	// literal↔env switch changes only the rendered file form. Compare what
+	// the file is supposed to hold under the current mode with what it holds.
+	resolved, _, err := e.outbound(spec.ID, desired)
+	if err != nil {
+		resolved = nil // write() reports the error with the server name
+	}
+
+	if desired.Equal(v.snap.Items) && (resolved == nil || resolved.Equal(v.raw)) {
 		return v.snap.Items
 	}
 
 	result.Changes = diffItems(v.snap.Items, desired)
+
+	if len(result.Changes) == 0 && resolved != nil {
+		// The refs match but the file form does not: list the affected keys
+		// with their ref-form payload so no secret value reaches the report.
+		for _, key := range changedKeys(v.raw, resolved) {
+			result.Changes = append(result.Changes, ItemChange{Key: key, Op: OpModified, Before: v.snap.Items[key], After: desired[key]})
+		}
+	}
 
 	if !v.snap.Present && !v.surface.Traits().Creatable {
 		result.Action, result.Note = ActionSkipped, "no config file to write into"
