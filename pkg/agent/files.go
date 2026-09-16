@@ -9,11 +9,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/tailscale/hujson"
 
 	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
 	"github.com/odiumuniverse/agents-sync/pkg/kind"
+)
+
+var errConcurrentWrite = errors.New("file changed concurrently")
+
+const (
+	casAttempts = 5
+	casBackoff  = 20 * time.Millisecond
 )
 
 func readFile(path string) ([]byte, bool, error) {
@@ -45,11 +53,19 @@ func anyExists(paths ...string) (bool, error) {
 }
 
 func writeFile(path string, data []byte, defaultPerm fs.FileMode) error {
+	return writeFileChecked(path, data, defaultPerm, nil)
+}
+
+func writeFileChecked(path string, data []byte, defaultPerm fs.FileMode, check func() error) error {
 	target, err := resolveLink(path)
 	if err != nil {
 		return err
 	}
 
+	return writeTarget(target, data, defaultPerm, check)
+}
+
+func writeTarget(target string, data []byte, defaultPerm fs.FileMode, check func() error) error {
 	perm := defaultPerm
 
 	info, err := os.Stat(target)
@@ -65,7 +81,54 @@ func writeFile(path string, data []byte, defaultPerm fs.FileMode) error {
 		return fmt.Errorf("create directory for %s: %w", target, err)
 	}
 
-	return fsutil.WriteFileAtomic(target, data, perm)
+	return fsutil.WriteFileAtomicChecked(target, data, perm, check)
+}
+
+func updateFile(path string, defaultPerm fs.FileMode, build func(data []byte, present bool) ([]byte, bool, error)) error {
+	for attempt := range casAttempts {
+		if attempt > 0 {
+			time.Sleep(casBackoff << (attempt - 1))
+		}
+
+		data, present, err := readFile(path)
+		if err != nil {
+			return err
+		}
+
+		out, changed, err := build(data, present)
+		if err != nil {
+			return err
+		}
+
+		if !changed {
+			return nil
+		}
+
+		check := func() error {
+			current, presentNow, err := readFile(path)
+			if err != nil {
+				return err
+			}
+
+			if presentNow != present || !bytes.Equal(current, data) {
+				return errConcurrentWrite
+			}
+
+			return nil
+		}
+
+		if err := writeFileChecked(path, out, defaultPerm, check); err != nil {
+			if errors.Is(err, errConcurrentWrite) {
+				continue
+			}
+
+			return err
+		}
+
+		return nil
+	}
+
+	return fmt.Errorf("%s: %w (after %d attempts)", path, errConcurrentWrite, casAttempts)
 }
 
 func resolveLink(path string) (string, error) {

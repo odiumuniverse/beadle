@@ -8,6 +8,10 @@ import (
 )
 
 func WriteFileAtomic(path string, data []byte, perm fs.FileMode) error {
+	return WriteFileAtomicChecked(path, data, perm, nil)
+}
+
+func WriteFileAtomicChecked(path string, data []byte, perm fs.FileMode, check func() error) error {
 	dir := filepath.Dir(path)
 
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
@@ -47,6 +51,14 @@ func WriteFileAtomic(path string, data []byte, perm fs.FileMode) error {
 		cleanup()
 
 		return fmt.Errorf("chmod temp file: %w", err)
+	}
+
+	if check != nil {
+		if err = check(); err != nil {
+			cleanup()
+
+			return err
+		}
 	}
 
 	if err = os.Rename(tmpName, path); err != nil {

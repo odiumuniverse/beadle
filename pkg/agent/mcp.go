@@ -69,35 +69,32 @@ func (s *mcpSurface) Read(context.Context) (Snapshot, error) {
 func (s *mcpSurface) Write(_ context.Context, desired kind.Items) error {
 	path := s.file()
 
-	data, present, err := readFile(path)
-	if err != nil {
-		return err
-	}
+	return updateFile(path, 0o600, func(data []byte, present bool) ([]byte, bool, error) {
+		if !present {
+			return nil, false, fmt.Errorf("%s: %w", path, ErrNotConfigured)
+		}
 
-	if !present {
-		return fmt.Errorf("%s: %w", path, ErrNotConfigured)
-	}
+		entries, found, err := decodeObjects(data, s.pointer)
+		if err != nil {
+			return nil, false, fmt.Errorf("%s: %w", path, err)
+		}
 
-	entries, found, err := decodeObjects(data, s.pointer)
-	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
-	}
+		ops, err := s.ops(entries, found, desired)
+		if err != nil {
+			return nil, false, err
+		}
 
-	ops, err := s.ops(entries, found, desired)
-	if err != nil {
-		return err
-	}
+		if len(ops) == 0 {
+			return nil, false, nil
+		}
 
-	if len(ops) == 0 {
-		return nil
-	}
+		out, err := applyPatch(data, ops)
+		if err != nil {
+			return nil, false, fmt.Errorf("patch %s: %w", path, err)
+		}
 
-	out, err := applyPatch(data, ops)
-	if err != nil {
-		return fmt.Errorf("patch %s: %w", path, err)
-	}
-
-	return writeFile(path, out, 0o600)
+		return out, true, nil
+	})
 }
 
 func (s *mcpSurface) ops(entries map[string]map[string]any, found bool, desired kind.Items) ([]patchOp, error) {

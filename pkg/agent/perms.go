@@ -57,42 +57,39 @@ func (s *permSurface) Read(context.Context) (Snapshot, error) {
 func (s *permSurface) Write(_ context.Context, desired kind.Items) error {
 	path := s.file()
 
-	data, present, err := readFile(path)
-	if err != nil {
-		return err
-	}
+	return updateFile(path, 0o600, func(data []byte, present bool) ([]byte, bool, error) {
+		if !present {
+			return nil, false, fmt.Errorf("%s: %w", path, ErrNotConfigured)
+		}
 
-	if !present {
-		return fmt.Errorf("%s: %w", path, ErrNotConfigured)
-	}
+		var raw any
 
-	var raw any
+		found, err := decodePointer(data, s.pointer, &raw)
+		if err != nil {
+			return nil, false, fmt.Errorf("%s: %w", path, err)
+		}
 
-	found, err := decodePointer(data, s.pointer, &raw)
-	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
-	}
+		block, isObject := raw.(map[string]any)
+		if found && !isObject {
+			return nil, false, fmt.Errorf("%s: %s is not an object, refusing to rewrite it", path, s.pointer)
+		}
 
-	block, isObject := raw.(map[string]any)
-	if found && !isObject {
-		return fmt.Errorf("%s: %s is not an object, refusing to rewrite it", path, s.pointer)
-	}
+		ops := s.codec.ops(s.pointer, block, desired)
+		if len(ops) == 0 {
+			return nil, false, nil
+		}
 
-	ops := s.codec.ops(s.pointer, block, desired)
-	if len(ops) == 0 {
-		return nil
-	}
+		if !found {
+			ops = append([]patchOp{addOp(s.pointer, map[string]any{})}, ops...)
+		}
 
-	if !found {
-		ops = append([]patchOp{addOp(s.pointer, map[string]any{})}, ops...)
-	}
+		out, err := applyPatch(data, ops)
+		if err != nil {
+			return nil, false, fmt.Errorf("patch %s: %w", path, err)
+		}
 
-	out, err := applyPatch(data, ops)
-	if err != nil {
-		return fmt.Errorf("patch %s: %w", path, err)
-	}
-
-	return writeFile(path, out, 0o600)
+		return out, true, nil
+	})
 }
 
 func (s *permSurface) Project(key string, value []byte) (string, []byte, bool) {
