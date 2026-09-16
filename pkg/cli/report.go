@@ -46,6 +46,8 @@ func pluginLines(results []engine.PluginResult, farm []engine.FarmResult) []stri
 		switch result.Action {
 		case engine.PluginCreated, engine.PluginRepointed:
 			lines = append(lines, fmt.Sprintf("  → %s %s %s", result.Key, result.Version, result.Action))
+		case engine.PluginQuarantined:
+			lines = append(lines, fmt.Sprintf("  ✗ %s %s quarantined: %s", result.Key, result.Version, result.Note))
 		case engine.PluginSkipped:
 			lines = append(lines, fmt.Sprintf("  ! %s skipped: %s", result.Key, result.Note))
 		case engine.PluginNoop:
@@ -56,6 +58,8 @@ func pluginLines(results []engine.PluginResult, farm []engine.FarmResult) []stri
 		switch result.Action {
 		case engine.FarmLinked:
 			lines = append(lines, fmt.Sprintf("  ⇢ %-13s %s: linked %d", result.Agent, result.Plugin, result.Count))
+		case engine.FarmStubbed:
+			lines = append(lines, fmt.Sprintf("  ⚑ %-13s %s: stubbed %d", result.Agent, result.Plugin, result.Count))
 		case engine.FarmPruned:
 			lines = append(lines, fmt.Sprintf("  ⇠ %-13s %s: pruned %d", result.Agent, result.Plugin, result.Count))
 		case engine.FarmSkipped:

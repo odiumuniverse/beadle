@@ -73,11 +73,15 @@ func (s *skillsSurface) skillRoot(entry fs.DirEntry) (string, string, bool) {
 	path := filepath.Join(s.dir, entry.Name())
 
 	if entry.Type()&fs.ModeSymlink == 0 {
-		return path, "", entry.IsDir()
+		if !entry.IsDir() || isStubDir(path) {
+			return "", "", false
+		}
+
+		return path, "", true
 	}
 
 	target, err := filepath.EvalSymlinks(path)
-	if err != nil || s.ignored(target) {
+	if err != nil || s.ignored(target) || isStubDir(target) {
 		return "", "", false
 	}
 
@@ -120,7 +124,8 @@ func (s *skillsSurface) Write(ctx context.Context, desired kind.Items) error {
 	}
 
 	for _, name := range slices.Sorted(maps.Keys(want)) {
-		if current.ReadOnly[name] != "" || isSymlink(filepath.Join(s.dir, name)) {
+		path := filepath.Join(s.dir, name)
+		if current.ReadOnly[name] != "" || isSymlink(path) || isStubDir(path) {
 			continue
 		}
 
@@ -140,6 +145,12 @@ func isSymlink(path string) bool {
 	info, err := os.Lstat(path)
 
 	return err == nil && info.Mode()&fs.ModeSymlink != 0
+}
+
+func isStubDir(path string) bool {
+	_, stub := skill.IsStubDir(path)
+
+	return stub
 }
 
 func equalBytes(a, b []byte) bool {

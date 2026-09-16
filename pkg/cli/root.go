@@ -61,6 +61,7 @@ func newRootCmd(opts Options) *cobra.Command {
 		a.newDoctorCmd(),
 		a.newHistoryCmd(),
 		a.newRestoreCmd(),
+		a.newHealCmd(),
 		a.newAgentsCmd(),
 		a.newKindsCmd(),
 		a.newWatchCmd(),

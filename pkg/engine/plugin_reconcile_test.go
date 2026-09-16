@@ -28,8 +28,15 @@ const (
 )
 
 type ledgerTestRecord struct {
-	Version string `json:"version"`
-	Target  string `json:"target"`
+	Version       string    `json:"version"`
+	Target        string    `json:"target"`
+	Servers       []string  `json:"servers,omitempty"`
+	QuarantinedAt time.Time `json:"quarantined_at"`
+	RetiredAt     time.Time `json:"retired_at"`
+}
+
+func quarantineDir(f *fixture, marketplace, name string) string {
+	return filepath.Join(f.vault.PluginsDir(), "quarantine", marketplace, name)
 }
 
 func claudePluginsDir(home string) string {
@@ -398,6 +405,147 @@ func TestPluginReconcileDryRunMakesNoChanges(t *testing.T) {
 	require.DirExists(t, f.vault.PluginsDir())
 	require.NoFileExists(t, f.vault.PluginsLedgerPath())
 	require.NoDirExists(t, filepath.Join(f.vault.PluginsDir(), "acme"))
+}
+
+func TestPluginReconcileQuarantinesMissingTarget(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	f := newFixture(t)
+	target := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+
+	f.sync(t)
+	require.NoError(t, os.RemoveAll(target))
+
+	report := f.sync(t)
+	result := pluginResult(t, report, "acme/tool")
+	require.Equal(t, engine.PluginQuarantined, result.Action)
+	require.Equal(t, "1.0.0", result.Version)
+
+	pivot := filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current")
+	require.NoFileExists(t, pivot)
+
+	link, err := os.Readlink(filepath.Join(quarantineDir(f, "acme", "tool"), "current"))
+	require.NoError(t, err)
+	require.Equal(t, target, link)
+
+	rec := ledgerRecord(t, f, "acme/tool")
+	require.False(t, rec.QuarantinedAt.IsZero())
+	require.Equal(t, "1.0.0", rec.Version)
+	require.Equal(t, target, rec.Target)
+
+	before := read(t, f.vault.PluginsLedgerPath())
+
+	report = f.sync(t)
+	result = pluginResult(t, report, "acme/tool")
+	require.Equal(t, engine.PluginSkipped, result.Action)
+	require.Equal(t, "quarantined already", result.Note)
+	require.Equal(t, before, read(t, f.vault.PluginsLedgerPath()), "a repeated sync must not touch the ledger")
+}
+
+func TestPluginReconcileQuarantinesRemovedRegistry(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	f := newFixture(t)
+	target := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+
+	f.sync(t)
+
+	removeFromRegistry(t, f.home, "acme", "tool")
+	require.NoError(t, os.RemoveAll(target))
+
+	report := f.sync(t)
+	result := pluginResult(t, report, "acme/tool")
+	require.Equal(t, engine.PluginQuarantined, result.Action)
+	require.NotEqual(t, "plugin is no longer installed", result.Note)
+	require.False(t, ledgerRecord(t, f, "acme/tool").QuarantinedAt.IsZero())
+
+	link, err := os.Readlink(filepath.Join(quarantineDir(f, "acme", "tool"), "current"))
+	require.NoError(t, err)
+	require.Equal(t, target, link)
+}
+
+func TestPluginReconcileKeepsLivePivot(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	f := newFixture(t)
+	v1 := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+
+	f.sync(t)
+
+	missing := filepath.Join(claudePluginsDir(f.home), "cache", "acme", "tool", "2.0.0")
+
+	writeRegistry(t, f.home, map[string][]map[string]any{"tool@acme": {{
+		"scope": "user", "installPath": missing, "version": "2.0.0",
+	}}})
+
+	report := f.sync(t)
+	result := pluginResult(t, report, "acme/tool")
+	require.Equal(t, engine.PluginSkipped, result.Action)
+	require.Equal(t, "install path is missing", result.Note)
+	require.Equal(t, v1, pivotLink(t, f, "acme", "tool"))
+	require.NoDirExists(t, quarantineDir(f, "acme", "tool"))
+	require.True(t, ledgerRecord(t, f, "acme/tool").QuarantinedAt.IsZero())
+
+	issues, err := f.engine.Doctor(t.Context())
+	require.NoError(t, err)
+	require.True(t, hasIssue(issues, engine.SeverityError, "plugin acme/tool install path is missing"), "issues: %v", issues)
+	require.False(t, hasIssue(issues, engine.SeverityError, "pivot target is missing"), "the last good pivot is alive: %v", issues)
+}
+
+func TestPluginReconcileNoQuarantineWithoutRecord(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	f := newFixture(t)
+
+	missing := filepath.Join(claudePluginsDir(f.home), "cache", "acme", "tool", "1.0.0")
+	pivot := filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current")
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(pivot), 0o700))
+	require.NoError(t, os.Symlink(missing, pivot))
+
+	writeRegistry(t, f.home, map[string][]map[string]any{"tool@acme": {{
+		"scope": "user", "installPath": missing, "version": "1.0.0",
+	}}})
+
+	report := f.sync(t)
+	result := pluginResult(t, report, "acme/tool")
+	require.Equal(t, engine.PluginSkipped, result.Action)
+	require.Equal(t, "install path is missing", result.Note)
+	require.Equal(t, missing, pivotLink(t, f, "acme", "tool"))
+	require.NoDirExists(t, quarantineDir(f, "acme", "tool"))
+	require.NoFileExists(t, f.vault.PluginsLedgerPath())
+}
+
+func TestPluginReconcileReinstallClearsQuarantine(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	f := newFixture(t)
+	target := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+
+	f.sync(t)
+	require.NoError(t, os.RemoveAll(target))
+
+	report := f.sync(t)
+	require.Equal(t, engine.PluginQuarantined, pluginResult(t, report, "acme/tool").Action)
+
+	write(t, filepath.Join(target, ".claude-plugin", "plugin.json"), `{"name": "tool", "version": "1.0.0"}`)
+
+	pivot := filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current")
+	require.NoError(t, fsutil.ReplaceSymlink(pivot, target))
+
+	report = f.sync(t)
+
+	result := pluginResult(t, report, "acme/tool")
+	require.Equal(t, engine.PluginRepointed, result.Action)
+	require.Equal(t, target, pivotLink(t, f, "acme", "tool"))
+	require.True(t, ledgerRecord(t, f, "acme/tool").QuarantinedAt.IsZero(), "a restored pivot clears the flag")
+
+	issues, err := f.engine.Doctor(t.Context())
+	require.NoError(t, err)
+
+	for _, issue := range issues {
+		require.NotContains(t, issue.Message, "acme/tool")
+	}
 }
 
 func TestDoctorPluginPivotIssues(t *testing.T) {

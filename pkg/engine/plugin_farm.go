@@ -18,6 +18,7 @@ import (
 	"github.com/odiumuniverse/agents-sync/pkg/config"
 	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
 	"github.com/odiumuniverse/agents-sync/pkg/kind"
+	"github.com/odiumuniverse/agents-sync/pkg/skill"
 )
 
 const (
@@ -32,6 +33,7 @@ type FarmAction string
 const (
 	FarmLinked  FarmAction = "linked"
 	FarmPruned  FarmAction = "pruned"
+	FarmStubbed FarmAction = "stubbed"
 	FarmNoop    FarmAction = "noop"
 	FarmSkipped FarmAction = "skipped"
 )
@@ -45,10 +47,11 @@ type FarmResult struct {
 }
 
 type farmPlan struct {
-	Parked  map[string][]string
-	Owner   map[string]string
-	Desired map[string]string
-	Canon   map[string]struct{}
+	Parked      map[string][]string
+	Quarantined map[string]pluginLedgerRec
+	Owner       map[string]string
+	Desired     map[string]string
+	Canon       map[string]struct{}
 }
 
 func (e *Engine) syncPluginSurfaces(ctx context.Context, report *Report, active []*agent.Agent, opts SyncOptions) {
@@ -117,27 +120,14 @@ func (e *Engine) farmPluginSkills(active []*agent.Agent) ([]FarmResult, []string
 
 func (e *Engine) buildFarmPlan(ledger pluginLedger) (farmPlan, []string) {
 	plan := farmPlan{
-		Parked:  map[string][]string{},
-		Owner:   map[string]string{},
-		Desired: map[string]string{},
-		Canon:   map[string]struct{}{},
+		Parked:      map[string][]string{},
+		Quarantined: map[string]pluginLedgerRec{},
+		Owner:       map[string]string{},
+		Desired:     map[string]string{},
+		Canon:       map[string]struct{}{},
 	}
 
-	var warns []string
-
-	for _, key := range slices.Sorted(maps.Keys(ledger.Plugins)) {
-		names, ok, pluginWarns := e.parkedPluginSkills(key, ledger.Plugins[key])
-
-		for _, warn := range pluginWarns {
-			warns = append(warns, "plugin farm: "+warn)
-		}
-
-		if !ok {
-			continue
-		}
-
-		plan.Parked[key] = names
-	}
+	warns := e.scanLedgerPlan(plan, ledger)
 
 	for _, key := range slices.Sorted(maps.Keys(plan.Parked)) {
 		marketplace, name, ok := strings.Cut(key, "/")
@@ -174,6 +164,41 @@ func (e *Engine) buildFarmPlan(ledger pluginLedger) (farmPlan, []string) {
 	}
 
 	return plan, warns
+}
+
+func (e *Engine) scanLedgerPlan(plan farmPlan, ledger pluginLedger) []string {
+	var warns []string
+
+	for _, key := range slices.Sorted(maps.Keys(ledger.Plugins)) {
+		rec := ledger.Plugins[key]
+
+		if !rec.QuarantinedAt.IsZero() {
+			marketplace, name, ok := strings.Cut(key, "/")
+			if ok && validPluginKey(marketplace, name) {
+				plan.Quarantined[key] = rec
+			}
+
+			continue
+		}
+
+		if !rec.RetiredAt.IsZero() {
+			continue
+		}
+
+		names, ok, pluginWarns := e.parkedPluginSkills(key, rec)
+
+		for _, warn := range pluginWarns {
+			warns = append(warns, "plugin farm: "+warn)
+		}
+
+		if !ok {
+			continue
+		}
+
+		plan.Parked[key] = names
+	}
+
+	return warns
 }
 
 func (e *Engine) parkedPluginSkills(key string, rec pluginLedgerRec) ([]string, bool, []string) {
@@ -288,6 +313,10 @@ func (e *Engine) farmAgentSkills(agentID, dir string, plan farmPlan) ([]FarmResu
 		}
 	}
 
+	stubbed, stubPruned, stubWarns := e.farmStubs(dir, plan)
+
+	warns = append(warns, stubWarns...)
+
 	linked := map[string]int{}
 	skips := map[string][]string{}
 
@@ -309,21 +338,139 @@ func (e *Engine) farmAgentSkills(agentID, dir string, plan farmPlan) ([]FarmResu
 
 	warns = append(warns, pruneWarns...)
 
+	if len(stubPruned) > 0 && pruned == nil {
+		pruned = map[string]int{}
+	}
+
+	for key, count := range stubPruned {
+		pruned[key] += count
+	}
+
 	var results []FarmResult
 
-	for _, plugin := range slices.Sorted(maps.Keys(linked)) {
-		results = append(results, FarmResult{Agent: agentID, Plugin: plugin, Action: FarmLinked, Count: linked[plugin]})
-	}
-
-	for _, plugin := range slices.Sorted(maps.Keys(pruned)) {
-		results = append(results, FarmResult{Agent: agentID, Plugin: plugin, Action: FarmPruned, Count: pruned[plugin]})
-	}
+	results = append(results, farmResults(agentID, FarmStubbed, stubbed)...)
+	results = append(results, farmResults(agentID, FarmLinked, linked)...)
+	results = append(results, farmResults(agentID, FarmPruned, pruned)...)
 
 	for _, plugin := range slices.Sorted(maps.Keys(skips)) {
 		results = append(results, FarmResult{Agent: agentID, Plugin: plugin, Action: FarmSkipped, Note: summarizeFarmNames(skips[plugin])})
 	}
 
 	return results, warns
+}
+
+func farmResults(agentID string, action FarmAction, counts map[string]int) []FarmResult {
+	results := make([]FarmResult, 0, len(counts))
+
+	for _, plugin := range slices.Sorted(maps.Keys(counts)) {
+		results = append(results, FarmResult{Agent: agentID, Plugin: plugin, Action: action, Count: counts[plugin]})
+	}
+
+	return results
+}
+
+func (e *Engine) farmStubs(dir string, plan farmPlan) (map[string]int, map[string]int, []string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil, nil
+		}
+
+		return nil, nil, []string{"plugin farm: " + err.Error()}
+	}
+
+	stubbed := map[string]int{}
+	pruned := map[string]int{}
+
+	var warns []string
+
+	for _, entry := range entries {
+		name := entry.Name()
+		path := filepath.Join(dir, name)
+
+		switch {
+		case entry.Type()&fs.ModeSymlink != 0:
+			key, stubWarns := e.stubQuarantinedLink(path, name, plan)
+
+			warns = append(warns, stubWarns...)
+
+			if key != "" {
+				stubbed[key]++
+			}
+		case entry.IsDir():
+			key, ok := skill.IsStubDir(path)
+			if !ok || stubStillNeeded(plan, key, name) {
+				continue
+			}
+
+			if err := os.RemoveAll(path); err != nil {
+				warns = append(warns, fmt.Sprintf("plugin farm: remove %s: %v", path, err))
+
+				continue
+			}
+
+			pruned[key]++
+		}
+	}
+
+	return stubbed, pruned, warns
+}
+
+func (e *Engine) stubQuarantinedLink(path, name string, plan farmPlan) (string, []string) {
+	link, err := os.Readlink(path)
+	if err != nil || fsutil.Exists(link) {
+		return "", nil
+	}
+
+	key, skillName, ok := e.farmLinkOwner(link)
+	if !ok || skillName != name {
+		return "", nil
+	}
+
+	rec, ok := plan.Quarantined[key]
+	if !ok {
+		return "", nil
+	}
+
+	if owner, provided := plan.Owner[name]; provided && owner != key {
+		return "", nil
+	}
+
+	if _, canon := plan.Canon[normSkillName(name)]; canon {
+		return "", nil
+	}
+
+	if !stubInputsSafe(name, key, rec.Version) {
+		return "", []string{fmt.Sprintf("plugin farm: cannot stub skill %s of %s: unsafe plugin metadata", name, key)}
+	}
+
+	if err := os.Remove(path); err != nil {
+		return "", []string{fmt.Sprintf("plugin farm: remove %s: %v", path, err)}
+	}
+
+	if _, err := writePluginStub(path, name, key, rec.Version, rec.QuarantinedAt); err != nil {
+		return "", []string{fmt.Sprintf("plugin farm: stub %s: %v", path, err)}
+	}
+
+	return key, nil
+}
+
+func stubStillNeeded(plan farmPlan, key, name string) bool {
+	if _, parked := plan.Parked[key]; parked {
+		return false
+	}
+
+	if _, canon := plan.Canon[normSkillName(name)]; canon {
+		return false
+	}
+
+	if owner, provided := plan.Owner[name]; provided && owner != key {
+		return false
+	}
+
+	_, quarantined := plan.Quarantined[key]
+
+	return quarantined
 }
 
 func (e *Engine) farmLinkSkill(dir, skillName, target string) (FarmAction, error) {

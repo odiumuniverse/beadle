@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
@@ -24,10 +25,13 @@ const (
 	scopeUser            = "user"
 	pluginRegistryPath   = ".claude/plugins/installed_plugins.json"
 	pluginMarketplaceDir = ".claude/plugins/marketplaces"
+	quarantineDirName    = "quarantine"
 
-	noteInvalidPluginKey = "invalid plugin key"
-	noteMissingInstall   = "install path is missing"
-	noteNotInstalled     = "plugin is no longer installed"
+	noteInvalidPluginKey   = "invalid plugin key"
+	noteMissingInstall     = "install path is missing"
+	noteNotInstalled       = "plugin is no longer installed"
+	noteQuarantined        = "install path is missing; pivot quarantined; run agent-sync heal"
+	noteQuarantinedAlready = "quarantined already"
 
 	noteUnstableRegistry = "the plugin registry kept changing while being read; using the last consistent view"
 )
@@ -35,10 +39,11 @@ const (
 type PluginAction string
 
 const (
-	PluginNoop      PluginAction = "noop"
-	PluginCreated   PluginAction = "created"
-	PluginRepointed PluginAction = "repointed"
-	PluginSkipped   PluginAction = "skipped"
+	PluginNoop        PluginAction = "noop"
+	PluginCreated     PluginAction = "created"
+	PluginRepointed   PluginAction = "repointed"
+	PluginSkipped     PluginAction = "skipped"
+	PluginQuarantined PluginAction = "quarantined"
 )
 
 type PluginResult struct {
@@ -55,11 +60,13 @@ type pluginLedger struct {
 }
 
 type pluginLedgerRec struct {
-	Version   string    `json:"version"`
-	Sha       string    `json:"sha,omitempty"`
-	Target    string    `json:"target"`
-	Servers   []string  `json:"servers,omitempty"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Version       string    `json:"version"`
+	Sha           string    `json:"sha,omitempty"`
+	Target        string    `json:"target"`
+	Servers       []string  `json:"servers,omitempty"`
+	QuarantinedAt time.Time `json:"quarantined_at,omitzero"`
+	RetiredAt     time.Time `json:"retired_at,omitzero"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 type pluginGroup struct {
@@ -119,18 +126,11 @@ func (e *Engine) reconcilePlugins(_ context.Context) ([]PluginResult, []string, 
 		results = append(results, result)
 	}
 
-	for _, key := range slices.Sorted(maps.Keys(ledger.Plugins)) {
-		if _, ok := installed[key]; ok {
-			continue
-		}
+	removed, removedDirty := e.quarantineRemoved(installed, &ledger)
 
-		results = append(results, PluginResult{
-			Key:     key,
-			Version: ledger.Plugins[key].Version,
-			Action:  PluginSkipped,
-			Note:    noteNotInstalled,
-		})
-	}
+	results = append(results, removed...)
+
+	dirty = dirty || removedDirty
 
 	if dirty {
 		if err := ledger.save(e.vault.PluginsLedgerPath()); err != nil {
@@ -143,22 +143,55 @@ func (e *Engine) reconcilePlugins(_ context.Context) ([]PluginResult, []string, 
 	return results, warns, nil
 }
 
+func (e *Engine) quarantineRemoved(installed map[string]struct{}, ledger *pluginLedger) ([]PluginResult, bool) {
+	var (
+		results []PluginResult
+		dirty   bool
+	)
+
+	for _, key := range slices.Sorted(maps.Keys(ledger.Plugins)) {
+		if _, ok := installed[key]; ok {
+			continue
+		}
+
+		prev := ledger.Plugins[key]
+		if !prev.RetiredAt.IsZero() {
+			continue
+		}
+
+		result, rec, wrote := e.quarantinePlugin(key, prev, PluginResult{
+			Key:     key,
+			Version: prev.Version,
+			Action:  PluginSkipped,
+			Note:    noteNotInstalled,
+		})
+		if wrote {
+			ledger.Plugins[key] = rec
+			dirty = true
+		}
+
+		results = append(results, result)
+	}
+
+	return results, dirty
+}
+
 func (e *Engine) pivotPlugin(key string, group pluginGroup, prev pluginLedgerRec) (PluginResult, pluginLedgerRec, bool) {
 	record := chooseRecord(group.Plugins)
 	target := record.InstallPath
 	result := PluginResult{Key: key, Version: record.Version, Target: target}
 
 	if target == "" || !isDir(target) {
-		result.Action = PluginSkipped
 		result.Note = noteMissingInstall
 
-		return result, prev, false
+		return e.quarantinePlugin(key, prev, result)
 	}
 
-	pivot := filepath.Join(e.vault.PluginsDir(), group.Marketplace, group.Name, "current")
+	pivot := filepath.Join(e.vault.PluginsDir(), group.Marketplace, group.Name, farmPivotName)
 
 	link, linkErr := os.Readlink(pivot)
-	if link == target && prev.Version == record.Version && prev.Sha == record.GitCommitSha && prev.Target == target {
+	if link == target && prev.Version == record.Version && prev.Sha == record.GitCommitSha && prev.Target == target &&
+		prev.QuarantinedAt.IsZero() && prev.RetiredAt.IsZero() {
 		result.Action = PluginNoop
 
 		return result, prev, false
@@ -192,6 +225,76 @@ func (e *Engine) pivotPlugin(key string, group pluginGroup, prev pluginLedgerRec
 	}
 
 	return result, rec, true
+}
+
+func (e *Engine) quarantinePlugin(key string, prev pluginLedgerRec, result PluginResult) (PluginResult, pluginLedgerRec, bool) {
+	result.Action = PluginSkipped
+
+	marketplace, name, ok := strings.Cut(key, "/")
+	if !ok || !validPluginKey(marketplace, name) || prev.Target == "" || !prev.RetiredAt.IsZero() {
+		return result, prev, false
+	}
+
+	if !prev.QuarantinedAt.IsZero() {
+		result.Note = noteQuarantinedAlready
+
+		return result, prev, false
+	}
+
+	pivot := filepath.Join(e.vault.PluginsDir(), marketplace, name, farmPivotName)
+
+	info, err := os.Lstat(pivot)
+	if err != nil || info.Mode()&fs.ModeSymlink == 0 {
+		return result, prev, false
+	}
+
+	link, err := os.Readlink(pivot)
+	if err != nil || fsutil.Exists(link) {
+		return result, prev, false
+	}
+
+	dst := filepath.Join(e.vault.PluginsDir(), quarantineDirName, marketplace, name, farmPivotName)
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		result.Note = err.Error()
+
+		return result, prev, false
+	}
+
+	if err := removeStaleQuarantine(dst); err != nil {
+		result.Note = err.Error()
+
+		return result, prev, false
+	}
+
+	if err := os.Rename(pivot, dst); err != nil {
+		result.Note = err.Error()
+
+		return result, prev, false
+	}
+
+	rec := prev
+	rec.QuarantinedAt = e.now()
+
+	result.Version = prev.Version
+	result.Action = PluginQuarantined
+	result.Note = noteQuarantined
+
+	return result, rec, true
+}
+
+func removeStaleQuarantine(dst string) error {
+	info, err := os.Lstat(dst)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	case err != nil:
+		return err
+	case info.Mode()&fs.ModeSymlink == 0:
+		return fmt.Errorf("quarantine path %s exists and is not a symlink", dst)
+	default:
+		return os.Remove(dst)
+	}
 }
 
 func stableManifest(home string) (plugin.Manifest, []string, error) {

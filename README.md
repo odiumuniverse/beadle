@@ -89,6 +89,7 @@ Or let each agent trigger it — the watcher watches agent files too, not just t
 | `conflicts [id]` | open conflicts; with an id, the variants |
 | `resolve [id…] --take vault\|agent\|file` | settle conflicts and push the decision |
 | `history <kind>` / `restore <kind> --to N` | snapshots and rollbacks |
+| `heal [--dry-run]` | clear quarantined plugins: stubs, artifacts, ledger tombstones |
 | `agents` (`enable`/`disable`/`mode`) | agents and their per-kind modes |
 | `kinds` | switch kinds on or off for every agent |
 | `doctor` | diagnostics; non-zero exit on errors |

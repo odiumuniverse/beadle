@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"golang.org/x/text/unicode/norm"
 
@@ -484,22 +485,20 @@ func (e *Engine) pluginPivotIssues(_ context.Context) []Issue {
 }
 
 func (e *Engine) pivotDriftIssues(key string, record plugin.Plugin, installed bool, rec pluginLedgerRec, parked bool) []Issue {
+	if issues, final := pivotLifecycleIssues(key, rec); final {
+		return issues
+	}
+
 	switch {
 	case parked && !installed:
-		return []Issue{pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s is no longer installed (pivot left in place; R-2 quarantines)", key))}
+		return []Issue{pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s is no longer installed (pivot left in place)", key))}
 	case installed && !parked:
 		return []Issue{pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s is not parked yet; run agent-sync sync", key))}
 	}
 
 	var issues []Issue
 
-	if !fsutil.Exists(rec.Target) {
-		issues = append(issues, pivotIssue(SeverityError, fmt.Sprintf("plugin %s pivot target is missing: %s", key, rec.Target)))
-	}
-
-	if rec.Version != record.Version || rec.Sha != record.GitCommitSha || rec.Target != record.InstallPath {
-		issues = append(issues, pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s changed %s → %s; run agent-sync sync", key, rec.Version, record.Version)))
-	}
+	issues = append(issues, pivotTargetIssues(key, record, rec)...)
 
 	pivot := filepath.Join(e.vault.PluginsDir(), record.Marketplace, record.Name, "current")
 
@@ -514,6 +513,36 @@ func (e *Engine) pivotDriftIssues(key string, record plugin.Plugin, installed bo
 	}
 
 	return issues
+}
+
+func pivotTargetIssues(key string, record plugin.Plugin, rec pluginLedgerRec) []Issue {
+	var issues []Issue
+
+	if !fsutil.Exists(rec.Target) {
+		issues = append(issues, pivotIssue(SeverityError, fmt.Sprintf("plugin %s pivot target is missing: %s", key, rec.Target)))
+	}
+
+	if record.InstallPath != rec.Target && !fsutil.Exists(record.InstallPath) {
+		issues = append(issues, pivotIssue(SeverityError, fmt.Sprintf("plugin %s install path is missing: %s", key, record.InstallPath)))
+	}
+
+	if rec.Version != record.Version || rec.Sha != record.GitCommitSha || rec.Target != record.InstallPath {
+		issues = append(issues, pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s changed %s → %s; run agent-sync sync", key, rec.Version, record.Version)))
+	}
+
+	return issues
+}
+
+func pivotLifecycleIssues(key string, rec pluginLedgerRec) ([]Issue, bool) {
+	switch {
+	case !rec.QuarantinedAt.IsZero():
+		return []Issue{pivotIssue(SeverityError, fmt.Sprintf("plugin %s@%s is quarantined since %s; run agent-sync heal",
+			key, rec.Version, rec.QuarantinedAt.Format(time.RFC3339)))}, true
+	case !rec.RetiredAt.IsZero():
+		return nil, true
+	default:
+		return nil, false
+	}
 }
 
 func pivotIssue(severity, message string) Issue {
