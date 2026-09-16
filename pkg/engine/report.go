@@ -71,6 +71,7 @@ type Report struct {
 	DryRun    bool             `json:"dry_run"`
 	Kinds     []KindReport     `json:"kinds"`
 	Conflicts []state.Conflict `json:"conflicts,omitempty"`
+	Plugins   []PluginResult   `json:"plugins,omitempty"`
 	Warnings  []string         `json:"warnings,omitempty"`
 }
 

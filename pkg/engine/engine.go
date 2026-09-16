@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"time"
 
@@ -109,6 +110,18 @@ func (e *Engine) sync(ctx context.Context, opts SyncOptions) (*Report, error) {
 	}
 
 	report := &Report{DryRun: opts.DryRun}
+
+	if !opts.DryRun {
+		results, warnings, err := e.reconcilePlugins(ctx)
+
+		report.Warnings = append(report.Warnings, warnings...)
+
+		if err != nil {
+			report.Warnings = append(report.Warnings, "plugins: "+err.Error())
+		}
+
+		report.Plugins = results
+	}
 
 	for _, spec := range kind.All() {
 		if !e.config.KindEnabled(spec.ID) || !selected(opts.Kinds, spec.ID) {
@@ -227,7 +240,28 @@ func (e *Engine) WatchPaths(ctx context.Context) ([]string, error) {
 		}
 	}
 
+	if e.home != "" {
+		paths = appendUnique(paths, filepath.Join(e.home, pluginRegistryPath))
+
+		marketplaces, err := filepath.Glob(filepath.Join(e.home, pluginMarketplaceDir, "*"))
+		if err != nil {
+			return nil, fmt.Errorf("glob plugin marketplaces: %w", err)
+		}
+
+		for _, marketplace := range marketplaces {
+			paths = appendUnique(paths, filepath.Join(marketplace, ".git", "HEAD"))
+		}
+	}
+
 	return paths, nil
+}
+
+func appendUnique(paths []string, path string) []string {
+	if slices.Contains(paths, path) {
+		return paths
+	}
+
+	return append(paths, path)
 }
 
 func selected(kinds []kind.ID, k kind.ID) bool {

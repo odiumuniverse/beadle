@@ -114,3 +114,52 @@ func TestWriteFileAtomicChecked(t *testing.T) {
 		require.Empty(t, entries, "no temp files must remain")
 	})
 }
+
+func TestReplaceSymlink(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "current")
+
+	require.NoError(t, fsutil.ReplaceSymlink(path, "/targets/v1"))
+
+	link, err := os.Readlink(path)
+	require.NoError(t, err)
+	require.Equal(t, "/targets/v1", link)
+
+	require.NoError(t, fsutil.ReplaceSymlink(path, "/targets/v2"))
+
+	link, err = os.Readlink(path)
+	require.NoError(t, err)
+	require.Equal(t, "/targets/v2", link)
+
+	require.NoError(t, fsutil.ReplaceSymlink(path, "/targets/v2"))
+
+	link, err = os.Readlink(path)
+	require.NoError(t, err)
+	require.Equal(t, "/targets/v2", link)
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "no temp files must remain")
+	require.Equal(t, "current", entries[0].Name())
+}
+
+func TestReplaceSymlinkReplacesFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "current")
+
+	require.NoError(t, os.WriteFile(path, []byte("plain file"), 0o600))
+
+	require.NoError(t, fsutil.ReplaceSymlink(path, "/targets/v1"))
+
+	link, err := os.Readlink(path)
+	require.NoError(t, err)
+	require.Equal(t, "/targets/v1", link)
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1, "no temp files must remain")
+}

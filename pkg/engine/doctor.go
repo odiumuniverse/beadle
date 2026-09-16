@@ -66,6 +66,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.secretIssues()...)
 	issues = append(issues, e.projectScopeIssues(ctx, active)...)
 	issues = append(issues, e.pluginRefIssues(active)...)
+	issues = append(issues, e.pluginPivotIssues(ctx)...)
 
 	return issues, nil
 }
@@ -433,6 +434,86 @@ func displayHomePath(path, home string) string {
 	}
 
 	return path
+}
+
+func (e *Engine) pluginPivotIssues(_ context.Context) []Issue {
+	if e.home == "" {
+		return nil
+	}
+
+	manifest, err := plugin.Read(e.home)
+	if err != nil {
+		return []Issue{{Severity: SeverityWarn, Message: "cannot read the plugin registry: " + err.Error()}}
+	}
+
+	ledger, _, err := loadPluginLedger(e.vault.PluginsLedgerPath())
+	if err != nil {
+		return []Issue{{Severity: SeverityWarn, Message: "cannot read the plugin ledger: " + err.Error()}}
+	}
+
+	installed := map[string]plugin.Plugin{}
+
+	for _, group := range groupPlugins(manifest.Plugins) {
+		installed[pluginKey(group.Marketplace, group.Name)] = chooseRecord(group.Plugins)
+	}
+
+	keys := make(map[string]struct{}, len(installed)+len(ledger.Plugins))
+
+	for key := range installed {
+		keys[key] = struct{}{}
+	}
+
+	for key := range ledger.Plugins {
+		keys[key] = struct{}{}
+	}
+
+	var issues []Issue
+
+	for _, key := range slices.Sorted(maps.Keys(keys)) {
+		record, isInstalled := installed[key]
+		rec, isParked := ledger.Plugins[key]
+
+		issues = append(issues, e.pivotDriftIssues(key, record, isInstalled, rec, isParked)...)
+	}
+
+	return issues
+}
+
+func (e *Engine) pivotDriftIssues(key string, record plugin.Plugin, installed bool, rec pluginLedgerRec, parked bool) []Issue {
+	switch {
+	case parked && !installed:
+		return []Issue{pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s is no longer installed (pivot left in place; R-2 quarantines)", key))}
+	case installed && !parked:
+		return []Issue{pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s is not parked yet; run agent-sync sync", key))}
+	}
+
+	var issues []Issue
+
+	if !fsutil.Exists(rec.Target) {
+		issues = append(issues, pivotIssue(SeverityError, fmt.Sprintf("plugin %s pivot target is missing: %s", key, rec.Target)))
+	}
+
+	if rec.Version != record.Version || rec.Sha != record.GitCommitSha || rec.Target != record.InstallPath {
+		issues = append(issues, pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s changed %s → %s; run agent-sync sync", key, rec.Version, record.Version)))
+	}
+
+	pivot := filepath.Join(e.vault.PluginsDir(), record.Marketplace, record.Name, "current")
+
+	link, err := os.Readlink(pivot)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		issues = append(issues, pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s pivot is missing; run agent-sync sync", key)))
+	case err != nil:
+		issues = append(issues, pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s pivot cannot be read: %v", key, err)))
+	case link != rec.Target:
+		issues = append(issues, pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s pivot is stale: %s", key, link)))
+	}
+
+	return issues
+}
+
+func pivotIssue(severity, message string) Issue {
+	return Issue{Severity: severity, Message: message}
 }
 
 func isDir(path string) bool {

@@ -1,6 +1,8 @@
 package fsutil
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"os"
@@ -72,6 +74,45 @@ func WriteFileAtomicChecked(path string, data []byte, perm fs.FileMode, check fu
 	}
 
 	return nil
+}
+
+func ReplaceSymlink(path, target string) error {
+	dir := filepath.Dir(path)
+
+	tmpName, err := symlinkTempName(dir, filepath.Base(path))
+	if err != nil {
+		return err
+	}
+
+	cleanup := func() {
+		_ = os.Remove(tmpName)
+	}
+
+	if err = os.Symlink(target, tmpName); err != nil {
+		return fmt.Errorf("create temp symlink: %w", err)
+	}
+
+	if err = os.Rename(tmpName, path); err != nil {
+		cleanup()
+
+		return fmt.Errorf("rename temp symlink: %w", err)
+	}
+
+	if err = syncDir(dir); err != nil {
+		return fmt.Errorf("sync directory: %w", err)
+	}
+
+	return nil
+}
+
+func symlinkTempName(dir, base string) (string, error) {
+	var suffix [4]byte
+
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", fmt.Errorf("generate temp name: %w", err)
+	}
+
+	return filepath.Join(dir, "."+base+".tmp-"+hex.EncodeToString(suffix[:])), nil
 }
 
 func syncDir(dir string) error {

@@ -1,9 +1,13 @@
 package vault
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"github.com/odiumuniverse/agents-sync/pkg/config"
 	"github.com/odiumuniverse/agents-sync/pkg/secret"
@@ -21,6 +25,7 @@ state/
 state.json
 objects/
 conflicts/
+plugins/
 `
 
 var dirs = []string{
@@ -28,6 +33,7 @@ var dirs = []string{
 	"mcp",
 	"objects",
 	"permissions",
+	"plugins",
 	"rules",
 	"skills",
 	"state",
@@ -102,6 +108,14 @@ func (v *Vault) PermissionsPath() string {
 	return filepath.Join(v.root, "permissions", "rules.json")
 }
 
+func (v *Vault) PluginsDir() string {
+	return filepath.Join(v.root, "plugins")
+}
+
+func (v *Vault) PluginsLedgerPath() string {
+	return filepath.Join(v.PluginsDir(), "ledger.json")
+}
+
 func (v *Vault) Initialized() bool {
 	_, err := os.Stat(v.ConfigPath())
 
@@ -119,7 +133,7 @@ func (v *Vault) Init() error {
 		return fmt.Errorf("restrict vault permissions: %w", err)
 	}
 
-	if err := v.ensureGitIgnore(); err != nil {
+	if err := v.EnsureGitIgnore(); err != nil {
 		return err
 	}
 
@@ -130,15 +144,63 @@ func (v *Vault) Init() error {
 	return config.Default().Save(v.ConfigPath())
 }
 
-func (v *Vault) ensureGitIgnore() error {
+func (v *Vault) EnsureGitIgnore() error {
 	path := filepath.Join(v.root, ".gitignore")
 
-	if _, err := os.Stat(path); err == nil {
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path is inside the vault root
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return writeGitIgnore(path, []byte(gitIgnore))
+	case err != nil:
+		return fmt.Errorf("read .gitignore: %w", err)
+	}
+
+	missing := missingGitIgnoreLines(data)
+	if len(missing) == 0 {
 		return nil
 	}
 
-	if err := os.WriteFile(path, []byte(gitIgnore), 0o600); err != nil {
+	updated := slices.Concat(data, newlineIfMissing(data), []byte(strings.Join(missing, "\n")+"\n"))
+
+	return writeGitIgnore(path, updated)
+}
+
+func writeGitIgnore(path string, data []byte) error {
+	if err := os.WriteFile(path, data, 0o600); err != nil { //nolint:gosec // G703: path is inside the vault root
 		return fmt.Errorf("write .gitignore: %w", err)
+	}
+
+	return nil
+}
+
+func missingGitIgnoreLines(data []byte) []string {
+	present := map[string]struct{}{}
+
+	for line := range strings.SplitSeq(string(data), "\n") {
+		present[strings.TrimSpace(line)] = struct{}{}
+	}
+
+	var missing []string
+
+	for line := range strings.SplitSeq(gitIgnore, "\n") {
+		entry := strings.TrimSpace(line)
+		if entry == "" || strings.HasPrefix(entry, "#") {
+			continue
+		}
+
+		if _, ok := present[entry]; ok {
+			continue
+		}
+
+		missing = append(missing, entry)
+	}
+
+	return missing
+}
+
+func newlineIfMissing(data []byte) []byte {
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		return []byte("\n")
 	}
 
 	return nil

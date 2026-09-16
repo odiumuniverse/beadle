@@ -22,6 +22,14 @@ func printReport(w io.Writer, report *engine.Report) {
 		printKind(w, kr, report.ConflictsOf(kr.Kind))
 	}
 
+	if lines := pluginLines(report.Plugins); len(lines) > 0 {
+		fmt.Fprintln(w, "\nplugins")
+
+		for _, line := range lines {
+			fmt.Fprintln(w, line)
+		}
+	}
+
 	if n := len(report.Conflicts); n > 0 {
 		fmt.Fprintf(w, "\n%d open conflict(s): review with `agent-sync conflicts`, settle with `agent-sync resolve <id> --take vault|agent`\n", n)
 	}
@@ -29,6 +37,22 @@ func printReport(w io.Writer, report *engine.Report) {
 	for _, warning := range report.Warnings {
 		fmt.Fprintf(w, "warning: %s\n", warning)
 	}
+}
+
+func pluginLines(results []engine.PluginResult) []string {
+	var lines []string
+
+	for _, result := range results {
+		switch result.Action {
+		case engine.PluginCreated, engine.PluginRepointed:
+			lines = append(lines, fmt.Sprintf("  → %s %s %s", result.Key, result.Version, result.Action))
+		case engine.PluginSkipped:
+			lines = append(lines, fmt.Sprintf("  ! %s skipped: %s", result.Key, result.Note))
+		case engine.PluginNoop:
+		}
+	}
+
+	return lines
 }
 
 func printKind(w io.Writer, kr engine.KindReport, conflicts []state.Conflict) {
