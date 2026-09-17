@@ -58,6 +58,27 @@ func TestLoadRejectsOtherVersions(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestLoadReinitializesNullMaps(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), state.FileName)
+	require.NoError(t, os.WriteFile(path, []byte(`{"version": 2, "bases": null, "snapshots": null, "renders": null, "drift": null}`), 0o600))
+
+	st, err := state.Load(path)
+	require.NoError(t, err)
+
+	st.Renders["/repo/AGENTS.md"] = state.Render{Notes: 1}
+	st.Drift["/repo/AGENTS.md"] = state.Drift{Count: 1}
+	st.SetBase(kind.Rules, "a", nil)
+
+	require.NoError(t, st.Save(path))
+
+	again, err := state.Load(path)
+	require.NoError(t, err)
+	require.Contains(t, again.Renders, "/repo/AGENTS.md")
+	require.Contains(t, again.Drift, "/repo/AGENTS.md")
+}
+
 func TestReplaceConflictsKeepsDetectionTime(t *testing.T) {
 	t.Parallel()
 

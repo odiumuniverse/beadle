@@ -30,6 +30,14 @@ func printReport(w io.Writer, report *engine.Report) {
 		}
 	}
 
+	if lines := digestLines(report.Digest); len(lines) > 0 {
+		fmt.Fprintln(w, "\ndigest")
+
+		for _, line := range lines {
+			fmt.Fprintln(w, line)
+		}
+	}
+
 	if n := len(report.Conflicts); n > 0 {
 		fmt.Fprintf(w, "\n%d open conflict(s): review with `agent-sync conflicts`, settle with `agent-sync resolve <id> --take vault|agent`\n", n)
 	}
@@ -37,6 +45,16 @@ func printReport(w io.Writer, report *engine.Report) {
 	for _, warning := range report.Warnings {
 		fmt.Fprintf(w, "warning: %s\n", warning)
 	}
+}
+
+func digestLines(results []engine.DigestResult) []string {
+	var lines []string
+
+	for _, result := range results {
+		lines = append(lines, fmt.Sprintf("  %-13s %s: %s", result.Agent, result.Path, result.Action))
+	}
+
+	return lines
 }
 
 func pluginLines(results []engine.PluginResult, farm []engine.FarmResult) []string {
@@ -128,7 +146,7 @@ func summarizeChanges(k kind.ID, changes []engine.ItemChange) string {
 	for _, change := range changes {
 		name := opSymbol(change.Op) + change.Key
 
-		if k == kind.Skills || k == kind.Memory {
+		if k == kind.Skills || k == kind.Memory || k == kind.Projects {
 			group, _, _ := strings.Cut(change.Key, "/")
 			name = "~" + group
 		}

@@ -54,11 +54,11 @@ type Projector interface {
 	Project(key string, value []byte) (pkey string, pvalue []byte, ok bool)
 }
 
-func All(home string) []*Agent {
+func All(home, cwd string) []*Agent {
 	return []*Agent{
 		ClaudeCode(home),
-		OpenCode(home),
-		GeminiCLI(home),
+		OpenCode(home, cwd),
+		GeminiCLI(home, cwd),
 		Cursor(home),
 		SharedSkills(home),
 	}

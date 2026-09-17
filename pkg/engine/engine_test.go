@@ -46,7 +46,7 @@ func newFixture(t *testing.T) *fixture {
 	cfg.Enable(agent.OpenCodeID)
 	require.NoError(t, cfg.Save(v.ConfigPath()))
 
-	e, err := engine.New(v, cfg, agent.All(home), engine.WithHome(home))
+	e, err := engine.New(v, cfg, agent.All(home, t.TempDir()), engine.WithHome(home))
 	require.NoError(t, err)
 
 	return &fixture{home: home, vault: v, config: cfg, engine: e}

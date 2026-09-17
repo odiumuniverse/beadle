@@ -18,6 +18,19 @@ func writeFile(t *testing.T, path, content string) {
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 }
 
+func TestSlug(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "-Users-x-my-proj", memory.Slug("/Users/x/my/proj"))
+	require.Equal(t, "-", memory.Slug("/"))
+	require.Equal(t, "-Users-x-my agents", memory.Slug("/Users/x/my agents"))
+	require.Equal(t, "-tmp-a_b-c.d+", memory.Slug("/tmp/a_b/c.d+"))
+
+	abs, err := filepath.Abs("rel/file")
+	require.NoError(t, err)
+	require.Equal(t, strings.ReplaceAll(abs, "/", "-"), memory.Slug("rel/file"))
+}
+
 func TestValidSlug(t *testing.T) {
 	t.Parallel()
 

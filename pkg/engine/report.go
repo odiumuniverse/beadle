@@ -74,6 +74,7 @@ type Report struct {
 	Conflicts []state.Conflict `json:"conflicts,omitempty"`
 	Plugins   []PluginResult   `json:"plugins,omitempty"`
 	Farm      []FarmResult     `json:"farm,omitempty"`
+	Digest    []DigestResult   `json:"digest,omitempty"`
 	Warnings  []string         `json:"warnings,omitempty"`
 }
 

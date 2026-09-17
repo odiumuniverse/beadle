@@ -791,7 +791,7 @@ func TestPluginReconcileEmptyHome(t *testing.T) {
 	f := newFixture(t)
 	pluginTree(t, f.home, "acme", "tool", "1.0.0")
 
-	e, err := engine.New(f.vault, f.config, agent.All(f.home))
+	e, err := engine.New(f.vault, f.config, agent.All(f.home, t.TempDir()))
 	require.NoError(t, err)
 
 	report, err := e.Sync(t.Context(), engine.SyncOptions{})

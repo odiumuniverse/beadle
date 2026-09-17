@@ -61,11 +61,29 @@ type Snapshot struct {
 	Manifest cas.Hash  `json:"manifest"`
 }
 
+// Render records the last digest block written into one project file.
+type Render struct {
+	BlockHash  cas.Hash  `json:"block_hash"`
+	InputsHash cas.Hash  `json:"inputs_hash,omitempty"`
+	Notes      int       `json:"notes"`
+	Omitted    int       `json:"omitted,omitempty"`
+	At         time.Time `json:"at"`
+}
+
+// Drift counts consecutive syncs that found manual edits inside a digest block.
+type Drift struct {
+	Count int       `json:"count"`
+	First time.Time `json:"first"`
+	Last  time.Time `json:"last"`
+}
+
 type State struct {
 	Version   int                         `json:"version"`
 	Bases     map[kind.ID]map[string]Base `json:"bases,omitempty"`
 	Conflicts []Conflict                  `json:"conflicts,omitempty"`
 	Snapshots map[kind.ID][]Snapshot      `json:"snapshots,omitempty"`
+	Renders   map[string]Render           `json:"renders,omitempty"`
+	Drift     map[string]Drift            `json:"drift,omitempty"`
 }
 
 func New() *State {
@@ -73,6 +91,8 @@ func New() *State {
 		Version:   CurrentVersion,
 		Bases:     map[kind.ID]map[string]Base{},
 		Snapshots: map[kind.ID][]Snapshot{},
+		Renders:   map[string]Render{},
+		Drift:     map[string]Drift{},
 	}
 }
 
@@ -101,6 +121,14 @@ func Load(path string) (*State, error) {
 
 	if st.Snapshots == nil {
 		st.Snapshots = map[kind.ID][]Snapshot{}
+	}
+
+	if st.Renders == nil {
+		st.Renders = map[string]Render{}
+	}
+
+	if st.Drift == nil {
+		st.Drift = map[string]Drift{}
 	}
 
 	return st, nil

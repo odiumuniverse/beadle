@@ -11,20 +11,22 @@ import (
 
 func (a *app) newSyncCmd() *cobra.Command {
 	var (
-		dryRun bool
-		kinds  []string
+		dryRun  bool
+		kinds   []string
+		refresh bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "sync",
 		Short: "Take agent changes into the vault and write the result into every agent",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return a.runSync(cmd, engine.SyncOptions{DryRun: dryRun}, kinds)
+			return a.runSync(cmd, engine.SyncOptions{DryRun: dryRun, Refresh: refresh}, kinds)
 		},
 	}
 
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would change without writing anything")
-	cmd.Flags().StringSliceVar(&kinds, "kind", nil, "only these kinds (rules, mcp, skills, permissions, memory)")
+	cmd.Flags().StringSliceVar(&kinds, "kind", nil, "only these kinds (rules, mcp, skills, permissions, memory, projects)")
+	cmd.Flags().BoolVar(&refresh, "refresh-digest", false, "overwrite the frozen memory digest block even if it was edited by hand")
 
 	return cmd
 }

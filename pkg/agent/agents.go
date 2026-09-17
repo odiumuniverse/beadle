@@ -6,6 +6,7 @@ import (
 
 	"github.com/odiumuniverse/agents-sync/pkg/config"
 	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
+	"github.com/odiumuniverse/agents-sync/pkg/memory"
 )
 
 const (
@@ -53,7 +54,7 @@ func ClaudeCode(home string) *Agent {
 	}
 }
 
-func OpenCode(home string) *Agent {
+func OpenCode(home, cwd string) *Agent {
 	dir := filepath.Join(home, ".config", "opencode")
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 		dir = filepath.Join(xdg, "opencode")
@@ -91,11 +92,12 @@ func OpenCode(home string) *Agent {
 				},
 			},
 			&permSurface{file: configFile, pointer: "/permission", codec: openCodeCodec{}, traits: Traits{DefaultMode: config.ModeSync}},
+			&projectRulesSurface{dir: cwd, file: "AGENTS.md", slug: memory.Slug(cwd)},
 		},
 	}
 }
 
-func GeminiCLI(home string) *Agent {
+func GeminiCLI(home, cwd string) *Agent {
 	dir := filepath.Join(home, ".gemini")
 	settings := filepath.Join(dir, "settings.json")
 
@@ -115,6 +117,7 @@ func GeminiCLI(home string) *Agent {
 				traits:      Traits{DefaultMode: config.ModeSync, Creatable: true},
 			},
 			&permSurface{file: fixedPath(settings), pointer: "/tools", codec: geminiPerms, traits: Traits{DefaultMode: config.ModeSync}},
+			&projectRulesSurface{dir: cwd, file: "GEMINI.md", slug: memory.Slug(cwd)},
 		},
 	}
 }

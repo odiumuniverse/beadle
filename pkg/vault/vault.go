@@ -28,6 +28,8 @@ conflicts/
 plugins/
 # memory notes stay out of git until the U-12 secret gate lands
 memory/
+# project rules stay out of git until the U-12 secret gate lands
+projects/
 `
 
 var dirs = []string{
@@ -37,6 +39,7 @@ var dirs = []string{
 	"objects",
 	"permissions",
 	"plugins",
+	"projects",
 	"rules",
 	"skills",
 	"state",
@@ -109,6 +112,11 @@ func (v *Vault) SkillsDir() string {
 
 func (v *Vault) MemoryDir() string {
 	return filepath.Join(v.root, "memory")
+}
+
+// ProjectsDir returns the vault directory holding the project rules canon.
+func (v *Vault) ProjectsDir() string {
+	return filepath.Join(v.root, "projects")
 }
 
 func (v *Vault) PermissionsPath() string {

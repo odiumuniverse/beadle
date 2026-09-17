@@ -15,7 +15,9 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/odiumuniverse/agents-sync/pkg/agent"
+	"github.com/odiumuniverse/agents-sync/pkg/cas"
 	"github.com/odiumuniverse/agents-sync/pkg/config"
+	"github.com/odiumuniverse/agents-sync/pkg/digest"
 	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
 	"github.com/odiumuniverse/agents-sync/pkg/kind"
 	"github.com/odiumuniverse/agents-sync/pkg/plugin"
@@ -75,8 +77,94 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.pluginRefIssues(active)...)
 	issues = append(issues, e.pluginPivotIssues(ctx)...)
 	issues = append(issues, e.pluginMigrationIssues(ctx, ledger)...)
+	issues = append(issues, e.digestIssues(active, st)...)
 
 	return issues, nil
+}
+
+func (e *Engine) digestIssues(active []*agent.Agent, st *state.State) []Issue {
+	if e.home == "" || !e.config.KindEnabled(kind.Projects) {
+		return nil
+	}
+
+	vaultItems, _, err := e.loadVault(kind.Memory)
+	if err != nil {
+		return []Issue{{Severity: SeverityError, Kind: kind.Projects, Message: "cannot read the memory canon: " + err.Error()}}
+	}
+
+	var issues []Issue
+
+	for _, target := range e.projectTargets(active) {
+		issues = append(issues, e.digestTargetIssues(st, target, vaultItems)...)
+	}
+
+	return issues
+}
+
+func (e *Engine) digestTargetIssues(st *state.State, target projectTarget, vaultItems kind.Items) []Issue {
+	if !target.active() {
+		return nil
+	}
+
+	path := target.path()
+
+	data, present, err := readOptional(path)
+	if err != nil {
+		return []Issue{{Severity: SeverityWarn, Kind: kind.Projects, Agent: target.agent.ID, Message: err.Error()}}
+	}
+
+	notes := digestNotesFor(vaultItems, target.slug)
+
+	if !present {
+		return missingDigestIssue(target, path, len(notes) > 0)
+	}
+
+	_, fence, found, err := digest.Strip(data)
+	if err != nil {
+		return []Issue{{Severity: SeverityError, Kind: kind.Projects, Agent: target.agent.ID, Message: "cannot parse the agent-sync block in " + path}}
+	}
+
+	if !found {
+		return missingDigestIssue(target, path, len(notes) > 0)
+	}
+
+	stored, hasStored := st.Renders[path]
+
+	if hasStored && stored.BlockHash != cas.HashOf(fence) {
+		severity := SeverityWarn
+		if st.Drift[path].Count >= 2 {
+			severity = SeverityError
+		}
+
+		return []Issue{{
+			Severity: severity, Kind: kind.Projects, Agent: target.agent.ID,
+			Message: fmt.Sprintf("manual edits inside the generated block in %s; the digest is frozen: restore the bytes, delete the block, or run agent-sync sync --refresh-digest", path),
+		}}
+	}
+
+	if _, ok := digest.Verify(fence); !ok {
+		return []Issue{{Severity: SeverityError, Kind: kind.Projects, Agent: target.agent.ID, Message: "cannot parse the agent-sync block in " + path}}
+	}
+
+	if !hasStored {
+		return []Issue{{
+			Severity: SeverityInfo, Kind: kind.Projects, Agent: target.agent.ID,
+			Message: fmt.Sprintf("existing digest in %s is not tracked yet; the next sync adopts it as a baseline", path),
+		}}
+	}
+
+	return nil
+}
+
+func missingDigestIssue(target projectTarget, path string, hasNotes bool) []Issue {
+	if !hasNotes {
+		return nil
+	}
+
+	return []Issue{{
+		Severity: SeverityInfo, Kind: kind.Projects, Agent: target.agent.ID,
+		Message: fmt.Sprintf("no memory digest in %s; run agent-sync sync", path),
+	}}
 }
 
 func (e *Engine) checkVault() []Issue {

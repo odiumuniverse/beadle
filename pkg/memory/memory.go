@@ -16,6 +16,17 @@ const noteSuffix = ".md"
 // Tree maps note file names to their content.
 type Tree map[string][]byte
 
+// Slug converts a path into the Claude project slug: the absolute path with
+// every separator replaced by a dash.
+func Slug(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+
+	return strings.ReplaceAll(abs, "/", "-")
+}
+
 // ValidSlug reports whether name can be a project slug directory: a single
 // path element that is local, non-hidden and non-empty.
 func ValidSlug(name string) bool {

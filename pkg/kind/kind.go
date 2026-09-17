@@ -21,6 +21,7 @@ const (
 	Skills      ID = "skills"
 	Permissions ID = "permissions"
 	Memory      ID = "memory"
+	Projects    ID = "projects"
 )
 
 const RulesKey = "main"
@@ -49,6 +50,7 @@ var specs = []Spec{
 	{ID: Skills, Merge: mergeFile, Group: firstSegment},
 	{ID: Permissions, Merge: mergeNever, Group: sameKey},
 	{ID: Memory, Merge: mergeFile, Group: firstSegment},
+	{ID: Projects, Merge: mergeFile, Group: firstSegment},
 }
 
 func All() []Spec {

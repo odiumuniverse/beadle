@@ -43,12 +43,9 @@ func (e *Engine) loadVault(k kind.ID) (kind.Items, bool, error) {
 
 		return items, false, err
 	case kind.Memory:
-		trees, err := memory.ReadDir(e.vault.MemoryDir())
-		if err != nil {
-			return nil, false, err
-		}
-
-		return normalize(memory.Flatten(trees)), false, nil
+		return loadNotesDir(e.vault.MemoryDir())
+	case kind.Projects:
+		return loadNotesDir(e.vault.ProjectsDir())
 	default:
 		return nil, false, fmt.Errorf("unknown kind %q", k)
 	}
@@ -141,7 +138,9 @@ func (e *Engine) saveVault(k kind.ID, items kind.Items) error {
 	case kind.Skills:
 		return e.saveSkills(items)
 	case kind.Memory:
-		return e.saveMemory(items)
+		return saveNotesDir(e.vault.MemoryDir(), "memory", items)
+	case kind.Projects:
+		return saveNotesDir(e.vault.ProjectsDir(), "project", items)
 	case kind.Permissions:
 		rules := make(map[string]string, len(items))
 
@@ -188,9 +187,16 @@ func (e *Engine) saveSkills(items kind.Items) error {
 	return nil
 }
 
-func (e *Engine) saveMemory(items kind.Items) error {
-	dir := e.vault.MemoryDir()
+func loadNotesDir(dir string) (kind.Items, bool, error) {
+	trees, err := memory.ReadDir(dir)
+	if err != nil {
+		return nil, false, err
+	}
 
+	return normalize(memory.Flatten(trees)), false, nil
+}
+
+func saveNotesDir(dir, label string, items kind.Items) error {
 	current, err := memory.ReadDir(dir)
 	if err != nil {
 		return err
@@ -198,7 +204,7 @@ func (e *Engine) saveMemory(items kind.Items) error {
 
 	want := memory.Group(items)
 
-	if err := removeStaleSlugs(dir, current, want); err != nil {
+	if err := removeStaleSlugs(dir, label, current, want); err != nil {
 		return err
 	}
 
@@ -207,7 +213,7 @@ func (e *Engine) saveMemory(items kind.Items) error {
 			continue
 		}
 
-		if err := syncMemorySlug(dir, slug, current[slug], want[slug]); err != nil {
+		if err := syncNotesSlug(dir, label, slug, current[slug], want[slug]); err != nil {
 			return err
 		}
 	}
@@ -215,7 +221,7 @@ func (e *Engine) saveMemory(items kind.Items) error {
 	return nil
 }
 
-func removeStaleSlugs(dir string, current, want map[string]memory.Tree) error {
+func removeStaleSlugs(dir, label string, current, want map[string]memory.Tree) error {
 	for _, slug := range slices.Sorted(maps.Keys(current)) {
 		if _, keep := want[slug]; keep {
 			continue
@@ -229,26 +235,26 @@ func removeStaleSlugs(dir string, current, want map[string]memory.Tree) error {
 		}
 
 		if err := os.RemoveAll(path); err != nil {
-			return fmt.Errorf("remove vault memory %s: %w", slug, err)
+			return fmt.Errorf("remove vault %s %s: %w", label, slug, err)
 		}
 	}
 
 	return nil
 }
 
-func syncMemorySlug(dir, slug string, current, want memory.Tree) error {
+func syncNotesSlug(dir, label, slug string, current, want memory.Tree) error {
 	for _, note := range slices.Sorted(maps.Keys(current)) {
 		if _, keep := want[note]; keep {
 			continue
 		}
 
 		if err := os.Remove(filepath.Join(dir, slug, note)); err != nil {
-			return fmt.Errorf("remove vault memory note %s/%s: %w", slug, note, err)
+			return fmt.Errorf("remove vault %s note %s/%s: %w", label, slug, note, err)
 		}
 	}
 
 	if err := memory.SyncTree(dir, slug, want); err != nil {
-		return fmt.Errorf("write vault memory %s: %w", slug, err)
+		return fmt.Errorf("write vault %s %s: %w", label, slug, err)
 	}
 
 	return nil

@@ -175,7 +175,7 @@ func TestOpenCodeMCPKeepsCommentsAndToggles(t *testing.T) {
 	path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 	writeFile(t, path, openCodeFixture)
 
-	a := agent.OpenCode(home)
+	a := agent.OpenCode(home, t.TempDir())
 
 	snap := snapshot(t, a, kind.MCP)
 	require.Len(t, snap.Items, 2, "a bare enablement toggle is not a server definition")
@@ -203,7 +203,7 @@ func TestOpenCodeProjectsSSEAsRemote(t *testing.T) {
 
 	sse := mcp.Encode(mcp.Server{Transport: mcp.TransportSSE, URL: "https://example.com/sse"})
 
-	key, value, ok := project(t, agent.OpenCode(t.TempDir()), kind.MCP, "legacy", sse)
+	key, value, ok := project(t, agent.OpenCode(t.TempDir(), t.TempDir()), kind.MCP, "legacy", sse)
 	require.True(t, ok)
 	require.Equal(t, "legacy", key)
 	require.Equal(t, mcp.TransportHTTP, server(t, value).Transport, "OpenCode cannot tell SSE from HTTP")
@@ -223,7 +223,7 @@ func TestGeminiMCPTransports(t *testing.T) {
 }`
 	writeFile(t, path, original)
 
-	a := agent.GeminiCLI(home)
+	a := agent.GeminiCLI(home, t.TempDir())
 	snap := snapshot(t, a, kind.MCP)
 
 	require.Equal(t, mcp.TransportStdio, server(t, snap.Items["stdio-srv"]).Transport)
@@ -279,21 +279,21 @@ func TestEnvRefTranslation(t *testing.T) {
 
 	tests := map[string]struct {
 		file   func(home string) (string, string)
-		agent  func(home string) *agent.Agent
+		agent  func(home, cwd string) *agent.Agent
 		syntax string
 	}{
 		"claude": {
 			file: func(home string) (string, string) {
 				return filepath.Join(home, ".claude.json"), `{"mcpServers": {"s": {"command": "x", "env": {"TOKEN": "${SECRET}"}}}}`
 			},
-			agent:  agent.ClaudeCode,
+			agent:  func(home, _ string) *agent.Agent { return agent.ClaudeCode(home) },
 			syntax: "${SECRET}",
 		},
 		"cursor": {
 			file: func(home string) (string, string) {
 				return filepath.Join(home, ".cursor", "mcp.json"), `{"mcpServers": {"s": {"type": "stdio", "command": "x", "env": {"TOKEN": "${env:SECRET}"}}}}`
 			},
-			agent:  agent.Cursor,
+			agent:  func(home, _ string) *agent.Agent { return agent.Cursor(home) },
 			syntax: "${env:SECRET}",
 		},
 		"gemini bare": {
@@ -320,7 +320,7 @@ func TestEnvRefTranslation(t *testing.T) {
 			path, content := tt.file(home)
 			writeFile(t, path, content)
 
-			a := tt.agent(home)
+			a := tt.agent(home, t.TempDir())
 			snap := snapshot(t, a, kind.MCP)
 			require.Equal(t, "{env:SECRET}", server(t, snap.Items["s"]).Env["TOKEN"], "canonical reference")
 
@@ -398,7 +398,7 @@ func TestOpenCodePermissions(t *testing.T) {
   }
 }`)
 
-	a := agent.OpenCode(home)
+	a := agent.OpenCode(home, t.TempDir())
 
 	snap := snapshot(t, a, kind.Permissions)
 	require.Equal(t, kind.Items{
@@ -442,7 +442,7 @@ func TestGeminiPermissions(t *testing.T) {
   }
 }`)
 
-	a := agent.GeminiCLI(home)
+	a := agent.GeminiCLI(home, t.TempDir())
 
 	snap := snapshot(t, a, kind.Permissions)
 	require.Equal(t, kind.Items{"bash:git status": []byte("allow"), "bash:rm -rf": []byte("deny")}, snap.Items)
@@ -585,7 +585,7 @@ func TestDetect(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, detected)
 
-	detected, err = agent.OpenCode(home).Detect()
+	detected, err = agent.OpenCode(home, t.TempDir()).Detect()
 	require.NoError(t, err)
 	require.False(t, detected)
 }

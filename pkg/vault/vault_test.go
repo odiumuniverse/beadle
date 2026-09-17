@@ -52,6 +52,7 @@ func TestInit(t *testing.T) {
 	require.DirExists(t, v.ObjectsDir())
 	require.DirExists(t, v.SkillsDir())
 	require.DirExists(t, v.MemoryDir())
+	require.DirExists(t, v.ProjectsDir())
 	require.DirExists(t, v.ConflictsDir())
 	require.DirExists(t, filepath.Join(root, "rules"))
 	require.DirExists(t, filepath.Join(root, "mcp"))
@@ -67,6 +68,7 @@ func TestInit(t *testing.T) {
 	require.Contains(t, string(ignore), "objects/")
 	require.Contains(t, string(ignore), "memory/")
 	require.Contains(t, string(ignore), "until the U-12 secret gate lands")
+	require.Contains(t, string(ignore), "projects/")
 
 	require.NoError(t, v.Init(), "init must be idempotent")
 
@@ -96,5 +98,6 @@ func TestEnsureGitIgnoreAddsMemoryToOldVault(t *testing.T) {
 
 	updated := readIgnore(t, root)
 	require.Contains(t, updated, "memory/\n")
+	require.Contains(t, updated, "projects/\n")
 	require.Equal(t, 1, strings.Count(updated, "plugins/"), "existing lines stay put")
 }

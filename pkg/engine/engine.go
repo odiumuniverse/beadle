@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/vmkteam/embedlog"
@@ -12,9 +13,11 @@ import (
 	"github.com/odiumuniverse/agents-sync/pkg/agent"
 	"github.com/odiumuniverse/agents-sync/pkg/cas"
 	"github.com/odiumuniverse/agents-sync/pkg/config"
+	"github.com/odiumuniverse/agents-sync/pkg/digest"
 	"github.com/odiumuniverse/agents-sync/pkg/history"
 	"github.com/odiumuniverse/agents-sync/pkg/kind"
 	"github.com/odiumuniverse/agents-sync/pkg/lock"
+	"github.com/odiumuniverse/agents-sync/pkg/memory"
 	"github.com/odiumuniverse/agents-sync/pkg/secret"
 	"github.com/odiumuniverse/agents-sync/pkg/state"
 	"github.com/odiumuniverse/agents-sync/pkg/vault"
@@ -85,6 +88,7 @@ type SyncOptions struct {
 	DryRun    bool
 	Kinds     []kind.ID
 	Direction config.Mode
+	Refresh   bool
 }
 
 func (e *Engine) Sync(ctx context.Context, opts SyncOptions) (*Report, error) {
@@ -122,6 +126,8 @@ func (e *Engine) sync(ctx context.Context, opts SyncOptions) (*Report, error) {
 
 		report.Kinds = append(report.Kinds, e.syncKind(ctx, spec, active, st, opts))
 	}
+
+	e.syncDigest(ctx, report, active, st, opts)
 
 	report.Conflicts = st.OpenConflicts()
 
@@ -211,6 +217,7 @@ func (e *Engine) WatchPaths(ctx context.Context) ([]string, error) {
 		e.vault.ServersPath(),
 		e.vault.SkillsDir(),
 		e.vault.MemoryDir(),
+		e.vault.ProjectsDir(),
 		e.vault.PermissionsPath(),
 	}
 
@@ -259,4 +266,337 @@ func appendUnique(paths []string, path string) []string {
 
 func selected(kinds []kind.ID, k kind.ID) bool {
 	return len(kinds) == 0 || slices.Contains(kinds, k)
+}
+
+type DigestAction string
+
+const (
+	// DigestCreated marks a fence-only file created by the digest phase.
+	DigestCreated DigestAction = "created"
+	// DigestRefreshed marks a written or replaced digest block.
+	DigestRefreshed DigestAction = "refreshed"
+	// DigestRemoved marks a removed digest block.
+	DigestRemoved DigestAction = "removed"
+	// DigestHeld marks a frozen block with manual edits inside.
+	DigestHeld DigestAction = "held"
+	// DigestAdopted marks an existing block taken as a baseline.
+	DigestAdopted DigestAction = "adopted"
+	// DigestPruned marks dropped Renders/Drift entries.
+	DigestPruned DigestAction = "pruned"
+	// DigestWouldCreate is the dry-run preview of DigestCreated.
+	DigestWouldCreate DigestAction = "would-create"
+	// DigestWouldRefresh is the dry-run preview of DigestRefreshed.
+	DigestWouldRefresh DigestAction = "would-refresh"
+	// DigestWouldRemove is the dry-run preview of DigestRemoved.
+	DigestWouldRemove DigestAction = "would-remove"
+	// DigestWouldPrune is the dry-run preview of DigestPruned.
+	DigestWouldPrune DigestAction = "would-prune"
+	// DigestWouldHold is the dry-run preview of DigestHeld.
+	DigestWouldHold DigestAction = "would-hold"
+)
+
+// DigestResult reports one digest-phase decision for one project file.
+type DigestResult struct {
+	Agent  string       `json:"agent"`
+	Path   string       `json:"path"`
+	Action DigestAction `json:"action"`
+}
+
+type fencedSurface interface {
+	WriteFenced(ctx context.Context, block []byte) error
+}
+
+type projectTarget struct {
+	agent    *agent.Agent
+	surface  agent.Surface
+	slug     string
+	key      string
+	notesDir string
+}
+
+func (t projectTarget) path() string { return t.surface.Path() }
+
+func (t projectTarget) active() bool {
+	projector, ok := t.surface.(agent.Projector)
+	if !ok {
+		return false
+	}
+
+	_, _, visible := projector.Project(t.key, nil)
+
+	return visible
+}
+
+func (e *Engine) projectTargets(active []*agent.Agent) []projectTarget {
+	var targets []projectTarget
+
+	for _, a := range active {
+		surface := a.Surface(kind.Projects)
+		if surface == nil {
+			continue
+		}
+
+		if e.config.ModeFor(a.ID, kind.Projects, surface.Traits().DefaultMode) == config.ModeOff {
+			continue
+		}
+
+		dir := filepath.Dir(surface.Path())
+		slug := memory.Slug(dir)
+
+		targets = append(targets, projectTarget{
+			agent:    a,
+			surface:  surface,
+			slug:     slug,
+			key:      slug + "/" + filepath.Base(surface.Path()),
+			notesDir: filepath.Join(e.home, ".claude", "projects", slug, "memory"),
+		})
+	}
+
+	return targets
+}
+
+func (e *Engine) syncDigest(ctx context.Context, report *Report, active []*agent.Agent, st *state.State, opts SyncOptions) {
+	if opts.Direction == config.ModePull || e.home == "" ||
+		!e.config.KindEnabled(kind.Projects) || !selected(opts.Kinds, kind.Projects) {
+		return
+	}
+
+	vaultItems, _, err := e.loadVault(kind.Memory)
+	if err != nil {
+		report.Warnings = append(report.Warnings, "digest: "+err.Error())
+
+		return
+	}
+
+	for _, target := range e.projectTargets(active) {
+		e.syncDigestTarget(ctx, report, st, target, vaultItems, opts)
+	}
+}
+
+func (e *Engine) syncDigestTarget(
+	ctx context.Context, report *Report, st *state.State, target projectTarget, vaultItems kind.Items, opts SyncOptions,
+) {
+	path := target.path()
+
+	if !target.active() {
+		e.pruneDigest(st, report, target, opts)
+
+		return
+	}
+
+	data, present, err := readOptional(path)
+	if err != nil {
+		report.Warnings = append(report.Warnings, "digest: "+err.Error())
+
+		return
+	}
+
+	fence, found, err := digestFence(data, present)
+	if err != nil {
+		report.Warnings = append(report.Warnings, fmt.Sprintf("digest: %s: %v", path, err))
+
+		return
+	}
+
+	notes := digestNotesFor(vaultItems, target.slug)
+	block, receipt := digest.Render(target.notesDir, notes, digest.DefaultBudget)
+
+	if receipt.Notes == 0 {
+		e.removeDigest(ctx, report, st, target, found, opts)
+
+		return
+	}
+
+	if !present {
+		e.writeDigest(ctx, report, st, target, block, DigestCreated, DigestWouldCreate, opts)
+
+		return
+	}
+
+	stored, hasStored := st.Renders[path]
+
+	switch {
+	case found && hasStored && stored.BlockHash != cas.HashOf(fence):
+		if opts.Refresh {
+			e.writeDigest(ctx, report, st, target, block, DigestRefreshed, DigestWouldRefresh, opts)
+		} else {
+			e.holdDigest(report, st, target, opts)
+		}
+	case found && !hasStored:
+		e.adoptDigest(report, st, target, fence, opts)
+	case cas.HashOf(block) != cas.HashOf(fence):
+		e.writeDigest(ctx, report, st, target, block, DigestRefreshed, DigestWouldRefresh, opts)
+	}
+}
+
+func digestFence(data []byte, present bool) ([]byte, bool, error) {
+	if !present {
+		return nil, false, nil
+	}
+
+	_, fence, found, err := digest.Strip(data)
+	if err != nil {
+		return nil, false, err
+	}
+
+	return fence, found, nil
+}
+
+func (e *Engine) removeDigest(
+	ctx context.Context, report *Report, st *state.State, target projectTarget, found bool, opts SyncOptions,
+) {
+	path := target.path()
+
+	if !found {
+		e.pruneDigest(st, report, target, opts)
+
+		return
+	}
+
+	action := DigestRemoved
+
+	if opts.DryRun {
+		action = DigestWouldRemove
+	} else if err := e.writeFenced(ctx, target.surface, nil); err != nil {
+		report.Warnings = append(report.Warnings, "digest: "+err.Error())
+
+		return
+	} else {
+		e.resetDigest(st, path)
+	}
+
+	report.Digest = append(report.Digest, DigestResult{Agent: target.agent.ID, Path: path, Action: action})
+}
+
+func (e *Engine) writeDigest(
+	ctx context.Context, report *Report, st *state.State, target projectTarget, block []byte, action, dryAction DigestAction, opts SyncOptions,
+) {
+	path := target.path()
+
+	if opts.DryRun {
+		report.Digest = append(report.Digest, DigestResult{Agent: target.agent.ID, Path: path, Action: dryAction})
+
+		return
+	}
+
+	if err := e.writeFenced(ctx, target.surface, block); err != nil {
+		report.Warnings = append(report.Warnings, "digest: "+err.Error())
+
+		return
+	}
+
+	receipt, _ := digest.Verify(block)
+
+	st.Renders[path] = state.Render{
+		BlockHash:  cas.HashOf(block),
+		InputsHash: cas.Hash(receipt.Inputs),
+		Notes:      receipt.Notes,
+		Omitted:    receipt.Omitted,
+		At:         e.now().UTC(),
+	}
+	delete(st.Drift, path)
+
+	report.Digest = append(report.Digest, DigestResult{Agent: target.agent.ID, Path: path, Action: action})
+}
+
+func (e *Engine) holdDigest(report *Report, st *state.State, target projectTarget, opts SyncOptions) {
+	path := target.path()
+
+	action := DigestHeld
+
+	if opts.DryRun {
+		action = DigestWouldHold
+	}
+
+	report.Digest = append(report.Digest, DigestResult{Agent: target.agent.ID, Path: path, Action: action})
+
+	if opts.DryRun {
+		return
+	}
+
+	drift := st.Drift[path]
+	if drift.Count == 0 {
+		drift.First = e.now().UTC()
+	}
+
+	drift.Count++
+	drift.Last = e.now().UTC()
+
+	st.Drift[path] = drift
+
+	report.Warnings = append(report.Warnings, fmt.Sprintf(
+		"digest: manual edits inside the generated block in %s; the digest is frozen: restore the bytes, delete the block, or run agent-sync sync --refresh-digest", path))
+}
+
+func (e *Engine) adoptDigest(report *Report, st *state.State, target projectTarget, fence []byte, opts SyncOptions) {
+	path := target.path()
+
+	receipt, ok := digest.Verify(fence)
+	if !ok {
+		report.Warnings = append(report.Warnings, fmt.Sprintf("digest: %s: cannot parse the agent-sync block", path))
+
+		return
+	}
+
+	if !opts.DryRun {
+		st.Renders[path] = state.Render{
+			BlockHash:  cas.HashOf(fence),
+			InputsHash: cas.Hash(receipt.Inputs),
+			Notes:      receipt.Notes,
+			Omitted:    receipt.Omitted,
+			At:         e.now().UTC(),
+		}
+		delete(st.Drift, path)
+	}
+
+	report.Digest = append(report.Digest, DigestResult{Agent: target.agent.ID, Path: path, Action: DigestAdopted})
+}
+
+func (e *Engine) pruneDigest(st *state.State, report *Report, target projectTarget, opts SyncOptions) {
+	path := target.path()
+
+	_, rendered := st.Renders[path]
+
+	_, drifted := st.Drift[path]
+
+	if !rendered && !drifted {
+		return
+	}
+
+	action := DigestPruned
+
+	if opts.DryRun {
+		action = DigestWouldPrune
+	} else {
+		e.resetDigest(st, path)
+	}
+
+	report.Digest = append(report.Digest, DigestResult{Agent: target.agent.ID, Path: path, Action: action})
+}
+
+func (e *Engine) resetDigest(st *state.State, path string) {
+	delete(st.Renders, path)
+	delete(st.Drift, path)
+}
+
+func (e *Engine) writeFenced(ctx context.Context, surface agent.Surface, block []byte) error {
+	fenced, ok := surface.(fencedSurface)
+	if !ok {
+		return fmt.Errorf("%s cannot write a digest block", surface.Path())
+	}
+
+	return fenced.WriteFenced(ctx, block)
+}
+
+func digestNotesFor(items kind.Items, slug string) map[string][]byte {
+	prefix := slug + "/"
+	notes := map[string][]byte{}
+
+	for key, data := range items {
+		if strings.HasPrefix(key, prefix) {
+			notes[key] = data
+		}
+	}
+
+	return notes
 }

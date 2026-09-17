@@ -52,21 +52,35 @@ func (a *app) engine() (*engine.Engine, error) {
 		return nil, err
 	}
 
-	home, err := os.UserHomeDir()
+	home, cwd, err := homeAndCwd()
 	if err != nil {
 		return nil, err
 	}
 
-	return engine.New(v, cfg, agent.All(home), engine.WithLogger(a.logger), engine.WithHome(home))
+	return engine.New(v, cfg, agent.All(home, cwd), engine.WithLogger(a.logger), engine.WithHome(home))
+}
+
+func homeAndCwd() (string, string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", err
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", "", err
+	}
+
+	return home, cwd, nil
 }
 
 func allAgents() ([]*agent.Agent, error) {
-	home, err := os.UserHomeDir()
+	home, cwd, err := homeAndCwd()
 	if err != nil {
 		return nil, err
 	}
 
-	return agent.All(home), nil
+	return agent.All(home, cwd), nil
 }
 
 func parseKinds(names []string) ([]kind.ID, error) {

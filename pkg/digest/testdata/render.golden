@@ -1,0 +1,6 @@
+<!-- agent-sync:memory:begin v1 inputs=sha256:0111440d1df683df89e7d7a73d780ea8ca1f7e7ba08fc88172b5d920104d2e42 render=sha256:04d7f4f78b10524c4c7447845e737ad5e56cff4dc8584818740bb76581dac5a5 notes=4 omitted=0 -->
+- [project-state](~/.claude/projects/-Users-demo-proj/memory/MEMORY.md) — Current work state and handoff notes [project, 2026-09-17T10:00:00Z]
+- [feedback-workflow](~/.claude/projects/-Users-demo-proj/memory/feedback_x.md) — Review loop preferences [feedback, 2026-09-16T09:00:00Z]
+- [kinds](~/.claude/projects/-Users-demo-proj/memory/kinds.md) — Typed only. [user]
+- [no-meta](~/.claude/projects/-Users-demo-proj/memory/no-meta.md) — Just plain text, no frontmatter at all.
+<!-- agent-sync:memory:end -->
