@@ -26,11 +26,14 @@ state.json
 objects/
 conflicts/
 plugins/
+# memory notes stay out of git until the U-12 secret gate lands
+memory/
 `
 
 var dirs = []string{
 	"conflicts",
 	"mcp",
+	"memory",
 	"objects",
 	"permissions",
 	"plugins",
@@ -102,6 +105,10 @@ func (v *Vault) ServersPath() string {
 
 func (v *Vault) SkillsDir() string {
 	return filepath.Join(v.root, "skills")
+}
+
+func (v *Vault) MemoryDir() string {
+	return filepath.Join(v.root, "memory")
 }
 
 func (v *Vault) PermissionsPath() string {

@@ -40,6 +40,9 @@ func ClaudeCode(home string) *Agent {
 				ignoreUnder: []string{filepath.Join(dir, "plugins")},
 				traits:      Traits{DefaultMode: config.ModeSync, Creatable: true},
 			},
+			&memorySurface{
+				projects: filepath.Join(dir, "projects"),
+			},
 			&permSurface{
 				file:    fixedPath(filepath.Join(dir, "settings.json")),
 				pointer: "/permissions",

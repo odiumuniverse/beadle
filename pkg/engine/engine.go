@@ -210,6 +210,7 @@ func (e *Engine) WatchPaths(ctx context.Context) ([]string, error) {
 		e.vault.RulesPath(),
 		e.vault.ServersPath(),
 		e.vault.SkillsDir(),
+		e.vault.MemoryDir(),
 		e.vault.PermissionsPath(),
 	}
 

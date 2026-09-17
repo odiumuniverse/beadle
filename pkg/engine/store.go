@@ -14,6 +14,7 @@ import (
 	"github.com/odiumuniverse/agents-sync/pkg/cas"
 	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
 	"github.com/odiumuniverse/agents-sync/pkg/kind"
+	"github.com/odiumuniverse/agents-sync/pkg/memory"
 	"github.com/odiumuniverse/agents-sync/pkg/permission"
 	"github.com/odiumuniverse/agents-sync/pkg/skill"
 	"github.com/odiumuniverse/agents-sync/pkg/state"
@@ -41,6 +42,13 @@ func (e *Engine) loadVault(k kind.ID) (kind.Items, bool, error) {
 		items, err := e.loadPermissions()
 
 		return items, false, err
+	case kind.Memory:
+		trees, err := memory.ReadDir(e.vault.MemoryDir())
+		if err != nil {
+			return nil, false, err
+		}
+
+		return normalize(memory.Flatten(trees)), false, nil
 	default:
 		return nil, false, fmt.Errorf("unknown kind %q", k)
 	}
@@ -132,6 +140,8 @@ func (e *Engine) saveVault(k kind.ID, items kind.Items) error {
 		return writeVaultJSON(e.vault.ServersPath(), doc)
 	case kind.Skills:
 		return e.saveSkills(items)
+	case kind.Memory:
+		return e.saveMemory(items)
 	case kind.Permissions:
 		rules := make(map[string]string, len(items))
 
@@ -173,6 +183,72 @@ func (e *Engine) saveSkills(items kind.Items) error {
 		if err := skill.SyncTree(dir, name, want[name]); err != nil {
 			return fmt.Errorf("write vault skill %s: %w", name, err)
 		}
+	}
+
+	return nil
+}
+
+func (e *Engine) saveMemory(items kind.Items) error {
+	dir := e.vault.MemoryDir()
+
+	current, err := memory.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+
+	want := memory.Group(items)
+
+	if err := removeStaleSlugs(dir, current, want); err != nil {
+		return err
+	}
+
+	for _, slug := range slices.Sorted(maps.Keys(want)) {
+		if maps.EqualFunc(current[slug], want[slug], bytes.Equal) {
+			continue
+		}
+
+		if err := syncMemorySlug(dir, slug, current[slug], want[slug]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func removeStaleSlugs(dir string, current, want map[string]memory.Tree) error {
+	for _, slug := range slices.Sorted(maps.Keys(current)) {
+		if _, keep := want[slug]; keep {
+			continue
+		}
+
+		path := filepath.Join(dir, slug)
+
+		info, err := os.Lstat(path)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("remove vault memory %s: %w", slug, err)
+		}
+	}
+
+	return nil
+}
+
+func syncMemorySlug(dir, slug string, current, want memory.Tree) error {
+	for _, note := range slices.Sorted(maps.Keys(current)) {
+		if _, keep := want[note]; keep {
+			continue
+		}
+
+		if err := os.Remove(filepath.Join(dir, slug, note)); err != nil {
+			return fmt.Errorf("remove vault memory note %s/%s: %w", slug, note, err)
+		}
+	}
+
+	if err := memory.SyncTree(dir, slug, want); err != nil {
+		return fmt.Errorf("write vault memory %s: %w", slug, err)
 	}
 
 	return nil

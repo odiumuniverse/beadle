@@ -188,6 +188,10 @@ func (e *Engine) pull(spec kind.Spec, v *view, vaultItems kind.Items, owned map[
 func (e *Engine) pullKey(spec kind.Spec, v *view, proj projection, vaultItems kind.Items, key string, report *KindReport) bool {
 	base, current, local := value(v.base, key), value(proj.items, key), value(v.snap.Items, key)
 
+	if spec.ID == kind.Memory && local == nil && base != nil && proj.hides(key) {
+		current = value(vaultItems, key)
+	}
+
 	switch {
 	case same(local, base), same(current, local):
 		return false

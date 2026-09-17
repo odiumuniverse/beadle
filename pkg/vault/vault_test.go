@@ -3,6 +3,7 @@ package vault_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -50,6 +51,7 @@ func TestInit(t *testing.T) {
 	require.FileExists(t, v.ConfigPath())
 	require.DirExists(t, v.ObjectsDir())
 	require.DirExists(t, v.SkillsDir())
+	require.DirExists(t, v.MemoryDir())
 	require.DirExists(t, v.ConflictsDir())
 	require.DirExists(t, filepath.Join(root, "rules"))
 	require.DirExists(t, filepath.Join(root, "mcp"))
@@ -63,6 +65,36 @@ func TestInit(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(ignore), "mcp/secrets.json")
 	require.Contains(t, string(ignore), "objects/")
+	require.Contains(t, string(ignore), "memory/")
+	require.Contains(t, string(ignore), "until the U-12 secret gate lands")
 
 	require.NoError(t, v.Init(), "init must be idempotent")
+
+	require.NoError(t, v.EnsureGitIgnore(), "gitignore must be idempotent")
+	require.Equal(t, string(ignore), readIgnore(t, root), "a second pass must not duplicate lines")
+}
+
+func readIgnore(t *testing.T, root string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join(root, ".gitignore")) //nolint:gosec // G304: test reads its own temp file
+	require.NoError(t, err)
+
+	return string(data)
+}
+
+func TestEnsureGitIgnoreAddsMemoryToOldVault(t *testing.T) {
+	t.Parallel()
+
+	root := filepath.Join(t.TempDir(), "vault")
+	require.NoError(t, os.MkdirAll(root, 0o700))
+
+	old := "# AgentSync: credentials and machine-local state stay on this machine.\nmcp/secrets.json\nstate/\nstate.json\nobjects/\nconflicts/\nplugins/\n"
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".gitignore"), []byte(old), 0o600))
+
+	require.NoError(t, vault.New(root).EnsureGitIgnore())
+
+	updated := readIgnore(t, root)
+	require.Contains(t, updated, "memory/\n")
+	require.Equal(t, 1, strings.Count(updated, "plugins/"), "existing lines stay put")
 }

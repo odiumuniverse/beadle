@@ -20,6 +20,7 @@ const (
 	MCP         ID = "mcp"
 	Skills      ID = "skills"
 	Permissions ID = "permissions"
+	Memory      ID = "memory"
 )
 
 const RulesKey = "main"
@@ -47,6 +48,7 @@ var specs = []Spec{
 	{ID: MCP, Merge: mergeJSON, Lift: liftJSON, Group: sameKey},
 	{ID: Skills, Merge: mergeFile, Group: firstSegment},
 	{ID: Permissions, Merge: mergeNever, Group: sameKey},
+	{ID: Memory, Merge: mergeFile, Group: firstSegment},
 }
 
 func All() []Spec {

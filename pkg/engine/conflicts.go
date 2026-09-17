@@ -21,7 +21,7 @@ import (
 	"github.com/odiumuniverse/agents-sync/pkg/state"
 )
 
-var conflictFileName = regexp.MustCompile(`^(rules|mcp|skills|permissions)-[a-z0-9-]+-[0-9a-f]{8}\.[A-Za-z0-9]+$`)
+var conflictFileName = regexp.MustCompile(`^(rules|mcp|skills|permissions|memory)-[a-z0-9-]+-[0-9a-f]{8}\.[A-Za-z0-9]+$`)
 
 var extPattern = regexp.MustCompile(`^\.[A-Za-z0-9]{1,8}$`)
 
@@ -330,7 +330,7 @@ func (e *Engine) conflictDocument(c state.Conflict) (string, []byte, error) {
 
 	prefix := fmt.Sprintf("%s-%s-%s", c.Kind, c.Agent, c.ID())
 
-	if (c.Kind == kind.Rules || c.Kind == kind.Skills) && kind.IsText(base) && kind.IsText(vaultValue) && kind.IsText(local) {
+	if (c.Kind == kind.Rules || c.Kind == kind.Skills || c.Kind == kind.Memory) && kind.IsText(base) && kind.IsText(vaultValue) && kind.IsText(local) {
 		ext := ".md"
 
 		if c.Kind == kind.Skills {

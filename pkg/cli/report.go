@@ -128,7 +128,7 @@ func summarizeChanges(k kind.ID, changes []engine.ItemChange) string {
 	for _, change := range changes {
 		name := opSymbol(change.Op) + change.Key
 
-		if k == kind.Skills {
+		if k == kind.Skills || k == kind.Memory {
 			group, _, _ := strings.Cut(change.Key, "/")
 			name = "~" + group
 		}
