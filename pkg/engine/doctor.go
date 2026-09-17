@@ -15,6 +15,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/odiumuniverse/agents-sync/pkg/agent"
+	"github.com/odiumuniverse/agents-sync/pkg/config"
 	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
 	"github.com/odiumuniverse/agents-sync/pkg/kind"
 	"github.com/odiumuniverse/agents-sync/pkg/plugin"
@@ -52,8 +53,13 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 		return nil, err
 	}
 
+	ledger, _, _ := loadPluginLedger(e.vault.PluginsLedgerPath())
+	if ledger.Plugins == nil {
+		ledger = emptyPluginLedger()
+	}
+
 	for _, a := range active {
-		issues = append(issues, symlinkIssues(a)...)
+		issues = append(issues, e.symlinkIssues(a, ledger)...)
 	}
 
 	plan, err := e.Sync(ctx, SyncOptions{DryRun: true})
@@ -68,6 +74,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.projectScopeIssues(ctx, active)...)
 	issues = append(issues, e.pluginRefIssues(active)...)
 	issues = append(issues, e.pluginPivotIssues(ctx)...)
+	issues = append(issues, e.pluginMigrationIssues(ctx, ledger)...)
 
 	return issues, nil
 }
@@ -202,7 +209,7 @@ func resultIssue(k kind.ID, result AgentResult) (Issue, bool) {
 	return issue, true
 }
 
-func symlinkIssues(a *agent.Agent) []Issue {
+func (e *Engine) symlinkIssues(a *agent.Agent, ledger pluginLedger) []Issue {
 	var issues []Issue
 
 	for _, surface := range a.Surfaces {
@@ -214,7 +221,7 @@ func symlinkIssues(a *agent.Agent) []Issue {
 		}
 
 		if info.Mode()&fs.ModeSymlink != 0 && !fsutil.Exists(path) {
-			issues = append(issues, Issue{Severity: SeverityError, Agent: a.ID, Message: "broken symlink: " + path})
+			issues = append(issues, e.brokenSymlinkIssues(a, surface, path, ledger)...)
 
 			continue
 		}
@@ -231,12 +238,25 @@ func symlinkIssues(a *agent.Agent) []Issue {
 		for _, entry := range entries {
 			child := filepath.Join(path, entry.Name())
 			if entry.Type()&fs.ModeSymlink != 0 && !fsutil.Exists(child) {
-				issues = append(issues, Issue{Severity: SeverityError, Agent: a.ID, Message: "broken symlink: " + child})
+				issues = append(issues, e.brokenSymlinkIssues(a, surface, child, ledger)...)
 			}
 		}
 	}
 
 	return issues
+}
+
+func (e *Engine) brokenSymlinkIssues(a *agent.Agent, surface agent.Surface, path string, ledger pluginLedger) []Issue {
+	if surface.Kind() == kind.Skills && e.home != "" &&
+		e.config.ModeFor(a.ID, kind.Skills, surface.Traits().DefaultMode) != config.ModeOff {
+		if link, err := os.Readlink(path); err == nil {
+			if _, _, ok := e.cacheLinkKey(link, ledger); ok {
+				return nil
+			}
+		}
+	}
+
+	return []Issue{{Severity: SeverityError, Agent: a.ID, Message: "broken symlink: " + path}}
 }
 
 func (e *Engine) skillCollisionIssues(active []*agent.Agent) []Issue {

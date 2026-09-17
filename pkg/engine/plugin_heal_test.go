@@ -44,6 +44,7 @@ func TestHealRemovesQuarantine(t *testing.T) {
 	require.Len(t, results, 1)
 	require.Equal(t, "acme/tool", results[0].Key)
 	require.Equal(t, 2, results[0].Stubs)
+	require.Equal(t, 1, results[0].Retired)
 	require.Empty(t, results[0].Note)
 
 	require.NoDirExists(t, filepath.Join(claudeSkillsDir(f.home), "alpha"))
@@ -68,6 +69,67 @@ func TestHealRemovesQuarantine(t *testing.T) {
 	require.NoDirExists(t, filepath.Join(f.vault.PluginsDir(), "quarantine"))
 }
 
+func TestHealReportsCleanedArtifactOnly(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	f := newFixture(t)
+	f.emptyConfigs(t)
+
+	quarantinePlugin(t, f)
+
+	require.NoError(t, os.RemoveAll(filepath.Join(claudeSkillsDir(f.home), "alpha")))
+	require.NoError(t, os.RemoveAll(filepath.Join(openCodeSkillsDir(f.home), "alpha")))
+
+	results, err := f.engine.Heal(t.Context(), false)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "acme/tool", results[0].Key)
+	require.Zero(t, results[0].Stubs)
+	require.Equal(t, 1, results[0].Cleaned, "dropping the quarantine artifact is real work")
+
+	results, err = f.engine.Heal(t.Context(), false)
+	require.NoError(t, err)
+	require.Empty(t, results)
+}
+
+func TestHealRetiresCleanRecord(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	f := newFixture(t)
+	f.emptyConfigs(t)
+
+	quarantinePlugin(t, f)
+
+	require.NoError(t, os.RemoveAll(filepath.Join(claudeSkillsDir(f.home), "alpha")))
+	require.NoError(t, os.RemoveAll(filepath.Join(openCodeSkillsDir(f.home), "alpha")))
+
+	quarantine := quarantineCurrent(f, "acme", "tool")
+	require.NoError(t, os.Remove(quarantine))
+
+	before := read(t, f.vault.PluginsLedgerPath())
+
+	results, err := f.engine.Heal(t.Context(), true)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, 1, results[0].Retired, "a dry run predicts the retire")
+	require.Zero(t, results[0].Stubs)
+	require.Zero(t, results[0].Cleaned)
+	require.Equal(t, before, read(t, f.vault.PluginsLedgerPath()), "a dry run writes nothing")
+
+	results, err = f.engine.Heal(t.Context(), false)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, 1, results[0].Retired, "retiring a clean record is real work")
+
+	rec := ledgerRecord(t, f, "acme/tool")
+	require.True(t, rec.QuarantinedAt.IsZero())
+	require.False(t, rec.RetiredAt.IsZero())
+
+	results, err = f.engine.Heal(t.Context(), false)
+	require.NoError(t, err)
+	require.Empty(t, results, "a retired record is silent")
+}
+
 func TestHealDryRun(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 
@@ -82,6 +144,7 @@ func TestHealDryRun(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	require.Equal(t, 2, results[0].Stubs)
+	require.Equal(t, 1, results[0].Retired, "a dry run predicts the retire")
 
 	require.True(t, isStub(t, filepath.Join(claudeSkillsDir(f.home), "alpha")))
 	require.True(t, isStub(t, filepath.Join(openCodeSkillsDir(f.home), "alpha")))

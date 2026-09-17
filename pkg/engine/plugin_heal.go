@@ -18,9 +18,12 @@ import (
 )
 
 type HealResult struct {
-	Key   string `json:"key"`
-	Stubs int    `json:"stubs,omitempty"`
-	Note  string `json:"note,omitempty"`
+	Key      string `json:"key"`
+	Stubs    int    `json:"stubs,omitempty"`
+	Migrated int    `json:"migrated,omitempty"`
+	Cleaned  int    `json:"cleaned,omitempty"`
+	Retired  int    `json:"retired,omitempty"`
+	Note     string `json:"note,omitempty"`
 }
 
 func (e *Engine) Heal(ctx context.Context, dryRun bool) ([]HealResult, error) {
@@ -34,6 +37,11 @@ func (e *Engine) Heal(ctx context.Context, dryRun bool) ([]HealResult, error) {
 	ledger, _, err := loadPluginLedger(e.vault.PluginsLedgerPath())
 	if err != nil {
 		return nil, err
+	}
+
+	migrations, migrateWarns := e.migrateHosts(ctx, dryRun)
+	if len(migrateWarns) > 0 {
+		return mergeMigrations(nil, migrations), errors.New(strings.Join(migrateWarns, "; "))
 	}
 
 	var results []HealResult
@@ -63,6 +71,8 @@ func (e *Engine) Heal(ctx context.Context, dryRun bool) ([]HealResult, error) {
 		changed = true
 	}
 
+	results = mergeMigrations(results, migrations)
+
 	if !changed {
 		return results, nil
 	}
@@ -78,6 +88,39 @@ func (e *Engine) Heal(ctx context.Context, dryRun bool) ([]HealResult, error) {
 	return results, nil
 }
 
+func mergeMigrations(results []HealResult, migrations []MigrateResult) []HealResult {
+	merged := map[string]*HealResult{}
+
+	for _, result := range results {
+		entry := result
+		merged[result.Key] = &entry
+	}
+
+	for _, migration := range migrations {
+		entry, ok := merged[migration.Key]
+		if !ok {
+			entry = &HealResult{Key: migration.Key}
+			merged[migration.Key] = entry
+		}
+
+		entry.Migrated += migration.Migrated
+		entry.Note = joinNotes([]string{entry.Note, migration.Note})
+	}
+
+	var out []HealResult
+
+	for _, key := range slices.Sorted(maps.Keys(merged)) {
+		entry := merged[key]
+		if entry.Stubs == 0 && entry.Migrated == 0 && entry.Cleaned == 0 && entry.Retired == 0 {
+			continue
+		}
+
+		out = append(out, *entry)
+	}
+
+	return out
+}
+
 func (e *Engine) healPlugin(ctx context.Context, key string, dryRun bool) (HealResult, bool) {
 	result := HealResult{Key: key}
 
@@ -91,7 +134,13 @@ func (e *Engine) healPlugin(ctx context.Context, key string, dryRun bool) (HealR
 	stubs, stubNotes := healStubs(dirs, key, dryRun)
 	result.Stubs = stubs
 
-	result.Note = joinNotes(append(stubNotes, e.dropQuarantine(key, dryRun)))
+	cleaned, artifactNote := e.dropQuarantine(key, dryRun)
+	if cleaned {
+		result.Cleaned = 1
+	}
+
+	result.Retired = 1
+	result.Note = joinNotes(append(stubNotes, artifactNote))
 
 	return result, !dryRun
 }
@@ -160,14 +209,10 @@ func healStubs(dirs []string, key string, dryRun bool) (int, []string) {
 	return count, notes
 }
 
-func (e *Engine) dropQuarantine(key string, dryRun bool) string {
-	if dryRun {
-		return ""
-	}
-
+func (e *Engine) dropQuarantine(key string, dryRun bool) (bool, string) {
 	marketplace, name, ok := strings.Cut(key, "/")
 	if !ok || !validPluginKey(marketplace, name) {
-		return "cannot clean the quarantine artifact: invalid plugin key " + key
+		return false, "cannot clean the quarantine artifact: invalid plugin key " + key
 	}
 
 	current := filepath.Join(e.vault.PluginsDir(), quarantineDirName, marketplace, name, farmPivotName)
@@ -175,18 +220,22 @@ func (e *Engine) dropQuarantine(key string, dryRun bool) string {
 	info, err := os.Lstat(current)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return ""
+		return false, ""
 	case err != nil:
-		return fmt.Sprintf("cannot clean the quarantine artifact: %v", err)
+		return false, fmt.Sprintf("cannot clean the quarantine artifact: %v", err)
 	case info.Mode()&fs.ModeSymlink == 0:
-		return fmt.Sprintf("quarantine artifact %s is not a symlink; left in place", current)
+		return false, fmt.Sprintf("quarantine artifact %s is not a symlink; left in place", current)
+	}
+
+	if dryRun {
+		return true, ""
 	}
 
 	if err := os.Remove(current); err != nil {
-		return fmt.Sprintf("cannot clean the quarantine artifact: %v", err)
+		return false, fmt.Sprintf("cannot clean the quarantine artifact: %v", err)
 	}
 
-	return dropQuarantineDirs(filepath.Dir(current), filepath.Join(e.vault.PluginsDir(), quarantineDirName))
+	return true, dropQuarantineDirs(filepath.Dir(current), filepath.Join(e.vault.PluginsDir(), quarantineDirName))
 }
 
 func dropQuarantineDirs(dir, stop string) string {

@@ -11,7 +11,7 @@ func (a *app) newHealCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "heal",
-		Short: "Remove quarantined plugin artifacts and their stubs",
+		Short: "Heal quarantined plugins and migrate versioned skill links to pivots",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			e, err := a.engine()
 			if err != nil {
@@ -26,13 +26,30 @@ func (a *app) newHealCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 
 			if len(results) == 0 {
-				fmt.Fprintln(out, "no quarantine entries")
+				fmt.Fprintln(out, "nothing to heal")
 
 				return nil
 			}
 
 			for _, result := range results {
-				line := fmt.Sprintf("  ✓ %s stubs=%d", result.Key, result.Stubs)
+				line := "  ✓ " + result.Key
+
+				if result.Stubs > 0 {
+					line += fmt.Sprintf(" stubs=%d", result.Stubs)
+				}
+
+				if result.Migrated > 0 {
+					line += fmt.Sprintf(" migrated=%d", result.Migrated)
+				}
+
+				if result.Cleaned > 0 {
+					line += fmt.Sprintf(" cleaned=%d", result.Cleaned)
+				}
+
+				if result.Retired > 0 {
+					line += fmt.Sprintf(" retired=%d", result.Retired)
+				}
+
 				if result.Note != "" {
 					line += " — " + result.Note
 				}
@@ -44,7 +61,7 @@ func (a *app) newHealCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be removed without removing anything")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would be migrated or removed without changing anything")
 
 	return cmd
 }
