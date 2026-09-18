@@ -40,3 +40,23 @@ jobs:
         with:
           go-version-file: go.mod
       - run: AGENTSYNC_GIT_ORACLE=1 go test -mod=vendor -run TestTextOracle ./pkg/merge/
+
+  real-e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: real-config e2e
+        run: go test -mod=vendor -count=1 -run TestRealConfig ./pkg/engine/
+      - name: fixture is sanitized
+        run: |
+          if grep -rIiE "(sk-|ctx7|glpat-|ghp_|xoxb-|AKIA|Bearer[[:space:]]+[A-Za-z0-9]{6,}|BEGIN[A-Z ]*PRIVATE KEY)" pkg/engine/testdata/reale2e; then
+            echo "sanitize guard: secret-like value in testdata" >&2
+            exit 1
+          fi

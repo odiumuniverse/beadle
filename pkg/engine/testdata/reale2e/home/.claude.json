@@ -1,0 +1,25 @@
+{
+  "mcpServers": {
+    "codegraph": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "codegraph", "serve", "--root", "/work/proj"]
+    },
+    "context7": {
+      "type": "http",
+      "url": "https://context7.example.com/mcp",
+      "headers": {"Authorization": "Bearer __AGENTSYNC_SECRET_1__"}
+    },
+    "memory": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "memory-server"],
+      "env": {"MEMORY_DIR": "/work/memory"}
+    },
+    "fetch": {
+      "type": "http",
+      "url": "https://fetch.example.com/mcp"
+    }
+  },
+  "projects": {"/work/proj": {"mcpServers": {}}}
+}

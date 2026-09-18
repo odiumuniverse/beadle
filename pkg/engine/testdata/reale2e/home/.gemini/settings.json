@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "context7": {
+      "httpUrl": "https://context7.example.com/mcp",
+      "headers": {"Authorization": "Bearer __AGENTSYNC_SECRET_3__"}
+    },
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "memory-server"],
+      "env": {"MEMORY_DIR": "/work/memory"}
+    },
+    "time": {
+      "command": "npx",
+      "args": ["-y", "time-server"]
+    }
+  }
+}

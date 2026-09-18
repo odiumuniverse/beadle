@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "fetch": {"url": "https://fetch.example.com/mcp"}
+  }
+}

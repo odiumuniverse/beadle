@@ -1,0 +1,6 @@
+{
+  "permissions": {
+    "allow": ["Read(~/**)", "Bash(git status)"],
+    "deny": ["WebFetch"]
+  }
+}

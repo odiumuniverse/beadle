@@ -1,0 +1,20 @@
+{
+  // synthetic opencode configuration
+  "mcp": {
+    "codegraph": {
+      "type": "local",
+      "command": ["npx", "-y", "codegraph", "serve", "--root", "/work"],
+      "environment": {"API_TOKEN": "__AGENTSYNC_SECRET_2__"}
+    },
+    "sequential": {
+      "type": "local",
+      "command": ["npx", "-y", "sequential-thinking"]
+    },
+    "playwright": {
+      "type": "local",
+      "command": ["npx", "-y", "playwright-mcp"]
+    },
+    "legacy": {"enabled": false}
+  },
+  "permission": {}
+}

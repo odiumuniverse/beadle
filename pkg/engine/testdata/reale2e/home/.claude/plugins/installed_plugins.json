@@ -1,0 +1,11 @@
+{
+  "plugins": {
+    "vmkteam-developer@vmkteam": [
+      {
+        "scope": "user",
+        "installPath": "__AGENTSYNC_HOME__/.claude/plugins/cache/vmkteam/vmkteam-developer/1.1.0",
+        "version": "1.1.0"
+      }
+    ]
+  }
+}
