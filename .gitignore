@@ -35,6 +35,9 @@ SPEC.md
 AGENTS.md
 docs/
 
+# Codegraph index (machine-local)
+.codegraph/
+
 # Environment files
 .env
 .env.local
