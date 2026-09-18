@@ -31,6 +31,8 @@ linters:
     - errname
     - asciicheck
     - gocyclo
+    - cyclop
+    - depguard
     - nestif
     - funlen
     - dupl
@@ -69,8 +71,6 @@ linters:
     - nakedret
     - noinlineerr
     - gocognit
-    - cyclop
-    - depguard
     - goheader
     - importas
     - funcorder
@@ -103,6 +103,20 @@ linters:
       - examples$
 
   settings:
+    cyclop:
+      max-complexity: 13
+    depguard:
+      rules:
+        main:
+          deny:
+            - pkg: io/ioutil
+              desc: use os and io instead
+            - pkg: math/rand
+              desc: use math/rand/v2
+            - pkg: github.com/pkg/errors
+              desc: use the standard errors package
+            - pkg: golang.org/x/exp
+              desc: experimental packages are not allowed
     dupl:
       threshold: 100
     errcheck:
