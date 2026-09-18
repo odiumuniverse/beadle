@@ -21,6 +21,7 @@ import (
 	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
 	"github.com/odiumuniverse/agents-sync/pkg/kind"
 	"github.com/odiumuniverse/agents-sync/pkg/plugin"
+	"github.com/odiumuniverse/agents-sync/pkg/secret"
 	"github.com/odiumuniverse/agents-sync/pkg/state"
 )
 
@@ -78,8 +79,57 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.pluginPivotIssues(ctx)...)
 	issues = append(issues, e.pluginMigrationIssues(ctx, ledger)...)
 	issues = append(issues, e.digestIssues(active, st)...)
+	issues = append(issues, e.memorySecretIssues()...)
 
 	return issues, nil
+}
+
+func (e *Engine) memorySecretIssues() []Issue {
+	items, _, err := loadNotesDir(e.vault.MemoryDir())
+	if err != nil {
+		return []Issue{{Severity: SeverityError, Kind: kind.Memory, Message: "read memory canon: " + err.Error()}}
+	}
+
+	var (
+		issues     []Issue
+		refs       int
+		notes      int
+		plaintexts []string
+	)
+
+	for _, key := range slices.Sorted(maps.Keys(items)) {
+		data := items[key]
+
+		if len(secret.ScanText(data)) > 0 {
+			plaintexts = append(plaintexts, key)
+		}
+
+		if found := len(secret.RefsText(data)); found > 0 {
+			refs += found
+			notes++
+		}
+	}
+
+	ignored, err := e.vault.MemoryIgnored()
+	if err != nil {
+		issues = append(issues, Issue{Severity: SeverityWarn, Kind: kind.Memory, Message: err.Error()})
+	}
+
+	if len(plaintexts) > 0 && !ignored {
+		issues = append(issues, Issue{
+			Severity: SeverityError, Kind: kind.Memory,
+			Message: fmt.Sprintf("memory notes with plaintext secrets are not ignored by git: %s; run agent-sync sync", strings.Join(plaintexts, ", ")),
+		})
+	}
+
+	if notes > 0 {
+		issues = append(issues, Issue{
+			Severity: SeverityInfo, Kind: kind.Memory,
+			Message: fmt.Sprintf("%d secret reference(s) in %d memory note(s)", refs, notes),
+		})
+	}
+
+	return issues
 }
 
 func (e *Engine) digestIssues(active []*agent.Agent, st *state.State) []Issue {
@@ -407,15 +457,15 @@ func (e *Engine) secretIssues() []Issue {
 	for _, name := range refs {
 		if !e.secrets.Has(name) {
 			issues = append(issues, Issue{
-				Severity: SeverityError, Kind: kind.MCP,
-				Message: fmt.Sprintf("secret %s has no value in %s; run agent-sync secrets set %s", name, e.vault.SecretsPath(), name),
+				Severity: SeverityError,
+				Message:  fmt.Sprintf("secret %s has no value in %s; run agent-sync secrets set %s", name, e.vault.SecretsPath(), name),
 			})
 		}
 	}
 
 	for _, name := range e.secrets.Names() {
 		if !slices.Contains(refs, name) {
-			issues = append(issues, Issue{Severity: SeverityInfo, Kind: kind.MCP, Message: fmt.Sprintf("secret %s is unused; run agent-sync secrets prune", name)})
+			issues = append(issues, Issue{Severity: SeverityInfo, Message: fmt.Sprintf("secret %s is unused; run agent-sync secrets prune", name)})
 		}
 	}
 

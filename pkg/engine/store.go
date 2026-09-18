@@ -43,7 +43,14 @@ func (e *Engine) loadVault(k kind.ID) (kind.Items, bool, error) {
 
 		return items, false, err
 	case kind.Memory:
-		return loadNotesDir(e.vault.MemoryDir())
+		items, _, err := loadNotesDir(e.vault.MemoryDir())
+		if err != nil {
+			return nil, false, err
+		}
+
+		guarded, extracted := e.guardNoteSecrets(items)
+
+		return guarded, extracted > 0, nil
 	case kind.Projects:
 		return loadNotesDir(e.vault.ProjectsDir())
 	default:
@@ -138,7 +145,9 @@ func (e *Engine) saveVault(k kind.ID, items kind.Items) error {
 	case kind.Skills:
 		return e.saveSkills(items)
 	case kind.Memory:
-		return saveNotesDir(e.vault.MemoryDir(), "memory", items)
+		guarded, _ := e.guardNoteSecrets(items)
+
+		return saveNotesDir(e.vault.MemoryDir(), "memory", guarded)
 	case kind.Projects:
 		return saveNotesDir(e.vault.ProjectsDir(), "project", items)
 	case kind.Permissions:

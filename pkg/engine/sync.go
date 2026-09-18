@@ -57,6 +57,9 @@ func (e *Engine) syncKind(ctx context.Context, spec kind.Spec, agents []*agent.A
 
 	views := e.readViews(ctx, spec, agents, st, opts, &report)
 	original := maps.Clone(vaultItems)
+
+	e.fanInInbox(ctx, spec, agents, vaultItems, &report, opts)
+
 	owned := e.ownedPluginMCP(spec, views, pluginPlan, pluginLedger, vaultItems, &report)
 
 	for _, v := range views {

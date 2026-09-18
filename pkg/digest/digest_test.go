@@ -385,6 +385,31 @@ func TestNeutralizeCanary(t *testing.T) {
 	require.True(t, ok)
 }
 
+func TestRedact(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "secret ref", in: "key: {secret:API_KEY}", want: "key: [redacted]"},
+		{name: "env ref", in: "key: {env:API_KEY}", want: "key: [redacted]"},
+		{name: "both", in: "{secret:A} and {env:B}", want: "[redacted] and [redacted]"},
+		{name: "bare prefix untouched", in: "key: {secret:no closing", want: "key: {secret:no closing"},
+		{name: "invalid name untouched", in: "{secret:1BAD} {secret:}", want: "{secret:1BAD} {secret:}"},
+		{name: "plain text", in: "no refs here", want: "no refs here"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.Equal(t, tt.want, string(digest.Redact([]byte(tt.in))))
+		})
+	}
+}
+
 func TestVerify(t *testing.T) {
 	t.Parallel()
 

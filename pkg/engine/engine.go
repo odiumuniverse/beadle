@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -147,11 +148,40 @@ func (e *Engine) sync(ctx context.Context, opts SyncOptions) (*Report, error) {
 		report.Warnings = append(report.Warnings, "conflict files: "+err.Error())
 	}
 
+	if e.memoryCleanupEnabled(opts) {
+		e.cleanMemoryIgnore(report)
+	}
+
 	if report.VaultChanged() {
 		e.commitHistory(ctx)
 	}
 
 	return report, nil
+}
+
+func (e *Engine) memoryCleanupEnabled(opts SyncOptions) bool {
+	return !opts.DryRun && e.config.KindEnabled(kind.Memory) && selected(opts.Kinds, kind.Memory)
+}
+
+func (e *Engine) cleanMemoryIgnore(report *Report) {
+	items, _, err := loadNotesDir(e.vault.MemoryDir())
+	if err != nil {
+		report.Warnings = append(report.Warnings, "memory gitignore: "+err.Error())
+
+		return
+	}
+
+	for _, key := range slices.Sorted(maps.Keys(items)) {
+		if len(secret.ScanText(items[key])) > 0 {
+			report.Warnings = append(report.Warnings, "memory stays ignored: possible secret in note "+key)
+
+			return
+		}
+	}
+
+	if err := e.vault.RemoveLegacyIgnore(); err != nil {
+		report.Warnings = append(report.Warnings, "memory gitignore: "+err.Error())
+	}
 }
 
 func (e *Engine) ActiveAgents(ctx context.Context) ([]*agent.Agent, error) {

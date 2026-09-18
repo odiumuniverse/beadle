@@ -26,11 +26,14 @@ state.json
 objects/
 conflicts/
 plugins/
-# memory notes stay out of git until the U-12 secret gate lands
-memory/
 # project rules stay out of git until the U-12 secret gate lands
 projects/
 `
+
+const (
+	legacyMemoryIgnoreLine    = "memory/"
+	legacyMemoryIgnoreComment = "# memory notes stay out of git until the U-12 secret gate lands"
+)
 
 var dirs = []string{
 	"conflicts",
@@ -186,6 +189,62 @@ func writeGitIgnore(path string, data []byte) error {
 	}
 
 	return nil
+}
+
+// MemoryIgnored reports whether the legacy memory/ gitignore line is present.
+func (v *Vault) MemoryIgnored() (bool, error) {
+	data, err := os.ReadFile(filepath.Join(v.root, ".gitignore"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+
+	if err != nil {
+		return false, fmt.Errorf("read .gitignore: %w", err)
+	}
+
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if strings.TrimSpace(line) == legacyMemoryIgnoreLine {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// RemoveLegacyIgnore drops the obsolete memory gitignore lines from an
+// existing vault. It is idempotent and writes the file atomically.
+func (v *Vault) RemoveLegacyIgnore() error {
+	path := filepath.Join(v.root, ".gitignore")
+
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path is inside the vault root
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+
+	if err != nil {
+		return fmt.Errorf("read .gitignore: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	kept := make([]string, 0, len(lines))
+	removed := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == legacyMemoryIgnoreLine || trimmed == legacyMemoryIgnoreComment {
+			removed = true
+
+			continue
+		}
+
+		kept = append(kept, line)
+	}
+
+	if !removed {
+		return nil
+	}
+
+	return writeGitIgnore(path, []byte(strings.Join(kept, "\n")))
 }
 
 func missingGitIgnoreLines(data []byte) []string {

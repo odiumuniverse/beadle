@@ -3,7 +3,6 @@ package vault_test
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -66,9 +65,12 @@ func TestInit(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(ignore), "mcp/secrets.json")
 	require.Contains(t, string(ignore), "objects/")
-	require.Contains(t, string(ignore), "memory/")
-	require.Contains(t, string(ignore), "until the U-12 secret gate lands")
 	require.Contains(t, string(ignore), "projects/")
+	require.NotContains(t, string(ignore), "memory/", "memory notes are git-tracked after the U-12 secret gate")
+
+	ignored, err := v.MemoryIgnored()
+	require.NoError(t, err)
+	require.False(t, ignored)
 
 	require.NoError(t, v.Init(), "init must be idempotent")
 
@@ -85,19 +87,34 @@ func readIgnore(t *testing.T, root string) string {
 	return string(data)
 }
 
-func TestEnsureGitIgnoreAddsMemoryToOldVault(t *testing.T) {
+func TestRemoveLegacyIgnore(t *testing.T) {
 	t.Parallel()
 
 	root := filepath.Join(t.TempDir(), "vault")
 	require.NoError(t, os.MkdirAll(root, 0o700))
 
-	old := "# AgentSync: credentials and machine-local state stay on this machine.\nmcp/secrets.json\nstate/\nstate.json\nobjects/\nconflicts/\nplugins/\n"
-	require.NoError(t, os.WriteFile(filepath.Join(root, ".gitignore"), []byte(old), 0o600))
+	legacy := "mcp/secrets.json\n# memory notes stay out of git until the U-12 secret gate lands\nmemory/\nplugins/\n"
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".gitignore"), []byte(legacy), 0o600))
 
-	require.NoError(t, vault.New(root).EnsureGitIgnore())
+	v := vault.New(root)
+
+	ignored, err := v.MemoryIgnored()
+	require.NoError(t, err)
+	require.True(t, ignored)
+
+	require.NoError(t, v.RemoveLegacyIgnore())
+	require.NoError(t, v.RemoveLegacyIgnore(), "removal is idempotent")
 
 	updated := readIgnore(t, root)
-	require.Contains(t, updated, "memory/\n")
-	require.Contains(t, updated, "projects/\n")
-	require.Equal(t, 1, strings.Count(updated, "plugins/"), "existing lines stay put")
+	require.NotContains(t, updated, "memory/")
+	require.NotContains(t, updated, "U-12 secret gate lands\nmemory/")
+	require.Contains(t, updated, "mcp/secrets.json")
+	require.Contains(t, updated, "plugins/")
+
+	ignored, err = v.MemoryIgnored()
+	require.NoError(t, err)
+	require.False(t, ignored)
+
+	require.NoError(t, vault.New(root).EnsureGitIgnore(), "the plain append-only pass must not bring memory/ back")
+	require.NotContains(t, readIgnore(t, root), "memory/")
 }

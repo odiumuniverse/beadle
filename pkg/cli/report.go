@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 
@@ -38,6 +39,14 @@ func printReport(w io.Writer, report *engine.Report) {
 		}
 	}
 
+	if lines := inboxLines(report.Kinds); len(lines) > 0 {
+		fmt.Fprintln(w, "\ninbox")
+
+		for _, line := range lines {
+			fmt.Fprintln(w, line)
+		}
+	}
+
 	if n := len(report.Conflicts); n > 0 {
 		fmt.Fprintf(w, "\n%d open conflict(s): review with `agent-sync conflicts`, settle with `agent-sync resolve <id> --take vault|agent`\n", n)
 	}
@@ -45,6 +54,39 @@ func printReport(w io.Writer, report *engine.Report) {
 	for _, warning := range report.Warnings {
 		fmt.Fprintf(w, "warning: %s\n", warning)
 	}
+}
+
+func inboxLines(kinds []engine.KindReport) []string {
+	consumed := map[string]int{}
+	skipped := map[string]int{}
+
+	for _, kr := range kinds {
+		for _, result := range kr.Inbox {
+			switch result.Action {
+			case engine.InboxCreated, engine.InboxWouldCreate:
+				consumed[result.Agent]++
+			case engine.InboxSkipped:
+				skipped[result.Agent]++
+			}
+		}
+	}
+
+	agents := map[string]struct{}{}
+	for agentID := range consumed {
+		agents[agentID] = struct{}{}
+	}
+
+	for agentID := range skipped {
+		agents[agentID] = struct{}{}
+	}
+
+	var lines []string
+
+	for _, agentID := range slices.Sorted(maps.Keys(agents)) {
+		lines = append(lines, fmt.Sprintf("  inbox: %-13s consumed=%d skipped=%d", agentID, consumed[agentID], skipped[agentID]))
+	}
+
+	return lines
 }
 
 func digestLines(results []engine.DigestResult) []string {

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -33,7 +34,10 @@ const (
 	projectsMark = "/.claude/projects/"
 	reasonBudget = "budget"
 	hashHexLen   = 64
+	redactedText = "[redacted]"
 )
+
+var refRedactRE = regexp.MustCompile(`\{(?:secret|env):[A-Za-z_][A-Za-z0-9_]*\}`)
 
 // ErrFence reports a malformed or ambiguous digest fence.
 var ErrFence = errors.New("malformed memory fence")
@@ -133,6 +137,11 @@ func Neutralize(text []byte) []byte {
 	return bytes.ReplaceAll(text, []byte(markerWord), []byte(markerSafe))
 }
 
+// Redact replaces secret and environment references with a fixed placeholder.
+func Redact(text []byte) []byte {
+	return refRedactRE.ReplaceAll(text, []byte(redactedText))
+}
+
 // Verify parses a fence receipt and recomputes the render hash of the block
 // body, reporting whether the bytes are intact.
 func Verify(fence []byte) (Receipt, bool) {
@@ -214,10 +223,10 @@ func newEntry(dir, key string, data []byte) entry {
 }
 
 func renderLine(item entry) string {
-	line := "- [" + neutralize(item.name) + "](" + neutralize(item.path) + ")"
+	line := "- [" + sanitize(item.name) + "](" + sanitize(item.path) + ")"
 
 	if item.hook != "" {
-		line += " — " + neutralize(item.hook)
+		line += " — " + sanitize(item.hook)
 	}
 
 	return line + suffix(item)
@@ -238,7 +247,7 @@ func suffix(item entry) string {
 		return ""
 	}
 
-	return " [" + neutralize(strings.Join(parts, ", ")) + "]"
+	return " [" + sanitize(strings.Join(parts, ", ")) + "]"
 }
 
 func sortEntries(entries []entry) {
@@ -293,7 +302,7 @@ func manifestLines(dropped []entry, budget int) []string {
 	used := 0
 
 	for _, item := range dropped {
-		line := "- " + neutralize(item.path) + " — omitted: " + reasonBudget
+		line := "- " + sanitize(item.path) + " — omitted: " + reasonBudget
 		if used+len(line)+1 > limit {
 			break
 		}
@@ -568,6 +577,6 @@ func tildeDir(dir string) string {
 	return clean
 }
 
-func neutralize(text string) string {
-	return string(Neutralize([]byte(text)))
+func sanitize(text string) string {
+	return string(Redact(Neutralize([]byte(text))))
 }
