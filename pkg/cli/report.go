@@ -131,6 +131,25 @@ func pluginLines(results []engine.PluginResult, farm []engine.FarmResult) []stri
 	return lines
 }
 
+func pushLines(k kind.ID, result engine.AgentResult) []string {
+	line := fmt.Sprintf("  → %-13s %s", result.Agent, summarizeChanges(k, result.Changes))
+	if result.Action == engine.ActionWouldPush {
+		line += " (dry run)"
+	}
+
+	if result.Note != "" {
+		line += " — " + result.Note
+	}
+
+	lines := []string{line}
+
+	if result.ReloadHint != "" {
+		lines = append(lines, "  ↻ "+result.ReloadHint)
+	}
+
+	return lines
+}
+
 func printKind(w io.Writer, kr engine.KindReport, conflicts []state.Conflict) {
 	var lines []string
 
@@ -141,16 +160,7 @@ func printKind(w io.Writer, kr engine.KindReport, conflicts []state.Conflict) {
 	for _, result := range kr.Agents {
 		switch result.Action {
 		case engine.ActionPushed, engine.ActionWouldPush:
-			line := fmt.Sprintf("  → %-13s %s", result.Agent, summarizeChanges(kr.Kind, result.Changes))
-			if result.Action == engine.ActionWouldPush {
-				line += " (dry run)"
-			}
-
-			if result.Note != "" {
-				line += " — " + result.Note
-			}
-
-			lines = append(lines, line)
+			lines = append(lines, pushLines(kr.Kind, result)...)
 		case engine.ActionSkipped, engine.ActionError, engine.ActionAlias:
 			lines = append(lines, fmt.Sprintf("  ! %-13s %s: %s", result.Agent, result.Action, result.Note))
 		case engine.ActionNoop, engine.ActionPullOnly:

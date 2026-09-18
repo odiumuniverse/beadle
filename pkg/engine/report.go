@@ -38,11 +38,12 @@ type ItemChange struct {
 }
 
 type AgentResult struct {
-	Agent   string       `json:"agent"`
-	Mode    config.Mode  `json:"mode"`
-	Action  Action       `json:"action"`
-	Changes []ItemChange `json:"changes,omitempty"`
-	Note    string       `json:"note,omitempty"`
+	Agent      string       `json:"agent"`
+	Mode       config.Mode  `json:"mode"`
+	Action     Action       `json:"action"`
+	Changes    []ItemChange `json:"changes,omitempty"`
+	Note       string       `json:"note,omitempty"`
+	ReloadHint string       `json:"reload_hint,omitempty"`
 }
 
 type KindReport struct {

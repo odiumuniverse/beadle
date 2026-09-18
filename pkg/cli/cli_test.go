@@ -109,3 +109,28 @@ func TestResolveNeedsADecision(t *testing.T) {
 	_, err = runCLI(t, "resolve", "deadbeef")
 	require.ErrorContains(t, err, "--take")
 }
+
+func TestReloadHintOutput(t *testing.T) {
+	home := t.TempDir()
+
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("AGENTSYNC_HOME", filepath.Join(home, ".agent-sync"))
+
+	writeFile(t, filepath.Join(home, ".claude.json"), `{"mcpServers": {"alpha": {"type": "stdio", "command": "a"}}}`)
+	writeFile(t, filepath.Join(home, ".claude", "CLAUDE.md"), "# rules\n")
+	writeFile(t, filepath.Join(home, ".config", "opencode", "opencode.json"), `{"mcp": {"beta": {"type": "local", "command": ["b"]}}}`)
+	writeFile(t, filepath.Join(home, ".config", "opencode", "AGENTS.md"), "# rules\n")
+
+	_, err := runCLI(t, "init")
+	require.NoError(t, err)
+
+	out, err := runCLI(t, "sync")
+	require.NoError(t, err)
+	require.Contains(t, out, "↻ new Claude Code sessions load MCP changes")
+	require.Contains(t, out, "↻ OpenCode reads its config at startup: restart OpenCode to load the changes")
+
+	out, err = runCLI(t, "sync")
+	require.NoError(t, err)
+	require.NotContains(t, out, "↻")
+}

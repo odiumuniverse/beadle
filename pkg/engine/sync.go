@@ -344,6 +344,10 @@ func (e *Engine) pushView(
 	actual, action, note := e.write(ctx, spec, v, desired)
 	result.Action, result.Note = action, note
 
+	if result.Action == ActionPushed {
+		result.ReloadHint = v.surface.Traits().ReloadHint
+	}
+
 	return actual
 }
 

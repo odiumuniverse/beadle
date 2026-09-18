@@ -624,3 +624,50 @@ func TestClaudeProjectScope(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, present, "only the exact recorded path matches")
 }
+
+func TestReloadHints(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	home := t.TempDir()
+	cwd := t.TempDir()
+
+	tests := []struct {
+		name string
+		a    func() *agent.Agent
+		k    kind.ID
+		want string
+	}{
+		{
+			name: "gemini mcp",
+			a:    func() *agent.Agent { return agent.GeminiCLI(home, cwd) },
+			k:    kind.MCP,
+			want: "Gemini CLI: run /mcp reload or restart Gemini CLI to load MCP changes",
+		},
+		{
+			name: "gemini permissions",
+			a:    func() *agent.Agent { return agent.GeminiCLI(home, cwd) },
+			k:    kind.Permissions,
+			want: "Gemini CLI reads settings.json at startup: restart Gemini CLI to load the changes",
+		},
+		{
+			name: "opencode mcp",
+			a:    func() *agent.Agent { return agent.OpenCode(home, cwd) },
+			k:    kind.MCP,
+			want: "OpenCode reads its config at startup: restart OpenCode to load the changes",
+		},
+		{
+			name: "opencode permissions",
+			a:    func() *agent.Agent { return agent.OpenCode(home, cwd) },
+			k:    kind.Permissions,
+			want: "OpenCode reads its config at startup: restart OpenCode to load the changes",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", "")
+
+			require.Equal(t, tt.want, surfaceOf(t, tt.a(), tt.k).Traits().ReloadHint)
+		})
+	}
+}
