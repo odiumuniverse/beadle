@@ -28,6 +28,8 @@ const (
 	farmNoteLimit = 5
 )
 
+var replaceSymlink = fsutil.ReplaceSymlink
+
 type FarmAction string
 
 const (
@@ -325,6 +327,8 @@ func (e *Engine) farmAgentSkills(agentID, dir string, plan farmPlan) ([]FarmResu
 
 		action, err := e.farmLinkSkill(dir, skillName, plan.Desired[skillName])
 		switch {
+		case errors.Is(err, fsutil.ErrSymlinksUnsupported):
+			return []FarmResult{{Agent: agentID, Action: FarmSkipped, Note: symlinkUnsupportedNote(dir)}}, warns
 		case err != nil:
 			warns = append(warns, "plugin farm: "+err.Error())
 		case action == FarmLinked:
@@ -357,6 +361,10 @@ func (e *Engine) farmAgentSkills(agentID, dir string, plan farmPlan) ([]FarmResu
 	}
 
 	return results, warns
+}
+
+func symlinkUnsupportedNote(dir string) string {
+	return fmt.Sprintf("symlinks are not supported in %s; a copy fallback is intentionally not performed", dir)
 }
 
 func farmResults(agentID string, action FarmAction, counts map[string]int) []FarmResult {
@@ -493,7 +501,7 @@ func (e *Engine) farmLinkSkill(dir, skillName, target string) (FarmAction, error
 		return FarmNoop, fmt.Errorf("readlink %s: %w", path, err)
 	}
 
-	if err := fsutil.ReplaceSymlink(path, target); err != nil {
+	if err := replaceSymlink(path, target); err != nil {
 		return FarmNoop, err
 	}
 

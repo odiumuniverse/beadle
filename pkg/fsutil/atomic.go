@@ -3,11 +3,19 @@ package fsutil
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 )
+
+// ErrSymlinksUnsupported reports that symlinks cannot be created in a directory.
+var ErrSymlinksUnsupported = errors.New("symlinks are not supported here")
+
+var symlinkLinker = os.Symlink
 
 func WriteFileAtomic(path string, data []byte, perm fs.FileMode) error {
 	return WriteFileAtomicChecked(path, data, perm, nil)
@@ -88,8 +96,8 @@ func ReplaceSymlink(path, target string) error {
 		_ = os.Remove(tmpName)
 	}
 
-	if err = os.Symlink(target, tmpName); err != nil {
-		return fmt.Errorf("create temp symlink: %w", err)
+	if err = symlinkLinker(target, tmpName); err != nil {
+		return fmt.Errorf("create temp symlink: %w", classifySymlinkErr(err))
 	}
 
 	if err = os.Rename(tmpName, path); err != nil {
@@ -113,6 +121,27 @@ func symlinkTempName(dir, base string) (string, error) {
 	}
 
 	return filepath.Join(dir, "."+base+".tmp-"+hex.EncodeToString(suffix[:])), nil
+}
+
+// UnsupportedSymlinkFS reports whether a filesystem type definitively cannot
+// hold symlinks; network filesystems are excluded — the farm link decides.
+func UnsupportedSymlinkFS(fsType string) bool {
+	switch strings.ToLower(fsType) {
+	case "exfat", "msdos", "vfat":
+		return true
+	default:
+		return false
+	}
+}
+
+func classifySymlinkErr(err error) error {
+	for _, denied := range []error{syscall.EPERM, syscall.EOPNOTSUPP, syscall.ENOTSUP, syscall.ENOSYS} {
+		if errors.Is(err, denied) {
+			return fmt.Errorf("%w: %w", ErrSymlinksUnsupported, err)
+		}
+	}
+
+	return err
 }
 
 func syncDir(dir string) error {

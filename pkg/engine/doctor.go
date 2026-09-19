@@ -36,6 +36,8 @@ const (
 
 const maxObjectIssues = 5
 
+var hostFSType = fsutil.FSType
+
 type Issue struct {
 	Severity string  `json:"severity"`
 	Kind     kind.ID `json:"kind,omitempty"`
@@ -83,6 +85,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.pluginRefIssues(active)...)
 	issues = append(issues, e.pluginPivotIssues(ctx)...)
 	issues = append(issues, e.pluginMigrationIssues(ctx, ledger)...)
+	issues = append(issues, e.farmPresentationIssues(active, ledger)...)
 	issues = append(issues, e.digestIssues(active, st)...)
 	issues = append(issues, e.memorySecretIssues()...)
 
@@ -662,6 +665,52 @@ func scopeIssues(source string, scope, vaultItems kind.Items) []Issue {
 
 func projectIssue(severity, message string) Issue {
 	return Issue{Severity: severity, Kind: kind.MCP, Agent: agent.ClaudeCodeID, Message: message}
+}
+
+func (e *Engine) farmPresentationIssues(active []*agent.Agent, ledger pluginLedger) []Issue {
+	if e.home == "" || !e.config.KindEnabled(kind.Skills) {
+		return nil
+	}
+
+	plan, _ := e.buildFarmPlan(ledger)
+
+	var issues []Issue
+
+	for _, a := range active {
+		surface := a.Surface(kind.Skills)
+		if surface == nil || e.config.ModeFor(a.ID, kind.Skills, surface.Traits().DefaultMode) == config.ModeOff {
+			continue
+		}
+
+		dir := surface.Path()
+		if !isDir(dir) {
+			continue
+		}
+
+		fsType, err := hostFSType(dir)
+		if err != nil || !fsutil.UnsupportedSymlinkFS(fsType) {
+			continue
+		}
+
+		issues = append(issues, Issue{
+			Severity: SeverityWarn,
+			Kind:     kind.Skills,
+			Agent:    a.ID,
+			Message:  farmPresentationWarning(dir, e.home, len(plan.Desired)),
+		})
+	}
+
+	return issues
+}
+
+func farmPresentationWarning(dir, home string, skills int) string {
+	display := displayHomePath(dir, home)
+
+	if skills == 0 {
+		return fmt.Sprintf("symlinks are not supported in %s; a copy fallback is intentionally not performed", display)
+	}
+
+	return fmt.Sprintf("symlinks are not supported in %s; %d plugin skill(s) are not presented; a copy fallback is intentionally not performed", display, skills)
 }
 
 func (e *Engine) pluginRefIssues(active []*agent.Agent) []Issue {
