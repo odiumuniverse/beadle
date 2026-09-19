@@ -96,6 +96,14 @@ a repository is touched; `doctor` keeps reporting foreign `.mcp.json` /
 ## Install
 
 ```bash
+brew tap odiumuniverse/tap
+brew trust odiumuniverse/tap
+brew install beadle
+```
+
+The tap is private, so `brew tap` clones over SSH. Or build from source:
+
+```bash
 git clone git@github.com:odiumuniverse/beadle.git
 cd beadle
 make build          # bin/beadle
