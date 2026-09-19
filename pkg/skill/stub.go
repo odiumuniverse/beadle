@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-const StubMarkerFile = ".agent-sync-quarantine"
+const StubMarkerFile = ".beadle-quarantine"
 
 func IsStubDir(dir string) (string, bool) {
 	data, err := os.ReadFile(filepath.Join(dir, StubMarkerFile)) //nolint:gosec // G304: the caller resolves the directory

@@ -13,8 +13,8 @@ import (
 )
 
 func TestKeyringRealRoundTrip(t *testing.T) { //nolint:paralleltest // touches the real keychain
-	if os.Getenv("AGENTSYNC_KEYRING_E2E") != "1" {
-		t.Skip("set AGENTSYNC_KEYRING_E2E=1 to touch the real keychain")
+	if os.Getenv("BEADLE_KEYRING_E2E") != "1" {
+		t.Skip("set BEADLE_KEYRING_E2E=1 to touch the real keychain")
 	}
 
 	if runtime.GOOS != "darwin" {
@@ -24,7 +24,7 @@ func TestKeyringRealRoundTrip(t *testing.T) { //nolint:paralleltest // touches t
 	keyring, err := secret.NewShellKeyring(secret.ExecRunner{})
 	require.NoError(t, err)
 
-	account := fmt.Sprintf("agentsync-e2e-%d", time.Now().UnixNano())
+	account := fmt.Sprintf("beadle-e2e-%d", time.Now().UnixNano())
 
 	t.Cleanup(func() {
 		_, _ = keyring.Delete(account)

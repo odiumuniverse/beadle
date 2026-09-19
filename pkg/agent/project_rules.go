@@ -20,7 +20,7 @@ import (
 type projectRulesSurface struct {
 	dir  string
 	file string
-	slug string
+	id   string
 }
 
 func (s *projectRulesSurface) Kind() kind.ID { return kind.Projects }
@@ -37,15 +37,17 @@ func (s *projectRulesSurface) Traits() Traits {
 	}
 }
 
-func (s *projectRulesSurface) key() string { return s.slug + "/" + s.file }
+func (s *projectRulesSurface) ProjectRel() string { return s.file }
+
+func (s *projectRulesSurface) key() string { return s.id + "/" + s.file }
 
 func (s *projectRulesSurface) active() bool {
 	return fsutil.Exists(filepath.Join(s.dir, ".git")) || fsutil.Exists(s.Path())
 }
 
 func (s *projectRulesSurface) Project(key string, value []byte) (string, []byte, bool) {
-	slug, file, ok := strings.Cut(key, "/")
-	if !ok || slug != s.slug || file != s.file || !s.active() {
+	group, file, ok := strings.Cut(key, "/")
+	if !ok || group != s.id || file != s.file || !s.active() {
 		return "", nil, false
 	}
 
@@ -55,6 +57,10 @@ func (s *projectRulesSurface) Project(key string, value []byte) (string, []byte,
 func (s *projectRulesSurface) Read(context.Context) (Snapshot, error) {
 	if !s.active() {
 		return Snapshot{Items: kind.Items{}}, nil
+	}
+
+	if _, err := projectTargetInfo(s.Path()); err != nil {
+		return Snapshot{}, err
 	}
 
 	data, present, err := readFile(s.Path())
@@ -128,7 +134,7 @@ func (s *projectRulesSurface) writeBody(value []byte) error {
 }
 
 func (s *projectRulesSurface) updateFenced(build func(body, fence []byte) ([]byte, bool, error)) error {
-	return updateFile(s.Path(), 0o644, func(data []byte, present bool) ([]byte, bool, error) {
+	return updateProjectFile(s.Path(), 0o644, func(data []byte, present bool) ([]byte, bool, error) {
 		var body, fence []byte
 
 		if present {
@@ -150,6 +156,10 @@ func terminated(fence []byte) []byte {
 	}
 
 	return append(slices.Clone(fence), '\n')
+}
+
+func (s *projectRulesSurface) Remove() error {
+	return removeProjectFile(s.Path())
 }
 
 func (s *projectRulesSurface) removeCanonicalFile() error {

@@ -84,7 +84,7 @@ func TestAntigravityUnion(t *testing.T) {
 	require.Empty(t, report.Kind(kind.MCP).Pulled)
 	require.False(t, report.VaultChanged())
 
-	agy := agent.AntigravityCLI(f.home)
+	agy := agent.AntigravityCLI(f.home, t.TempDir())
 
 	for _, k := range []kind.ID{kind.Rules, kind.Skills, kind.Permissions} {
 		require.Nil(t, agy.Surface(k), "antigravity v1 must not write %s", k)

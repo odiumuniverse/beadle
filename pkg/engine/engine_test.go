@@ -15,6 +15,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/lock"
 	"github.com/odiumuniverse/beadle/pkg/mcp"
@@ -168,7 +169,7 @@ func write(t *testing.T, path, content string) {
 	t.Helper()
 
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o750))
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	require.NoError(t, fsutil.WriteFileAtomic(path, []byte(content), 0o600))
 }
 
 func read(t *testing.T, path string) string {

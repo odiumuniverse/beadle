@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-const DefaultLabel = "com.agentsync.watch"
+const DefaultLabel = "com.beadle.watch"
 
 type Spec struct {
 	Label      string

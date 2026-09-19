@@ -37,11 +37,12 @@ func (it Items) Equal(other Items) bool {
 }
 
 type Spec struct {
-	ID        ID
-	Singleton bool
-	Merge     func(base, vault, agent []byte) (merged []byte, ok bool)
-	Lift      func(vault, projected, updated []byte) []byte
-	Group     func(key string) string
+	ID               ID
+	Singleton        bool
+	NoImplicitDelete bool
+	Merge            func(base, vault, agent []byte) (merged []byte, ok bool)
+	Lift             func(vault, projected, updated []byte) []byte
+	Group            func(key string) string
 }
 
 var specs = []Spec{
@@ -50,7 +51,7 @@ var specs = []Spec{
 	{ID: Skills, Merge: mergeFile, Group: firstSegment},
 	{ID: Permissions, Merge: mergeNever, Group: sameKey},
 	{ID: Memory, Merge: mergeFile, Group: firstSegment},
-	{ID: Projects, Merge: mergeFile, Group: firstSegment},
+	{ID: Projects, NoImplicitDelete: true, Merge: mergeFile, Group: firstSegment},
 }
 
 func All() []Spec {

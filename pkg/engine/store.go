@@ -52,7 +52,9 @@ func (e *Engine) loadVault(k kind.ID) (kind.Items, bool, error) {
 
 		return guarded, extracted > 0, nil
 	case kind.Projects:
-		return loadNotesDir(e.vault.ProjectsDir())
+		items, err := e.loadProjects()
+
+		return items, false, err
 	default:
 		return nil, false, fmt.Errorf("unknown kind %q", k)
 	}
@@ -149,7 +151,7 @@ func (e *Engine) saveVault(k kind.ID, items kind.Items) error {
 
 		return saveNotesDir(e.vault.MemoryDir(), "memory", guarded)
 	case kind.Projects:
-		return saveNotesDir(e.vault.ProjectsDir(), "project", items)
+		return e.saveProjects(items)
 	case kind.Permissions:
 		rules := make(map[string]string, len(items))
 

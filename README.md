@@ -14,7 +14,7 @@ AI coding agents want you to live inside their world: their config directory, th
 **Beadle treats every agent as a replaceable client of your vault.** Your configuration lives in one place, in plain files you own. Agents come and go; the vault stays.
 
 ```
-~/.agent-sync/                  your vault — the only thing you edit
+~/.beadle/                  your vault — the only thing you edit
 ├── rules/base.md               your rules and instructions
 ├── mcp/servers.json            MCP servers (canonical, portable form)
 ├── mcp/secrets.json            credential values (0600, never committed)
@@ -50,13 +50,13 @@ Conflicts are explicit, never silent: a disagreeing server, skill or rule is hel
 | Cursor | — (user rules live in the account) | ✅ `~/.cursor/mcp.json` | reads Claude/shared dirs natively | ✅ opt-in (shell, MCP) |
 | Antigravity CLI | — (reads `~/.gemini/GEMINI.md` via the Gemini CLI adapter) | ✅ `~/.gemini/config/mcp_config.json` (`serverUrl`) | — (v1 not managed; agy reads `~/.gemini/antigravity-cli/skills` and `.agents/skills`) | — (not managed: `action(target)` dialect) |
 
-Claude Code project-scope MCP (`.mcp.json` in a repository, `projects.*` in `~/.claude.json`) is never written: `doctor` reports collisions with the vault, because project scope exists precisely to differ between repositories.
+Project scope is opt-in per repository: `beadle project enable <file>` records the file in the vault-side policy of the current project, and `beadle project status|disable|forget` manages it. Managed files: `.mcp.json`, `.cursor/mcp.json`, `.cursor/rules/*.mdc`, `.agents/mcp_config.json`, `AGENTS.md` and `GEMINI.md`. The project identity comes from the git origin (clones and worktrees converge), or from the path for non-git directories. Without a policy nothing in a repository is touched; `doctor` keeps reporting foreign `.mcp.json`/`projects.*` collisions. Tracked files never receive secret values: references render as `${NAME}` and only gitignored files (or files enabled with `--allow-secrets`) materialize values. Deleting a project file is not a deletion: it is reported as `kept` until `beadle project forget <file>`.
 
 ## Install
 
 ```bash
-git clone git@github.com:odiumuniverse/agents-sync.git
-cd agents-sync
+git clone git@github.com:odiumuniverse/beadle.git
+cd beadle
 make build          # bin/beadle
 ```
 
@@ -97,8 +97,9 @@ Or let each agent trigger it — the watcher watches agent files too, not just t
 | `doctor` | diagnostics; non-zero exit on errors |
 | `watch` / `daemon` | background sync, autostart service |
 | `secrets list\|set\|rm\|prune\|migrate` | credential values; never printed |
+| `project status\|enable <file>\|disable <file>\|forget <file>` | per-repository project scope; nothing happens without an enabled policy |
 
-Global flags: `--vault` (default `~/.agent-sync`, or `$AGENTSYNC_HOME`), `--verbose`, `--log-json`.
+Global flags: `--vault` (default `~/.beadle`, or `$BEADLE_HOME`), `--verbose`, `--log-json`.
 
 ## Design rules
 
@@ -119,7 +120,7 @@ make fmt
 make mod     # go mod tidy && go mod vendor (deps are vendored)
 ```
 
-Layout: `cmd/agentsync`, `pkg/{cli,vault,config,state,cas,fsutil,merge,kind,agent,engine,lock,watch,daemon,history,secret,mcp,skill,permission}`.
+Layout: `cmd/beadle`, `pkg/{cli,vault,config,state,cas,fsutil,merge,kind,agent,engine,lock,watch,daemon,history,secret,mcp,skill,permission}`.
 
 ## License
 

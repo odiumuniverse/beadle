@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/tailscale/hujson"
@@ -85,9 +86,18 @@ func writeTarget(target string, data []byte, defaultPerm fs.FileMode, check func
 }
 
 func updateFile(path string, defaultPerm fs.FileMode, build func(data []byte, present bool) ([]byte, bool, error)) error {
+	return updateFileMode(path, defaultPerm, build, false)
+}
+
+func updateFileMode(path string, defaultPerm fs.FileMode, build func(data []byte, present bool) ([]byte, bool, error), hardened bool) error {
 	for attempt := range casAttempts {
 		if attempt > 0 {
 			time.Sleep(casBackoff << (attempt - 1))
+		}
+
+		perm, err := writePerm(path, defaultPerm, hardened)
+		if err != nil {
+			return err
 		}
 
 		data, present, err := readFile(path)
@@ -117,7 +127,7 @@ func updateFile(path string, defaultPerm fs.FileMode, build func(data []byte, pr
 			return nil
 		}
 
-		if err := writeFileChecked(path, out, defaultPerm, check); err != nil {
+		if err := writeFileMode(path, out, perm, check, hardened); err != nil {
 			if errors.Is(err, errConcurrentWrite) {
 				continue
 			}
@@ -129,6 +139,43 @@ func updateFile(path string, defaultPerm fs.FileMode, build func(data []byte, pr
 	}
 
 	return fmt.Errorf("%s: %w (after %d attempts)", path, errConcurrentWrite, casAttempts)
+}
+
+func writePerm(path string, defaultPerm fs.FileMode, hardened bool) (fs.FileMode, error) {
+	if !hardened {
+		return defaultPerm, nil
+	}
+
+	info, err := projectTargetInfo(path)
+	if err != nil {
+		return 0, err
+	}
+
+	if info != nil {
+		return info.Mode().Perm(), nil
+	}
+
+	return defaultPerm, nil
+}
+
+func writeFileMode(path string, data []byte, perm fs.FileMode, check func() error, hardened bool) error {
+	if !hardened {
+		return writeFileChecked(path, data, perm, check)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return fmt.Errorf("create directory for %s: %w", path, err)
+	}
+
+	return fsutil.WriteFileAtomicChecked(path, data, perm, check)
+}
+
+func linkCount(info fs.FileInfo) uint64 {
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		return uint64(stat.Nlink)
+	}
+
+	return 1
 }
 
 func resolveLink(path string) (string, error) {

@@ -6,7 +6,7 @@ import (
 
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
-	"github.com/odiumuniverse/beadle/pkg/memory"
+	"github.com/odiumuniverse/beadle/pkg/project"
 )
 
 const (
@@ -18,9 +18,10 @@ const (
 	SharedID         = "shared"
 )
 
-func ClaudeCode(home string) *Agent {
+func ClaudeCode(home, cwd string) *Agent {
 	dir := filepath.Join(home, ".claude")
 	appState := filepath.Join(home, ".claude.json")
+	id := project.Resolve(cwd).ID
 
 	return &Agent{
 		ID:     ClaudeCodeID,
@@ -51,6 +52,7 @@ func ClaudeCode(home string) *Agent {
 				codec:   claudePerms,
 				traits:  Traits{DefaultMode: config.ModeSync},
 			},
+			&projectMCPSurface{dir: cwd, rel: ".mcp.json", id: id},
 		},
 	}
 }
@@ -60,6 +62,8 @@ func OpenCode(home, cwd string) *Agent {
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 		dir = filepath.Join(xdg, "opencode")
 	}
+
+	id := project.Resolve(cwd).ID
 
 	configFile := func() string {
 		for _, name := range []string{"opencode.jsonc", "opencode.json"} {
@@ -106,7 +110,7 @@ func OpenCode(home, cwd string) *Agent {
 					ReloadHint:  "OpenCode reads its config at startup: restart OpenCode to load the changes",
 				},
 			},
-			&projectRulesSurface{dir: cwd, file: "AGENTS.md", slug: memory.Slug(cwd)},
+			&projectRulesSurface{dir: cwd, file: "AGENTS.md", id: id},
 		},
 	}
 }
@@ -114,6 +118,7 @@ func OpenCode(home, cwd string) *Agent {
 func GeminiCLI(home, cwd string) *Agent {
 	dir := filepath.Join(home, ".gemini")
 	settings := filepath.Join(dir, "settings.json")
+	id := project.Resolve(cwd).ID
 
 	return &Agent{
 		ID:     GeminiCLIID,
@@ -144,14 +149,15 @@ func GeminiCLI(home, cwd string) *Agent {
 					ReloadHint:  "Gemini CLI reads settings.json at startup: restart Gemini CLI to load the changes",
 				},
 			},
-			&projectRulesSurface{dir: cwd, file: "GEMINI.md", slug: memory.Slug(cwd)},
+			&projectRulesSurface{dir: cwd, file: "GEMINI.md", id: id},
 		},
 	}
 }
 
-func AntigravityCLI(home string) *Agent {
+func AntigravityCLI(home, cwd string) *Agent {
 	dir := filepath.Join(home, ".gemini", "antigravity-cli")
 	mcpConfig := filepath.Join(home, ".gemini", "config", "mcp_config.json")
+	id := project.Resolve(cwd).ID
 
 	return &Agent{
 		ID:     AntigravityCLIID,
@@ -167,13 +173,15 @@ func AntigravityCLI(home string) *Agent {
 					ReloadHint:  "Antigravity CLI reads mcp_config.json at startup: restart agy to load the changes",
 				},
 			},
+			&projectMCPSurface{dir: cwd, rel: ".agents/mcp_config.json", id: id},
 		},
 	}
 }
 
-func Cursor(home string) *Agent {
+func Cursor(home, cwd string) *Agent {
 	dir := filepath.Join(home, ".cursor")
 	mcpFile := filepath.Join(dir, "mcp.json")
+	id := project.Resolve(cwd).ID
 
 	return &Agent{
 		ID:     CursorID,
@@ -201,6 +209,8 @@ func Cursor(home string) *Agent {
 				codec:   cursorPerms,
 				traits:  Traits{DefaultMode: config.ModeSync},
 			},
+			&projectMCPSurface{dir: cwd, rel: ".cursor/mcp.json", id: id},
+			&cursorRulesSurface{dir: cwd, id: id},
 		},
 	}
 }

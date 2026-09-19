@@ -95,8 +95,8 @@ func (a *app) daemonSpec() (daemon.Spec, error) {
 	spec := daemon.Spec{Binary: binary, Args: args, Home: home}
 
 	if runtime.GOOS == "darwin" {
-		spec.LogPath = filepath.Join(home, "Library", "Logs", "agentsync.log")
-		spec.ErrLogPath = filepath.Join(home, "Library", "Logs", "agentsync.err.log")
+		spec.LogPath = filepath.Join(home, "Library", "Logs", "beadle.log")
+		spec.ErrLogPath = filepath.Join(home, "Library", "Logs", "beadle.err.log")
 	}
 
 	return spec, nil

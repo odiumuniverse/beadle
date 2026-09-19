@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/lock"
 	"github.com/odiumuniverse/beadle/pkg/memory"
+	proj "github.com/odiumuniverse/beadle/pkg/project"
 	"github.com/odiumuniverse/beadle/pkg/secret"
 	"github.com/odiumuniverse/beadle/pkg/state"
 	"github.com/odiumuniverse/beadle/pkg/vault"
@@ -27,15 +29,18 @@ import (
 const lockWait = 30 * time.Second
 
 type Engine struct {
-	vault   *vault.Vault
-	store   *cas.Store
-	config  *config.Config
-	agents  []*agent.Agent
-	secrets *secret.Store
-	keyring secret.Keyring
-	log     embedlog.Logger
-	now     func() time.Time
-	home    string
+	vault        *vault.Vault
+	store        *cas.Store
+	config       *config.Config
+	agents       []*agent.Agent
+	secrets      *secret.Store
+	keyring      secret.Keyring
+	log          embedlog.Logger
+	now          func() time.Time
+	home         string
+	cwd          string
+	policy       proj.Policy
+	policyLoaded bool
 }
 
 type Option func(*Engine)
@@ -50,6 +55,10 @@ func WithClock(now func() time.Time) Option {
 
 func WithHome(home string) Option {
 	return func(e *Engine) { e.home = home }
+}
+
+func WithCwd(cwd string) Option {
+	return func(e *Engine) { e.cwd = cwd }
 }
 
 func WithKeyring(keyring secret.Keyring) Option {
@@ -67,6 +76,12 @@ func New(v *vault.Vault, cfg *config.Config, agents []*agent.Agent, opts ...Opti
 
 	for _, opt := range opts {
 		opt(e)
+	}
+
+	if e.cwd == "" {
+		if cwd, err := os.Getwd(); err == nil {
+			e.cwd = cwd
+		}
 	}
 
 	secrets, err := secret.Load(v.SecretsPath(), secret.WithKeyring(e.keyring))
@@ -271,7 +286,7 @@ func (e *Engine) WatchPaths(ctx context.Context) ([]string, error) {
 
 	for _, a := range active {
 		for _, surface := range a.Surfaces {
-			if !e.config.KindEnabled(surface.Kind()) {
+			if !e.config.KindEnabled(surface.Kind()) || !e.surfaceEnabled(surface) {
 				continue
 			}
 
@@ -336,6 +351,7 @@ const (
 	DigestWouldPrune DigestAction = "would-prune"
 	// DigestWouldHold is the dry-run preview of DigestHeld.
 	DigestWouldHold DigestAction = "would-hold"
+	DigestSkipped   DigestAction = "skipped"
 )
 
 // DigestResult reports one digest-phase decision for one project file.
@@ -350,11 +366,13 @@ type fencedSurface interface {
 }
 
 type projectTarget struct {
-	agent    *agent.Agent
-	surface  agent.Surface
-	slug     string
-	key      string
-	notesDir string
+	agent     *agent.Agent
+	surface   agent.Surface
+	id        string
+	rel       string
+	notesSlug string
+	key       string
+	notesDir  string
 }
 
 func (t projectTarget) path() string { return t.surface.Path() }
@@ -373,26 +391,40 @@ func (t projectTarget) active() bool {
 func (e *Engine) projectTargets(active []*agent.Agent) []projectTarget {
 	var targets []projectTarget
 
+	identity := e.projectIdentity()
+
 	for _, a := range active {
-		surface := a.Surface(kind.Projects)
-		if surface == nil {
-			continue
+		for _, surface := range a.SurfacesOf(kind.Projects) {
+			file, ok := surface.(agent.ProjectFile)
+			if !ok {
+				continue
+			}
+
+			if _, fenced := surface.(fencedSurface); !fenced {
+				continue
+			}
+
+			if !e.surfaceEnabled(surface) {
+				continue
+			}
+
+			if e.config.ModeFor(a.ID, kind.Projects, surface.Traits().DefaultMode) == config.ModeOff {
+				continue
+			}
+
+			dir := filepath.Dir(surface.Path())
+			slug := memory.Slug(dir)
+
+			targets = append(targets, projectTarget{
+				agent:     a,
+				surface:   surface,
+				id:        identity.ID,
+				rel:       file.ProjectRel(),
+				notesSlug: slug,
+				key:       identity.ID + "/" + file.ProjectRel(),
+				notesDir:  filepath.Join(e.home, ".claude", "projects", slug, "memory"),
+			})
 		}
-
-		if e.config.ModeFor(a.ID, kind.Projects, surface.Traits().DefaultMode) == config.ModeOff {
-			continue
-		}
-
-		dir := filepath.Dir(surface.Path())
-		slug := memory.Slug(dir)
-
-		targets = append(targets, projectTarget{
-			agent:    a,
-			surface:  surface,
-			slug:     slug,
-			key:      slug + "/" + filepath.Base(surface.Path()),
-			notesDir: filepath.Join(e.home, ".claude", "projects", slug, "memory"),
-		})
 	}
 
 	return targets
@@ -427,6 +459,12 @@ func (e *Engine) syncDigestTarget(
 		return
 	}
 
+	if !e.targetPublishable(report, target) {
+		report.Digest = append(report.Digest, DigestResult{Agent: target.agent.ID, Path: path, Action: DigestSkipped})
+
+		return
+	}
+
 	data, present, err := readOptional(path)
 	if err != nil {
 		report.Warnings = append(report.Warnings, "digest: "+err.Error())
@@ -441,9 +479,16 @@ func (e *Engine) syncDigestTarget(
 		return
 	}
 
-	notes := digestNotesFor(vaultItems, target.slug)
+	notes := digestNotesFor(vaultItems, target.notesSlug)
 	block, receipt := digest.Render(target.notesDir, notes, digest.DefaultBudget)
 
+	e.applyDigest(ctx, report, st, target, block, receipt, fence, found, present, opts)
+}
+
+func (e *Engine) applyDigest(
+	ctx context.Context, report *Report, st *state.State, target projectTarget,
+	block []byte, receipt digest.Receipt, fence []byte, found, present bool, opts SyncOptions,
+) {
 	if receipt.Notes == 0 {
 		e.removeDigest(ctx, report, st, target, found, opts)
 
@@ -456,7 +501,7 @@ func (e *Engine) syncDigestTarget(
 		return
 	}
 
-	stored, hasStored := st.Renders[path]
+	stored, hasStored := st.Renders[target.path()]
 
 	switch {
 	case found && hasStored && stored.BlockHash != cas.HashOf(fence):
@@ -470,6 +515,33 @@ func (e *Engine) syncDigestTarget(
 	case cas.HashOf(block) != cas.HashOf(fence):
 		e.writeDigest(ctx, report, st, target, block, DigestRefreshed, DigestWouldRefresh, opts)
 	}
+}
+
+func (e *Engine) targetPublishable(report *Report, target projectTarget) bool {
+	policy, err := e.projectPolicy()
+	if err != nil {
+		report.Warnings = append(report.Warnings, "digest: "+err.Error())
+
+		return false
+	}
+
+	if policy.AllowsSecrets(target.rel) {
+		return true
+	}
+
+	publishable, err := e.projectPublishable(target.rel)
+	if err != nil {
+		report.Warnings = append(report.Warnings, fmt.Sprintf("digest: %s: %v", target.path(), err))
+
+		return false
+	}
+
+	if !publishable {
+		report.Warnings = append(report.Warnings, fmt.Sprintf(
+			"digest: %s is not gitignored; the digest stays out of it (enable it in the policy with --allow-secrets to override)", target.path()))
+	}
+
+	return publishable
 }
 
 func digestFence(data []byte, present bool) ([]byte, bool, error) {

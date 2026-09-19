@@ -22,6 +22,7 @@ const (
 	OpAdded    = "added"
 	OpModified = "modified"
 	OpDeleted  = "deleted"
+	OpKept     = "kept"
 )
 
 type Change struct {
@@ -50,6 +51,7 @@ type KindReport struct {
 	Kind         kind.ID       `json:"kind"`
 	VaultChanged bool          `json:"vault_changed"`
 	Pulled       []Change      `json:"pulled,omitempty"`
+	Kept         []Change      `json:"kept,omitempty"`
 	Agents       []AgentResult `json:"agents,omitempty"`
 	Inbox        []InboxResult `json:"inbox,omitempty"`
 	Warnings     []string      `json:"warnings,omitempty"`

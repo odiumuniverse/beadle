@@ -17,8 +17,8 @@ import (
 func TestTextOracle(t *testing.T) {
 	t.Parallel()
 
-	if os.Getenv("AGENTSYNC_GIT_ORACLE") == "" {
-		t.Skip("set AGENTSYNC_GIT_ORACLE=1 to compare against git merge-file")
+	if os.Getenv("BEADLE_GIT_ORACLE") == "" {
+		t.Skip("set BEADLE_GIT_ORACLE=1 to compare against git merge-file")
 	}
 
 	git, err := exec.LookPath("git")

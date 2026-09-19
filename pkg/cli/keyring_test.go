@@ -14,7 +14,7 @@ func newSecretsVault(t *testing.T) string {
 	home := t.TempDir()
 
 	t.Setenv("HOME", home)
-	t.Setenv("AGENTSYNC_HOME", filepath.Join(home, ".agent-sync"))
+	t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
 	t.Setenv("XDG_CONFIG_HOME", "")
 
 	_, err := runCLI(t, "init")
@@ -26,7 +26,7 @@ func newSecretsVault(t *testing.T) string {
 func readSecrets(t *testing.T, home string) string {
 	t.Helper()
 
-	data, err := os.ReadFile(filepath.Join(home, ".agent-sync", "mcp", "secrets.json")) //nolint:gosec // G304: test reads its own temp file
+	data, err := os.ReadFile(filepath.Join(home, ".beadle", "mcp", "secrets.json")) //nolint:gosec // G304: test reads its own temp file
 	require.NoError(t, err)
 
 	return string(data)
@@ -67,7 +67,7 @@ func TestKeyringMigrateRefusesWithoutTool(t *testing.T) {
 func TestKeyringMigrateAlreadyKeyringProbes(t *testing.T) {
 	home := newSecretsVault(t)
 
-	writeFile(t, filepath.Join(home, ".agent-sync", "mcp", "secrets.json"), `{"version": 2, "backend": "keyring", "secrets": {}}`)
+	writeFile(t, filepath.Join(home, ".beadle", "mcp", "secrets.json"), `{"version": 2, "backend": "keyring", "secrets": {}}`)
 
 	t.Setenv("PATH", t.TempDir())
 

@@ -93,7 +93,7 @@ func TestClaudeMCPRead(t *testing.T) {
 	home := t.TempDir()
 	writeFile(t, filepath.Join(home, ".claude.json"), claudeConfigFixture)
 
-	snap := snapshot(t, agent.ClaudeCode(home), kind.MCP)
+	snap := snapshot(t, agent.ClaudeCode(home, t.TempDir()), kind.MCP)
 	require.True(t, snap.Present)
 	require.Len(t, snap.Items, 2)
 
@@ -119,7 +119,7 @@ func TestClaudeMCPWritePreservesEverythingElse(t *testing.T) {
 		"added":     mcp.Encode(mcp.Server{Transport: mcp.TransportStdio, Command: []string{"run"}}),
 	}
 
-	require.NoError(t, surfaceOf(t, agent.ClaudeCode(home), kind.MCP).Write(t.Context(), desired))
+	require.NoError(t, surfaceOf(t, agent.ClaudeCode(home, t.TempDir()), kind.MCP).Write(t.Context(), desired))
 
 	text := readFile(t, path)
 	require.Contains(t, text, `"numStartups"`)
@@ -129,14 +129,14 @@ func TestClaudeMCPWritePreservesEverythingElse(t *testing.T) {
 	require.Contains(t, text, `"added"`)
 	require.NotContains(t, text, "http-srv")
 
-	snap := snapshot(t, agent.ClaudeCode(home), kind.MCP)
+	snap := snapshot(t, agent.ClaudeCode(home, t.TempDir()), kind.MCP)
 	require.True(t, desired.Equal(snap.Items), "what was written reads back identically")
 }
 
 func TestClaudeMCPWriteWithoutConfigFile(t *testing.T) {
 	t.Parallel()
 
-	surface := surfaceOf(t, agent.ClaudeCode(t.TempDir()), kind.MCP)
+	surface := surfaceOf(t, agent.ClaudeCode(t.TempDir(), t.TempDir()), kind.MCP)
 
 	snap, err := surface.Read(t.Context())
 	require.NoError(t, err)
@@ -255,7 +255,7 @@ func TestCursorMCPRoundTrip(t *testing.T) {
 	original := `{"mcpServers": {"local-tool": {"command": "npx", "args": ["-y", "pkg"], "envFile": ".env"}, "remote-tool": {"url": "https://example.com/mcp", "auth": {"CLIENT_ID": "id"}}}}`
 	writeFile(t, path, original)
 
-	a := agent.Cursor(home)
+	a := agent.Cursor(home, t.TempDir())
 	snap := snapshot(t, a, kind.MCP)
 
 	require.Equal(t, mcp.TransportStdio, server(t, snap.Items["local-tool"]).Transport)
@@ -286,14 +286,14 @@ func TestEnvRefTranslation(t *testing.T) {
 			file: func(home string) (string, string) {
 				return filepath.Join(home, ".claude.json"), `{"mcpServers": {"s": {"command": "x", "env": {"TOKEN": "${SECRET}"}}}}`
 			},
-			agent:  func(home, _ string) *agent.Agent { return agent.ClaudeCode(home) },
+			agent:  agent.ClaudeCode,
 			syntax: "${SECRET}",
 		},
 		"cursor": {
 			file: func(home string) (string, string) {
 				return filepath.Join(home, ".cursor", "mcp.json"), `{"mcpServers": {"s": {"type": "stdio", "command": "x", "env": {"TOKEN": "${env:SECRET}"}}}}`
 			},
-			agent:  func(home, _ string) *agent.Agent { return agent.Cursor(home) },
+			agent:  func(home, _ string) *agent.Agent { return agent.Cursor(home, t.TempDir()) },
 			syntax: "${env:SECRET}",
 		},
 		"gemini bare": {
@@ -346,7 +346,7 @@ func TestClaudePermissions(t *testing.T) {
   }
 }`)
 
-	a := agent.ClaudeCode(home)
+	a := agent.ClaudeCode(home, t.TempDir())
 
 	snap := snapshot(t, a, kind.Permissions)
 	require.Equal(t, kind.Items{
@@ -474,7 +474,7 @@ func TestCursorPermissions(t *testing.T) {
   }
 }`)
 
-	a := agent.Cursor(home)
+	a := agent.Cursor(home, t.TempDir())
 
 	snap := snapshot(t, a, kind.Permissions)
 	require.Equal(t, kind.Items{"bash:ls": []byte("allow"), "mcp:dangerous:run": []byte("deny")}, snap.Items)
@@ -505,7 +505,7 @@ func TestRulesWriteThroughSymlink(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(link), 0o750))
 	require.NoError(t, os.Symlink(target, link))
 
-	a := agent.ClaudeCode(home)
+	a := agent.ClaudeCode(home, t.TempDir())
 	require.Equal(t, "# v1\n", string(snapshot(t, a, kind.Rules).Items[kind.RulesKey]))
 
 	require.NoError(t, surfaceOf(t, a, kind.Rules).Write(t.Context(), kind.Items{kind.RulesKey: []byte("# v2\n")}))
@@ -523,7 +523,7 @@ func TestRulesAreNeverDeleted(t *testing.T) {
 	path := filepath.Join(home, ".claude", "CLAUDE.md")
 	writeFile(t, path, "# keep\n")
 
-	require.NoError(t, surfaceOf(t, agent.ClaudeCode(home), kind.Rules).Write(t.Context(), kind.Items{}))
+	require.NoError(t, surfaceOf(t, agent.ClaudeCode(home, t.TempDir()), kind.Rules).Write(t.Context(), kind.Items{}))
 	require.Equal(t, "# keep\n", readFile(t, path))
 }
 
@@ -546,7 +546,7 @@ func TestSkillsSurface(t *testing.T) {
 	writeFile(t, filepath.Join(plugin, "SKILL.md"), "plugged\n")
 	require.NoError(t, os.Symlink(plugin, filepath.Join(dir, "plugged")))
 
-	a := agent.ClaudeCode(home)
+	a := agent.ClaudeCode(home, t.TempDir())
 	snap := snapshot(t, a, kind.Skills)
 
 	require.Equal(t, kind.Items{
@@ -575,13 +575,13 @@ func TestDetect(t *testing.T) {
 
 	home := t.TempDir()
 
-	detected, err := agent.ClaudeCode(home).Detect()
+	detected, err := agent.ClaudeCode(home, t.TempDir()).Detect()
 	require.NoError(t, err)
 	require.False(t, detected)
 
 	require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o750))
 
-	detected, err = agent.ClaudeCode(home).Detect()
+	detected, err = agent.ClaudeCode(home, t.TempDir()).Detect()
 	require.NoError(t, err)
 	require.True(t, detected)
 
@@ -721,7 +721,7 @@ func TestReadableSkills(t *testing.T) {
 
 	t.Run("cursor", func(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", "")
-		require.Equal(t, []string{cursorOwn, claudeOwn, sharedOwn}, readableDirs(readableRefs(t, agent.Cursor(home))))
+		require.Equal(t, []string{cursorOwn, claudeOwn, sharedOwn}, readableDirs(readableRefs(t, agent.Cursor(home, t.TempDir()))))
 	})
 
 	t.Run("gemini", func(t *testing.T) {
@@ -731,7 +731,7 @@ func TestReadableSkills(t *testing.T) {
 
 	t.Run("claude", func(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", "")
-		require.Equal(t, []string{claudeOwn}, readableDirs(readableRefs(t, agent.ClaudeCode(home))))
+		require.Equal(t, []string{claudeOwn}, readableDirs(readableRefs(t, agent.ClaudeCode(home, t.TempDir()))))
 	})
 
 	t.Run("shared", func(t *testing.T) {
@@ -768,7 +768,7 @@ func TestReadableSkillsGates(t *testing.T) {
 	require.NoError(t, os.Symlink(plugged, filepath.Join(skills, "plugged")))
 
 	writeFile(t, filepath.Join(skills, "stub", "SKILL.md"), "# stub\n")
-	writeFile(t, filepath.Join(skills, "stub", ".agent-sync-quarantine"), "v1 acme/tool x 2026-01-01T00:00:00Z\n")
+	writeFile(t, filepath.Join(skills, "stub", ".beadle-quarantine"), "v1 acme/tool x 2026-01-01T00:00:00Z\n")
 
 	byName := map[string]string{}
 	for _, ref := range readableRefs(t, agent.OpenCode(home, cwd)) {

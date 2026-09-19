@@ -18,8 +18,8 @@ func TestRenderLaunchd(t *testing.T) {
 		Binary:     "/usr/local/bin/beadle",
 		Args:       []string{"watch"},
 		Home:       "/Users/test",
-		LogPath:    "/Users/test/Library/Logs/agentsync.log",
-		ErrLogPath: "/Users/test/Library/Logs/agentsync.err.log",
+		LogPath:    "/Users/test/Library/Logs/beadle.log",
+		ErrLogPath: "/Users/test/Library/Logs/beadle.err.log",
 	}
 
 	path, content, err := daemon.RenderLaunchd(spec)
@@ -30,7 +30,7 @@ func TestRenderLaunchd(t *testing.T) {
 	require.Contains(t, content, "<string>/usr/local/bin/beadle</string>")
 	require.Contains(t, content, "<string>watch</string>")
 	require.Contains(t, content, "<key>KeepAlive</key><true/>")
-	require.Contains(t, content, "<key>StandardOutPath</key><string>/Users/test/Library/Logs/agentsync.log</string>")
+	require.Contains(t, content, "<key>StandardOutPath</key><string>/Users/test/Library/Logs/beadle.log</string>")
 }
 
 func TestRenderSystemd(t *testing.T) {
@@ -44,7 +44,7 @@ func TestRenderSystemd(t *testing.T) {
 
 	path, content, err := daemon.RenderSystemd(spec)
 	require.NoError(t, err)
-	require.Equal(t, filepath.Join("/home/test", ".config/systemd/user", "com-agentsync-watch.service"), path)
+	require.Equal(t, filepath.Join("/home/test", ".config/systemd/user", "com-beadle-watch.service"), path)
 
 	require.Contains(t, content, "ExecStart=/usr/local/bin/beadle watch")
 	require.Contains(t, content, "Restart=on-failure")

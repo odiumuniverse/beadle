@@ -19,7 +19,7 @@ var (
 )
 
 const (
-	keyringService = "agent-sync"
+	keyringService = "beadle"
 	darwinTool     = "security"
 	linuxTool      = "secret-tool"
 	darwinMissing  = 44

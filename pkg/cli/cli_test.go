@@ -38,7 +38,7 @@ func TestFirstRunFlow(t *testing.T) {
 
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("AGENTSYNC_HOME", filepath.Join(home, ".agent-sync"))
+	t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
 
 	writeFile(t, filepath.Join(home, ".claude.json"), `{"mcpServers": {"alpha": {"type": "stdio", "command": "a"}}}`)
 	writeFile(t, filepath.Join(home, ".claude", "CLAUDE.md"), "# claude rules\n")
@@ -55,7 +55,7 @@ func TestFirstRunFlow(t *testing.T) {
 	out, err = runCLI(t, "sync", "--dry-run")
 	require.NoError(t, err)
 	require.Contains(t, out, "dry run: nothing was written")
-	require.NoFileExists(t, filepath.Join(home, ".agent-sync", "mcp", "servers.json"))
+	require.NoFileExists(t, filepath.Join(home, ".beadle", "mcp", "servers.json"))
 
 	out, err = runCLI(t, "sync")
 	require.NoError(t, err)
@@ -101,7 +101,7 @@ func TestResolveNeedsADecision(t *testing.T) {
 	home := t.TempDir()
 
 	t.Setenv("HOME", home)
-	t.Setenv("AGENTSYNC_HOME", filepath.Join(home, ".agent-sync"))
+	t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
 
 	_, err := runCLI(t, "init")
 	require.NoError(t, err)
@@ -115,7 +115,7 @@ func TestReloadHintOutput(t *testing.T) {
 
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("AGENTSYNC_HOME", filepath.Join(home, ".agent-sync"))
+	t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
 
 	writeFile(t, filepath.Join(home, ".claude.json"), `{"mcpServers": {"alpha": {"type": "stdio", "command": "a"}}}`)
 	writeFile(t, filepath.Join(home, ".claude", "CLAUDE.md"), "# rules\n")

@@ -46,6 +46,10 @@ func (e *Engine) syncKind(ctx context.Context, spec kind.Spec, agents []*agent.A
 		return report
 	}
 
+	if !e.prepareProjects(spec, &report) {
+		return report
+	}
+
 	var (
 		pluginPlan   pluginMCPPlan
 		pluginLedger pluginLedger
@@ -86,21 +90,140 @@ func (e *Engine) syncKind(ctx context.Context, spec kind.Spec, agents []*agent.A
 
 	e.maybePersistPluginMCP(spec, pluginPlan, pluginLedger, opts, &report)
 
-	for _, v := range views {
-		actual := e.push(ctx, spec, v, vaultItems, opts, &report)
+	e.pushGroups(ctx, spec, views, vaultItems, opts, st, &report)
 
-		st.ReplaceConflicts(spec.ID, v.agent.ID, v.conflicts)
+	if spec.ID == kind.Projects {
+		e.warnProjectGit(&report, vaultItems)
+	}
+
+	return report
+}
+
+func (e *Engine) prepareProjects(spec kind.Spec, report *KindReport) bool {
+	if spec.ID != kind.Projects {
+		return true
+	}
+
+	if _, err := e.projectPolicy(); err != nil {
+		report.Err = err.Error()
+
+		return false
+	}
+
+	return true
+}
+
+func (e *Engine) pushGroups(
+	ctx context.Context, spec kind.Spec, views []*view, vaultItems kind.Items, opts SyncOptions, st *state.State, report *KindReport,
+) {
+	for _, group := range groupViews(views) {
+		result := AgentResult{Agent: group[0].agent.ID, Mode: group[0].mode, Action: ActionNoop}
+		actual := kind.Items{}
+
+		var conflicts []state.Conflict
+
+		for _, v := range group {
+			items, single := e.pushView(ctx, spec, v, vaultItems, opts, report)
+			maps.Copy(actual, items)
+
+			mergeResults(&result, single)
+
+			conflicts = append(conflicts, v.conflicts...)
+		}
+
+		report.add(result)
+		st.ReplaceConflicts(spec.ID, result.Agent, conflicts)
 
 		if opts.DryRun {
 			continue
 		}
 
-		if err := e.storeBase(st, spec, v, actual); err != nil {
+		if err := e.storeBase(st, spec, group, actual); err != nil {
 			report.Err = err.Error()
 		}
 	}
+}
 
-	return report
+func (e *Engine) warnProjectGit(report *KindReport, items kind.Items) {
+	policy, err := e.projectPolicy()
+	if err != nil {
+		report.Warnings = append(report.Warnings, "project: "+err.Error())
+
+		return
+	}
+
+	id := e.projectIdentity().ID
+
+	for _, rel := range e.projectRels() {
+		if !policy.Enabled(rel) {
+			continue
+		}
+
+		publishable, err := e.projectPublishable(rel)
+		if err != nil {
+			report.Warnings = append(report.Warnings, "project "+rel+": "+err.Error())
+		}
+
+		if publishable || policy.AllowsSecrets(rel) || !strings.HasSuffix(rel, ".json") {
+			continue
+		}
+
+		if bytes.Contains(items[id+"/"+rel], []byte("{secret:")) {
+			report.Warnings = append(report.Warnings, fmt.Sprintf(
+				"project %s is git-tracked and holds secret references; values are rendered as ${NAME}", rel))
+		}
+	}
+}
+
+func groupViews(views []*view) [][]*view {
+	groups := map[string][]*view{}
+
+	var order []string
+
+	for _, v := range views {
+		if _, seen := groups[v.agent.ID]; !seen {
+			order = append(order, v.agent.ID)
+		}
+
+		groups[v.agent.ID] = append(groups[v.agent.ID], v)
+	}
+
+	out := make([][]*view, 0, len(order))
+
+	for _, id := range order {
+		out = append(out, groups[id])
+	}
+
+	return out
+}
+
+func mergeResults(into *AgentResult, single AgentResult) {
+	into.Changes = append(into.Changes, single.Changes...)
+
+	if resultRank(single.Action) > resultRank(into.Action) {
+		into.Action, into.Note = single.Action, single.Note
+	}
+
+	if into.ReloadHint == "" {
+		into.ReloadHint = single.ReloadHint
+	}
+}
+
+func resultRank(action Action) int {
+	switch action {
+	case ActionError:
+		return 5
+	case ActionPushed:
+		return 4
+	case ActionWouldPush:
+		return 3
+	case ActionSkipped:
+		return 2
+	case ActionAlias:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func (e *Engine) readViews(
@@ -111,38 +234,53 @@ func (e *Engine) readViews(
 	owners := map[string]string{}
 
 	for _, a := range agents {
-		surface := a.Surface(spec.ID)
-		if surface == nil {
-			continue
-		}
+		for _, surface := range a.SurfacesOf(spec.ID) {
+			if !e.surfaceEnabled(surface) {
+				continue
+			}
 
-		mode := restrict(e.config.ModeFor(a.ID, spec.ID, surface.Traits().DefaultMode), opts.Direction)
-		if mode == config.ModeOff {
-			continue
-		}
+			mode := restrict(e.config.ModeFor(a.ID, spec.ID, surface.Traits().DefaultMode), opts.Direction)
+			if mode == config.ModeOff {
+				continue
+			}
 
-		v, err := e.readView(ctx, spec, a, surface, mode, st)
-		if err != nil {
-			report.add(AgentResult{Agent: a.ID, Mode: mode, Action: ActionError, Note: err.Error()})
-
-			continue
-		}
-
-		if v.snap.Present {
-			realPath := agent.RealPath(surface.Path())
-			if owner, taken := owners[realPath]; taken {
-				report.add(AgentResult{Agent: a.ID, Mode: mode, Action: ActionAlias, Note: "same file as " + owner})
+			v, err := e.readView(ctx, spec, a, surface, mode, st)
+			if err != nil {
+				report.add(AgentResult{Agent: a.ID, Mode: mode, Action: ActionError, Note: err.Error()})
 
 				continue
 			}
 
-			owners[realPath] = a.ID
-		}
+			if v.snap.Present {
+				realPath := agent.RealPath(surface.Path())
+				if owner, taken := owners[realPath]; taken {
+					report.add(AgentResult{Agent: a.ID, Mode: mode, Action: ActionAlias, Note: "same file as " + owner})
 
-		views = append(views, v)
+					continue
+				}
+
+				owners[realPath] = a.ID
+			}
+
+			views = append(views, v)
+		}
 	}
 
 	return views
+}
+
+func (e *Engine) surfaceEnabled(surface agent.Surface) bool {
+	file, ok := surface.(agent.ProjectFile)
+	if !ok {
+		return true
+	}
+
+	policy, err := e.projectPolicy()
+	if err != nil {
+		return false
+	}
+
+	return policy.Enabled(file.ProjectRel())
 }
 
 func (e *Engine) readView(
@@ -167,7 +305,28 @@ func (e *Engine) readView(
 		return nil, err
 	}
 
+	if len(a.SurfacesOf(spec.ID)) > 1 {
+		base = ownedBy(surface, base)
+	}
+
 	return &view{agent: a, surface: surface, mode: mode, snap: snap, raw: raw, base: base, holds: map[string]bool{}}, nil
+}
+
+func ownedBy(surface agent.Surface, items kind.Items) kind.Items {
+	projector, ok := surface.(agent.Projector)
+	if !ok {
+		return items
+	}
+
+	out := kind.Items{}
+
+	for key, data := range items {
+		if _, _, visible := projector.Project(key, data); visible {
+			out[key] = data
+		}
+	}
+
+	return out
 }
 
 func (e *Engine) pull(spec kind.Spec, v *view, vaultItems kind.Items, owned map[string]struct{}, report *KindReport) {
@@ -191,9 +350,11 @@ func (e *Engine) pull(spec kind.Spec, v *view, vaultItems kind.Items, owned map[
 func (e *Engine) pullKey(spec kind.Spec, v *view, proj projection, vaultItems kind.Items, key string, report *KindReport) bool {
 	base, current, local := value(v.base, key), value(proj.items, key), value(v.snap.Items, key)
 
-	if spec.ID == kind.Memory && local == nil && base != nil && proj.hides(key) {
-		current = value(vaultItems, key)
+	if e.keepImplicitDelete(spec, v, key, base, current, local, report) {
+		return false
 	}
+
+	current = rememberedCurrent(spec, proj, vaultItems, key, base, local, current)
 
 	switch {
 	case same(local, base), same(current, local):
@@ -285,26 +446,20 @@ func (e *Engine) addConflict(spec kind.Spec, v *view, proj projection, key, reas
 	}
 }
 
-func (e *Engine) push(ctx context.Context, spec kind.Spec, v *view, vaultItems kind.Items, opts SyncOptions, report *KindReport) kind.Items {
-	result := AgentResult{Agent: v.agent.ID, Mode: v.mode, Action: ActionNoop}
-
-	actual := e.pushView(ctx, spec, v, vaultItems, opts, &result)
-
-	report.add(result)
-
-	return actual
-}
-
 func (e *Engine) pushView(
-	ctx context.Context, spec kind.Spec, v *view, vaultItems kind.Items, opts SyncOptions, result *AgentResult,
-) kind.Items {
-	if !v.mode.Pushes() {
-		result.Action = ActionPullOnly
+	ctx context.Context, spec kind.Spec, v *view, vaultItems kind.Items, opts SyncOptions, report *KindReport,
+) (kind.Items, AgentResult) {
+	single := AgentResult{Agent: v.agent.ID, Mode: v.mode, Action: ActionNoop}
 
-		return v.snap.Items
+	if !v.mode.Pushes() {
+		single.Action = ActionPullOnly
+
+		return v.snap.Items, single
 	}
 
 	desired := e.desired(spec, v, vaultItems)
+
+	desired = e.suppressKept(spec, v, desired, report)
 
 	// The ref-form comparison alone cannot see the secrets mode: both the
 	// snapshot and the desired projection hold {secret:NAME} references, so a
@@ -316,39 +471,82 @@ func (e *Engine) pushView(
 	}
 
 	if desired.Equal(v.snap.Items) && (resolved == nil || resolved.Equal(v.raw)) {
-		return v.snap.Items
+		return v.snap.Items, single
 	}
 
-	result.Changes = diffItems(v.snap.Items, desired)
+	single.Changes = diffItems(v.snap.Items, desired)
 
-	if len(result.Changes) == 0 && resolved != nil {
+	if len(single.Changes) == 0 && resolved != nil {
 		// The refs match but the file form does not: list the affected keys
 		// with their ref-form payload so no secret value reaches the report.
 		for _, key := range changedKeys(v.raw, resolved) {
-			result.Changes = append(result.Changes, ItemChange{Key: key, Op: OpModified, Before: v.snap.Items[key], After: desired[key]})
+			single.Changes = append(single.Changes, ItemChange{Key: key, Op: OpModified, Before: v.snap.Items[key], After: desired[key]})
 		}
 	}
 
 	if !v.snap.Present && !v.surface.Traits().Creatable {
-		result.Action, result.Note = ActionSkipped, "no config file to write into"
+		single.Action, single.Note = ActionSkipped, "no config file to write into"
 
-		return v.snap.Items
+		return v.snap.Items, single
 	}
 
 	if opts.DryRun {
-		result.Action = ActionWouldPush
+		single.Action = ActionWouldPush
 
-		return desired
+		return desired, single
 	}
 
 	actual, action, note := e.write(ctx, spec, v, desired)
-	result.Action, result.Note = action, note
+	single.Action, single.Note = action, note
 
-	if result.Action == ActionPushed {
-		result.ReloadHint = v.surface.Traits().ReloadHint
+	if single.Action == ActionPushed {
+		single.ReloadHint = v.surface.Traits().ReloadHint
 	}
 
-	return actual
+	return actual, single
+}
+
+func rememberedCurrent(spec kind.Spec, proj projection, vaultItems kind.Items, key string, base, local, current []byte) []byte {
+	if spec.ID != kind.Memory || local != nil || base == nil || !proj.hides(key) {
+		return current
+	}
+
+	return value(vaultItems, key)
+}
+
+func (e *Engine) keepImplicitDelete(spec kind.Spec, v *view, key string, base, current, local []byte, report *KindReport) bool {
+	if !spec.NoImplicitDelete || local != nil || base == nil || current == nil {
+		return false
+	}
+
+	report.Kept = append(report.Kept, Change{Agent: v.agent.ID, Key: key, Op: OpKept})
+
+	return true
+}
+
+func (e *Engine) suppressKept(spec kind.Spec, v *view, desired kind.Items, report *KindReport) kind.Items {
+	if !spec.NoImplicitDelete {
+		return desired
+	}
+
+	out := maps.Clone(desired)
+	if out == nil {
+		out = kind.Items{}
+	}
+
+	for key := range v.base {
+		if _, present := v.snap.Items[key]; present {
+			continue
+		}
+
+		if _, wanted := out[key]; !wanted {
+			continue
+		}
+
+		delete(out, key)
+	}
+
+	return out
 }
 
 func (e *Engine) desired(spec kind.Spec, v *view, vaultItems kind.Items) kind.Items {
@@ -436,7 +634,7 @@ func (e *Engine) write(ctx context.Context, spec kind.Spec, v *view, desired kin
 	return actual, ActionPushed, ""
 }
 
-func (e *Engine) storeBase(st *state.State, spec kind.Spec, v *view, actual kind.Items) error {
+func (e *Engine) storeBase(st *state.State, spec kind.Spec, views []*view, actual kind.Items) error {
 	base := state.Base{}
 
 	put := func(key string, data []byte) error {
@@ -450,8 +648,40 @@ func (e *Engine) storeBase(st *state.State, spec kind.Spec, v *view, actual kind
 		return nil
 	}
 
+	held := func(key string) bool {
+		for _, v := range views {
+			if v.holds[spec.Group(key)] {
+				return true
+			}
+		}
+
+		return false
+	}
+
+	if err := writeActualBase(actual, held, put); err != nil {
+		return err
+	}
+
+	if err := writeHeldBase(views, held, base, put, func(blob []byte) error {
+		_, err := e.store.Put(blob)
+
+		return err
+	}); err != nil {
+		return err
+	}
+
+	if err := e.retainKeptBase(spec, views, actual, base, put); err != nil {
+		return err
+	}
+
+	st.SetBase(spec.ID, views[0].agent.ID, base)
+
+	return nil
+}
+
+func writeActualBase(actual kind.Items, held func(string) bool, put func(string, []byte) error) error {
 	for key, data := range actual {
-		if v.holds[spec.Group(key)] {
+		if held(key) {
 			continue
 		}
 
@@ -460,23 +690,59 @@ func (e *Engine) storeBase(st *state.State, spec kind.Spec, v *view, actual kind
 		}
 	}
 
-	for key, data := range v.base {
-		if !v.holds[spec.Group(key)] {
-			continue
+	return nil
+}
+
+func writeHeldBase(
+	views []*view, held func(string) bool, base state.Base, put func(string, []byte) error, putBlob func([]byte) error,
+) error {
+	for _, v := range views {
+		for key, data := range v.base {
+			if !held(key) {
+				continue
+			}
+
+			if _, done := base[key]; done {
+				continue
+			}
+
+			if err := put(key, data); err != nil {
+				return err
+			}
 		}
 
-		if err := put(key, data); err != nil {
-			return err
+		for _, blob := range v.blobs {
+			if err := putBlob(blob); err != nil {
+				return err
+			}
 		}
 	}
 
-	for _, blob := range v.blobs {
-		if _, err := e.store.Put(blob); err != nil {
-			return err
-		}
+	return nil
+}
+
+func (e *Engine) retainKeptBase(
+	spec kind.Spec, views []*view, actual kind.Items, base state.Base, put func(string, []byte) error,
+) error {
+	if !spec.NoImplicitDelete {
+		return nil
 	}
 
-	st.SetBase(spec.ID, v.agent.ID, base)
+	for _, v := range views {
+		for key, data := range v.base {
+			if _, done := base[key]; done {
+				continue
+			}
+
+			if _, written := actual[key]; written {
+				continue
+			}
+
+			if err := put(key, data); err != nil {
+				return err
+			}
+		}
+	}
 
 	return nil
 }

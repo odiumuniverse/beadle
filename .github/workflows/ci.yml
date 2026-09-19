@@ -39,7 +39,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: AGENTSYNC_GIT_ORACLE=1 go test -mod=vendor -run TestTextOracle ./pkg/merge/
+      - run: BEADLE_GIT_ORACLE=1 go test -mod=vendor -run TestTextOracle ./pkg/merge/
 
   real-e2e:
     strategy:

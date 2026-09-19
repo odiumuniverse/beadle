@@ -4,7 +4,7 @@
     "codegraph": {
       "type": "local",
       "command": ["npx", "-y", "codegraph", "serve", "--root", "/work"],
-      "environment": {"API_TOKEN": "__AGENTSYNC_SECRET_2__"}
+      "environment": {"API_TOKEN": "__BEADLE_SECRET_2__"}
     },
     "sequential": {
       "type": "local",

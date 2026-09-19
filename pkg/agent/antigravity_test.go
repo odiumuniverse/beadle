@@ -22,7 +22,7 @@ func antigravityConfig(home string) string {
 func antigravitySurface(t *testing.T, home string) agent.Surface {
 	t.Helper()
 
-	return surfaceOf(t, agent.AntigravityCLI(home), kind.MCP)
+	return surfaceOf(t, agent.AntigravityCLI(home, t.TempDir()), kind.MCP)
 }
 
 func antigravityDoc(t *testing.T, home string) map[string]any {
@@ -76,7 +76,7 @@ func TestAntigravityMCPStdioRoundTrip(t *testing.T) {
 		require.NotContains(t, entry, legacy)
 	}
 
-	snap := snapshot(t, agent.AntigravityCLI(home), kind.MCP)
+	snap := snapshot(t, agent.AntigravityCLI(home, t.TempDir()), kind.MCP)
 	require.Equal(t, []string{"npx", "-y", "alpha"}, server(t, snap.Items["alpha"]).Command)
 }
 
@@ -102,7 +102,7 @@ func TestAntigravityMCPRemoteUsesServerURL(t *testing.T) {
 	require.NotContains(t, entry, "httpUrl")
 	require.Contains(t, entry, "headers")
 
-	snap := snapshot(t, agent.AntigravityCLI(home), kind.MCP)
+	snap := snapshot(t, agent.AntigravityCLI(home, t.TempDir()), kind.MCP)
 
 	got := server(t, snap.Items["gamma"])
 	require.Equal(t, "https://gamma.example.com/mcp", got.URL)
@@ -169,7 +169,7 @@ func TestAntigravityEnvRefsFollowGemini(t *testing.T) {
 
 	require.Equal(t, "${SECRET}", antigravityEnv(t, home, "alpha")["TOKEN"])
 
-	snap := snapshot(t, agent.AntigravityCLI(home), kind.MCP)
+	snap := snapshot(t, agent.AntigravityCLI(home, t.TempDir()), kind.MCP)
 	require.Equal(t, "{env:SECRET}", server(t, snap.Items["alpha"]).Env["TOKEN"])
 }
 
@@ -181,25 +181,25 @@ func TestAntigravityDetect(t *testing.T) {
 	writeFile(t, filepath.Join(pureGemini, ".gemini", "GEMINI.md"), "# rules\n")
 	writeFile(t, filepath.Join(pureGemini, ".gemini", "skills", "alpha", "SKILL.md"), "# alpha\n")
 
-	detected, err := agent.AntigravityCLI(pureGemini).Detect()
+	detected, err := agent.AntigravityCLI(pureGemini, t.TempDir()).Detect()
 	require.NoError(t, err)
 	require.False(t, detected, "a pure Gemini install stays inactive")
 
-	detected, err = agent.AntigravityCLI(t.TempDir()).Detect()
+	detected, err = agent.AntigravityCLI(t.TempDir(), t.TempDir()).Detect()
 	require.NoError(t, err)
 	require.False(t, detected, "a home without antigravity artifacts stays inactive")
 
 	stateHome := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(stateHome, ".gemini", "antigravity-cli"), 0o750))
 
-	detected, err = agent.AntigravityCLI(stateHome).Detect()
+	detected, err = agent.AntigravityCLI(stateHome, t.TempDir()).Detect()
 	require.NoError(t, err)
 	require.True(t, detected, "the state directory marks the agent as installed")
 
 	configHome := t.TempDir()
 	writeFile(t, antigravityConfig(configHome), `{"mcpServers": {}}`)
 
-	detected, err = agent.AntigravityCLI(configHome).Detect()
+	detected, err = agent.AntigravityCLI(configHome, t.TempDir()).Detect()
 	require.NoError(t, err)
 	require.True(t, detected, "the shared mcp config survives an uninstalled CLI")
 }
@@ -208,13 +208,18 @@ func TestAntigravitySurfaceShape(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 
 	home := t.TempDir()
-	a := agent.AntigravityCLI(home)
+	cwd := t.TempDir()
+	a := agent.AntigravityCLI(home, cwd)
 
 	require.Equal(t, antigravityReloadHint, surfaceOf(t, a, kind.MCP).Traits().ReloadHint)
 	require.Equal(t, antigravityConfig(home), surfaceOf(t, a, kind.MCP).Path())
 
-	for _, k := range []kind.ID{kind.Rules, kind.Skills, kind.Permissions, kind.Memory, kind.Projects} {
-		require.Nil(t, a.Surface(k), "antigravity v1 has no %s surface", k)
+	projects := a.Surface(kind.Projects)
+	require.NotNil(t, projects, "the project scope adds .agents/mcp_config.json")
+	require.Equal(t, filepath.Join(cwd, ".agents", "mcp_config.json"), projects.Path())
+
+	for _, k := range []kind.ID{kind.Rules, kind.Skills, kind.Permissions, kind.Memory} {
+		require.Nil(t, a.Surface(k), "antigravity has no %s surface", k)
 	}
 }
 
@@ -224,7 +229,7 @@ func TestAntigravityLegacyURLIsNotCanonized(t *testing.T) {
 	home := t.TempDir()
 	writeFile(t, antigravityConfig(home), `{"mcpServers": {"dead": {"url": "https://dead.example.com/mcp", "httpUrl": "https://dead2.example.com/mcp"}}}`)
 
-	snap := snapshot(t, agent.AntigravityCLI(home), kind.MCP)
+	snap := snapshot(t, agent.AntigravityCLI(home, t.TempDir()), kind.MCP)
 	require.Empty(t, snap.Items, "legacy url/httpUrl entries are not supported by the dialect")
 }
 

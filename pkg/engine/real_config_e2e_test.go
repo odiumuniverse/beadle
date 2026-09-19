@@ -109,10 +109,10 @@ func injectRealValues(t *testing.T, home string) {
 	t.Helper()
 
 	replacements := map[string]string{
-		"__AGENTSYNC_SECRET_1__": realSecretOne,
-		"__AGENTSYNC_SECRET_2__": realSecretTwo,
-		"__AGENTSYNC_SECRET_3__": realSecretThr,
-		"__AGENTSYNC_HOME__":     home,
+		"__BEADLE_SECRET_1__": realSecretOne,
+		"__BEADLE_SECRET_2__": realSecretTwo,
+		"__BEADLE_SECRET_3__": realSecretThr,
+		"__BEADLE_HOME__":     home,
 	}
 
 	err := filepath.WalkDir(home, func(path string, entry os.DirEntry, err error) error {

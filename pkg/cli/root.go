@@ -45,7 +45,7 @@ func newRootCmd(opts Options) *cobra.Command {
 		},
 	}
 
-	root.PersistentFlags().StringVar(&a.vaultPath, "vault", "", "vault root (default: $AGENTSYNC_HOME or ~/.agent-sync)")
+	root.PersistentFlags().StringVar(&a.vaultPath, "vault", "", "vault root (default: $BEADLE_HOME or ~/.beadle)")
 	root.PersistentFlags().BoolVar(&verbose, "verbose", false, "enable info-level logs")
 	root.PersistentFlags().BoolVar(&logJSON, "log-json", false, "log in JSON format")
 
@@ -67,6 +67,7 @@ func newRootCmd(opts Options) *cobra.Command {
 		a.newWatchCmd(),
 		a.newDaemonCmd(),
 		a.newSecretsCmd(),
+		a.newProjectCmd(),
 	)
 
 	return root

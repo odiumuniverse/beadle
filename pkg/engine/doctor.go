@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/plugin"
+	proj "github.com/odiumuniverse/beadle/pkg/project"
 	"github.com/odiumuniverse/beadle/pkg/secret"
 	"github.com/odiumuniverse/beadle/pkg/skill"
 	"github.com/odiumuniverse/beadle/pkg/state"
@@ -77,6 +79,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.skillShadowIssues(active)...)
 	issues = append(issues, e.secretIssues()...)
 	issues = append(issues, e.projectScopeIssues(ctx, active)...)
+	issues = append(issues, e.projectPolicyIssues(active)...)
 	issues = append(issues, e.pluginRefIssues(active)...)
 	issues = append(issues, e.pluginPivotIssues(ctx)...)
 	issues = append(issues, e.pluginMigrationIssues(ctx, ledger)...)
@@ -165,7 +168,7 @@ func (e *Engine) digestTargetIssues(st *state.State, target projectTarget, vault
 		return []Issue{{Severity: SeverityWarn, Kind: kind.Projects, Agent: target.agent.ID, Message: err.Error()}}
 	}
 
-	notes := digestNotesFor(vaultItems, target.slug)
+	notes := digestNotesFor(vaultItems, target.notesSlug)
 
 	if !present {
 		return missingDigestIssue(target, path, len(notes) > 0)
@@ -597,13 +600,15 @@ func (e *Engine) projectScopeIssues(ctx context.Context, active []*agent.Agent) 
 
 	var issues []Issue
 
-	repo, present, err := agent.ClaudeProjectMCP(ctx, dir)
+	if !e.projectRelManaged(".mcp.json") {
+		repo, present, err := agent.ClaudeProjectMCP(ctx, dir)
 
-	switch {
-	case err != nil:
-		issues = append(issues, projectIssue(SeverityWarn, fmt.Sprintf("cannot read .mcp.json in %s: %v (project scope is not managed by beadle)", dir, err)))
-	case present:
-		issues = append(issues, scopeIssues(".mcp.json", repo, vaultItems)...)
+		switch {
+		case err != nil:
+			issues = append(issues, projectIssue(SeverityWarn, fmt.Sprintf("cannot read .mcp.json in %s: %v (project scope is not managed by beadle)", dir, err)))
+		case present:
+			issues = append(issues, scopeIssues(".mcp.json", repo, vaultItems)...)
+		}
 	}
 
 	if e.home == "" {
@@ -620,6 +625,12 @@ func (e *Engine) projectScopeIssues(ctx context.Context, active []*agent.Agent) 
 	}
 
 	return issues
+}
+
+func (e *Engine) projectRelManaged(rel string) bool {
+	policy, err := e.projectPolicy()
+
+	return err == nil && policy.Enabled(rel)
 }
 
 func scopeIssues(source string, scope, vaultItems kind.Items) []Issue {
@@ -819,4 +830,116 @@ func isDir(path string) bool {
 	info, err := os.Stat(path)
 
 	return err == nil && info.IsDir()
+}
+
+func (e *Engine) projectPolicyIssues(active []*agent.Agent) []Issue {
+	policy, err := e.projectPolicy()
+	if err != nil {
+		return []Issue{{Severity: SeverityError, Kind: kind.Projects, Message: "project policy: " + err.Error()}}
+	}
+
+	identity := e.projectIdentity()
+
+	issues := []Issue{{Severity: SeverityInfo, Kind: kind.Projects, Message: projectIdentityMessage(identity)}}
+
+	for _, surface := range projectSurfaces(active) {
+		issues = append(issues, e.projectSurfaceIssues(surface, policy)...)
+	}
+
+	return issues
+}
+
+func projectIdentityMessage(identity proj.Identity) string {
+	if identity.Slugs {
+		return fmt.Sprintf("project %s (path slug; not a git checkout)", identity.ID)
+	}
+
+	remote := identity.Remote
+	if remote == "" {
+		remote = "none"
+	}
+
+	return fmt.Sprintf("project %s (remote: %s)", identity.ID, remote)
+}
+
+func projectSurfaces(active []*agent.Agent) []agent.Surface {
+	var out []agent.Surface
+
+	for _, a := range active {
+		for _, surface := range a.SurfacesOf(kind.Projects) {
+			if _, ok := surface.(agent.ProjectFile); ok {
+				out = append(out, surface)
+			}
+		}
+	}
+
+	return out
+}
+
+func (e *Engine) projectSurfaceIssues(surface agent.Surface, policy proj.Policy) []Issue {
+	file, _ := surface.(agent.ProjectFile)
+
+	rel := file.ProjectRel()
+	path := surface.Path()
+
+	var issues []Issue
+
+	if err := agent.CheckProjectTarget(path); err != nil {
+		issues = append(issues, Issue{Severity: SeverityError, Kind: kind.Projects, Message: err.Error()})
+	}
+
+	publishable, err := e.projectPublishable(rel)
+	if err != nil {
+		issues = append(issues, Issue{Severity: SeverityWarn, Kind: kind.Projects, Message: err.Error()})
+	}
+
+	allowed := policy.AllowsSecrets(rel) || publishable
+
+	if policy.Enabled(rel) {
+		issues = append(issues, Issue{
+			Severity: SeverityInfo, Kind: kind.Projects,
+			Message: fmt.Sprintf("project file %s: enabled (publishable: %s)", rel, boolWord(allowed)),
+		})
+	}
+
+	return append(issues, projectLeakIssues(surface, path, rel, allowed)...)
+}
+
+func projectLeakIssues(surface agent.Surface, path, rel string, allowed bool) []Issue {
+	data, present, err := readOptional(path)
+	if err != nil {
+		return []Issue{{Severity: SeverityWarn, Kind: kind.Projects, Message: err.Error()}}
+	}
+
+	if !present || allowed {
+		return nil
+	}
+
+	var issues []Issue
+
+	if _, fenced := surface.(fencedSurface); fenced {
+		if _, _, found, err := digest.Strip(data); err == nil && found {
+			issues = append(issues, Issue{
+				Severity: SeverityError, Kind: kind.Projects,
+				Message: fmt.Sprintf("the generated digest block in %s lives in a git-tracked file; gitignore it or enable the file with --allow-secrets", path),
+			})
+		}
+	}
+
+	if strings.HasSuffix(rel, ".json") && bytes.Contains(data, []byte("{secret:")) {
+		issues = append(issues, Issue{
+			Severity: SeverityWarn, Kind: kind.Projects,
+			Message: fmt.Sprintf("project MCP file %s is git-tracked and holds {secret:} references; values are rendered as ${NAME}", rel),
+		})
+	}
+
+	return issues
+}
+
+func boolWord(value bool) string {
+	if value {
+		return "yes"
+	}
+
+	return "no"
 }

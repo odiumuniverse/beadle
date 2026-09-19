@@ -28,6 +28,18 @@ func (a *Agent) Surface(k kind.ID) Surface {
 	return nil
 }
 
+func (a *Agent) SurfacesOf(k kind.ID) []Surface {
+	var out []Surface
+
+	for _, s := range a.Surfaces {
+		if s.Kind() == k {
+			out = append(out, s)
+		}
+	}
+
+	return out
+}
+
 type Snapshot struct {
 	Items    kind.Items
 	Present  bool
@@ -54,13 +66,25 @@ type Projector interface {
 	Project(key string, value []byte) (pkey string, pvalue []byte, ok bool)
 }
 
+type ProjectFile interface {
+	ProjectRel() string
+}
+
+type ProjectSkeleton interface {
+	Skeleton() []byte
+}
+
+type ProjectRemover interface {
+	Remove() error
+}
+
 func All(home, cwd string) []*Agent {
 	return []*Agent{
-		ClaudeCode(home),
+		ClaudeCode(home, cwd),
 		OpenCode(home, cwd),
 		GeminiCLI(home, cwd),
-		AntigravityCLI(home),
-		Cursor(home),
+		AntigravityCLI(home, cwd),
+		Cursor(home, cwd),
 		SharedSkills(home),
 	}
 }

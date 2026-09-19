@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	DefaultDirName = ".agent-sync"
-	EnvHome        = "AGENTSYNC_HOME"
+	DefaultDirName = ".beadle"
+	EnvHome        = "BEADLE_HOME"
 )
 
 const gitIgnore = `# Beadle: credentials and machine-local state stay on this machine.

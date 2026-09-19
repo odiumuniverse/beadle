@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,31 +15,87 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/engine"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/memory"
+	proj "github.com/odiumuniverse/beadle/pkg/project"
 	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
 func (f *fixture) useRepo(t *testing.T, repo string) {
 	t.Helper()
 
-	e, err := engine.New(f.vault, f.config, agent.All(f.home, repo), engine.WithHome(f.home))
+	f.useCwd(t, repo)
+}
+
+func (f *fixture) useCwd(t *testing.T, dir string) {
+	t.Helper()
+
+	e, err := engine.New(f.vault, f.config, agent.All(f.home, dir), engine.WithHome(f.home), engine.WithCwd(dir))
 	require.NoError(t, err)
 
 	f.engine = e
+}
+
+func gitIn(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+
+	all := append([]string{"-C", dir}, args...)
+
+	out, err := exec.CommandContext(t.Context(), "git", all...).CombinedOutput() //nolint:gosec // G204: fixed git subcommands in tests
+	require.NoError(t, err, string(out))
+
+	return string(out)
 }
 
 func newRepo(t *testing.T) string {
 	t.Helper()
 
 	repo := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(repo, ".git"), 0o750))
+	gitIn(t, repo, "init", "-q")
 
 	return repo
 }
 
+func repoID(repo string) string { return proj.Resolve(repo).ID }
+
 func repoFile(repo string) string { return filepath.Join(repo, "AGENTS.md") }
 
 func vaultProject(f *fixture, repo, name string) string {
-	return filepath.Join(f.vault.ProjectsDir(), memory.Slug(repo), name)
+	return filepath.Join(f.vault.ProjectsDir(), repoID(repo), name)
+}
+
+func (f *fixture) enableProject(t *testing.T, rels ...string) {
+	t.Helper()
+
+	f.enableProjectWith(t, engine.ProjectOptions{}, rels...)
+}
+
+func (f *fixture) seedProjectCanon(t *testing.T, repo, rel, content string) {
+	t.Helper()
+
+	write(t, filepath.Join(f.vault.ProjectsDir(), repoID(repo), filepath.FromSlash(rel)), content)
+	require.NoError(t, os.Remove(filepath.Join(repo, filepath.FromSlash(rel))), "the skeleton file makes room for the canon")
+}
+
+func (f *fixture) enableProjectWith(t *testing.T, opts engine.ProjectOptions, rels ...string) {
+	t.Helper()
+
+	for _, rel := range rels {
+		_, err := f.engine.ProjectEnable(t.Context(), rel, opts)
+		require.NoError(t, err)
+	}
+}
+
+func ignoreInRepo(t *testing.T, repo string, rels ...string) {
+	t.Helper()
+
+	path := filepath.Join(repo, ".gitignore")
+
+	existing := ""
+
+	if data, err := os.ReadFile(path); err == nil { //nolint:gosec // G304: tests read their own temp files
+		existing = string(data)
+	}
+
+	write(t, path, existing+strings.Join(rels, "\n")+"\n")
 }
 
 func writeMemoryCanon(t *testing.T, f *fixture, repo, name, content string) {
@@ -85,6 +142,7 @@ func TestProjectsSyncRoundTrip(t *testing.T) {
 	f.emptyConfigs(t)
 	repo := newRepo(t)
 	f.useRepo(t, repo)
+	f.enableProject(t, "AGENTS.md")
 
 	write(t, repoFile(repo), "# repo rules\n")
 
@@ -105,8 +163,33 @@ func TestProjectsSyncRoundTrip(t *testing.T) {
 	require.Equal(t, "# local edit\n", read(t, vaultProject(f, repo, "AGENTS.md")))
 
 	require.NoError(t, os.Remove(repoFile(repo)))
-	f.sync(t)
-	require.NoFileExists(t, vaultProject(f, repo, "AGENTS.md"), "deleting the project file deletes the canon item")
+
+	report = f.sync(t)
+	require.FileExists(t, vaultProject(f, repo, "AGENTS.md"), "deleting the repo file keeps the canon")
+	require.NoFileExists(t, repoFile(repo), "the file is not re-imposed")
+	require.NotEmpty(t, report.Kind(kind.Projects).Kept, "the deletion is reported as kept")
+	require.Equal(t, engine.ActionNoop, report.Action(kind.Projects, agent.OpenCodeID))
+}
+
+func TestProjectsUntrackedFileIsReadOnly(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	f := newFixture(t)
+	f.emptyConfigs(t)
+	repo := newRepo(t)
+	f.useRepo(t, repo)
+
+	write(t, repoFile(repo), "# repo rules\n")
+
+	report := f.sync(t)
+	require.False(t, report.Kind(kind.Projects).VaultChanged, "without a policy the project stays read-only")
+	require.NoFileExists(t, vaultProject(f, repo, "AGENTS.md"))
+	require.Equal(t, "# repo rules\n", read(t, repoFile(repo)))
+
+	issues, err := f.engine.Doctor(t.Context())
+	require.NoError(t, err)
+	require.True(t, hasIssue(issues, engine.SeverityInfo, "not a git checkout") ||
+		hasIssue(issues, engine.SeverityInfo, "project "), "doctor reports the identity: %v", issues)
 }
 
 func TestProjectsConflictResolvedInEditor(t *testing.T) {
@@ -116,6 +199,7 @@ func TestProjectsConflictResolvedInEditor(t *testing.T) {
 	f.emptyConfigs(t)
 	repo := newRepo(t)
 	f.useRepo(t, repo)
+	f.enableProject(t, "AGENTS.md")
 
 	write(t, repoFile(repo), "v1\n")
 	f.sync(t)
@@ -151,6 +235,8 @@ func TestProjectsCanonDeletionRemovesFile(t *testing.T) {
 	f.emptyConfigs(t)
 	repo := newRepo(t)
 	f.useRepo(t, repo)
+	f.enableProject(t, "AGENTS.md")
+	ignoreInRepo(t, repo, "AGENTS.md")
 
 	write(t, repoFile(repo), "# repo rules\n")
 	f.sync(t)
@@ -177,6 +263,7 @@ func TestProjectsConflictTakeAgent(t *testing.T) {
 	f.emptyConfigs(t)
 	repo := newRepo(t)
 	f.useRepo(t, repo)
+	f.enableProject(t, "AGENTS.md")
 
 	write(t, repoFile(repo), "v1\n")
 	f.sync(t)
@@ -198,6 +285,8 @@ func TestProjectsFenceBlindNoop(t *testing.T) {
 	f.emptyConfigs(t)
 	repo := newRepo(t)
 	f.useRepo(t, repo)
+	f.enableProject(t, "AGENTS.md")
+	ignoreInRepo(t, repo, "AGENTS.md")
 
 	write(t, repoFile(repo), "# repo rules\n")
 	writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
@@ -212,7 +301,7 @@ func TestProjectsFenceBlindNoop(t *testing.T) {
 	canon := read(t, vaultProject(f, repo, "AGENTS.md"))
 	require.Equal(t, "# repo rules\n", canon, "the fence never reaches the canon")
 	require.NotContains(t, canon, digest.BeginPrefix)
-	require.NotContains(t, string(baseBlob(t, f, kind.Projects, agent.OpenCodeID, memory.Slug(repo)+"/AGENTS.md")), digest.BeginPrefix)
+	require.NotContains(t, string(baseBlob(t, f, kind.Projects, agent.OpenCodeID, repoID(repo)+"/AGENTS.md")), digest.BeginPrefix)
 
 	report = f.sync(t)
 	require.Empty(t, report.Digest, "an unchanged digest is a noop")
@@ -236,6 +325,8 @@ func TestProjectsFenceOnlyFileSurvives(t *testing.T) {
 	f.emptyConfigs(t)
 	repo := newRepo(t)
 	f.useRepo(t, repo)
+	f.enableProject(t, "AGENTS.md")
+	ignoreInRepo(t, repo, "AGENTS.md")
 
 	writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
 
@@ -259,6 +350,8 @@ func TestDigestRemovedWhenMemoryEmpty(t *testing.T) {
 	f.emptyConfigs(t)
 	repo := newRepo(t)
 	f.useRepo(t, repo)
+	f.enableProject(t, "AGENTS.md")
+	ignoreInRepo(t, repo, "AGENTS.md")
 
 	write(t, repoFile(repo), "# repo rules\n")
 	writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
@@ -281,6 +374,8 @@ func TestDigestGates(t *testing.T) {
 	f.emptyConfigs(t)
 	repo := newRepo(t)
 	f.useRepo(t, repo)
+	f.enableProject(t, "AGENTS.md")
+	ignoreInRepo(t, repo, "AGENTS.md")
 
 	write(t, repoFile(repo), "# repo rules\n")
 	writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
@@ -308,6 +403,7 @@ func TestDigestAdoptBaseline(t *testing.T) {
 	f.emptyConfigs(t)
 	repo := newRepo(t)
 	f.useRepo(t, repo)
+	f.enableProjectWith(t, engine.ProjectOptions{AllowSecrets: true}, "AGENTS.md")
 
 	slug := memory.Slug(repo)
 	notes := map[string][]byte{slug + "/MEMORY.md": []byte("---\ndescription: hook\n---\nbody\n")}
@@ -336,6 +432,7 @@ func TestDigestDriftHoldAndRefresh(t *testing.T) {
 	f.emptyConfigs(t)
 	repo := newRepo(t)
 	f.useRepo(t, repo)
+	f.enableProjectWith(t, engine.ProjectOptions{AllowSecrets: true}, "AGENTS.md")
 
 	write(t, repoFile(repo), "# repo rules\n")
 	writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
@@ -383,6 +480,8 @@ func TestDigestBlockDeletedRestores(t *testing.T) {
 	f.emptyConfigs(t)
 	repo := newRepo(t)
 	f.useRepo(t, repo)
+	f.enableProject(t, "AGENTS.md")
+	ignoreInRepo(t, repo, "AGENTS.md")
 
 	write(t, repoFile(repo), "# repo rules\n")
 	writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
@@ -403,6 +502,7 @@ func TestDigestPrune(t *testing.T) {
 	f.emptyConfigs(t)
 	repo := newRepo(t)
 	f.useRepo(t, repo)
+	f.enableProjectWith(t, engine.ProjectOptions{AllowSecrets: true}, "AGENTS.md")
 
 	write(t, repoFile(repo), "# repo rules\n")
 	writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
@@ -431,6 +531,7 @@ func TestDigestDryRunPreview(t *testing.T) {
 	f.emptyConfigs(t)
 	repo := newRepo(t)
 	f.useRepo(t, repo)
+	f.enableProjectWith(t, engine.ProjectOptions{AllowSecrets: true}, "AGENTS.md")
 
 	writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
 
@@ -443,6 +544,40 @@ func TestDigestDryRunPreview(t *testing.T) {
 	require.NotContains(t, st.Renders, repoFile(repo))
 }
 
+func TestDigestFenceGate(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	f := newFixture(t)
+	f.emptyConfigs(t)
+	repo := newRepo(t)
+	f.useRepo(t, repo)
+	f.enableProject(t, "AGENTS.md")
+
+	write(t, repoFile(repo), "# repo rules\n")
+	writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
+
+	report := f.sync(t)
+	require.NotEmpty(t, digestResults(report, engine.DigestSkipped), "a tracked file gets no fence")
+	require.NotContains(t, read(t, repoFile(repo)), digest.BeginPrefix)
+	require.Contains(t, strings.Join(report.Warnings, " "), "is not gitignored")
+
+	ignoreInRepo(t, repo, "AGENTS.md")
+
+	report = f.sync(t)
+	require.NotEmpty(t, digestResults(report, engine.DigestRefreshed))
+	require.True(t, strings.HasPrefix(read(t, repoFile(repo)), digest.BeginPrefix), "an ignored file gets the fence")
+
+	issues, err := f.engine.Doctor(t.Context())
+	require.NoError(t, err)
+	require.False(t, hasIssue(issues, engine.SeverityError, "lives in a git-tracked file"), "no fence in a tracked file: %v", issues)
+
+	require.NoError(t, os.Remove(filepath.Join(repo, ".gitignore")))
+
+	issues, err = f.engine.Doctor(t.Context())
+	require.NoError(t, err)
+	require.True(t, hasIssue(issues, engine.SeverityError, "lives in a git-tracked file"), "a tracked file with a fence is doctor error: %v", issues)
+}
+
 func TestProjectsWatchPathsAndKindFilter(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 
@@ -450,6 +585,7 @@ func TestProjectsWatchPathsAndKindFilter(t *testing.T) {
 	f.emptyConfigs(t)
 	repo := newRepo(t)
 	f.useRepo(t, repo)
+	f.enableProject(t, "AGENTS.md")
 
 	paths, err := f.engine.WatchPaths(t.Context())
 	require.NoError(t, err)
@@ -471,6 +607,7 @@ func TestProjectsRestore(t *testing.T) {
 	f.emptyConfigs(t)
 	repo := newRepo(t)
 	f.useRepo(t, repo)
+	f.enableProject(t, "AGENTS.md")
 
 	write(t, repoFile(repo), "# v1\n")
 	f.sync(t)

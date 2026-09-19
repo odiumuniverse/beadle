@@ -169,7 +169,7 @@ func (e *Engine) takeAgent(spec kind.Spec, c state.Conflict, local []byte) error
 
 	proj := projection{items: kind.Items{}, vkeys: map[string][]string{}, hidden: map[string]bool{}}
 
-	if surface := e.surfaceOf(c.Agent, c.Kind); surface != nil {
+	if surface := e.surfaceOf(c.Agent, c.Kind, c.Key); surface != nil {
 		proj = project(vaultItems, surface)
 	}
 
@@ -266,13 +266,30 @@ func (e *Engine) setBaseKey(st *state.State, c state.Conflict, local []byte) err
 	return nil
 }
 
-func (e *Engine) surfaceOf(agentID string, k kind.ID) agent.Surface {
+func (e *Engine) surfaceOf(agentID string, k kind.ID, key string) agent.Surface {
 	a := agent.ByID(e.agents, agentID)
 	if a == nil {
 		return nil
 	}
 
-	return a.Surface(k)
+	surfaces := a.SurfacesOf(k)
+
+	for _, surface := range surfaces {
+		projector, ok := surface.(agent.Projector)
+		if !ok {
+			continue
+		}
+
+		if _, _, visible := projector.Project(key, nil); visible {
+			return surface
+		}
+	}
+
+	if len(surfaces) > 0 {
+		return surfaces[0]
+	}
+
+	return nil
 }
 
 func (e *Engine) writeConflictFiles(st *state.State) error {

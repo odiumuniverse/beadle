@@ -18,9 +18,9 @@ import (
 
 const (
 	// BeginPrefix starts the digest fence line; the full line carries the receipt.
-	BeginPrefix = "<!-- agent-sync:memory:begin"
+	BeginPrefix = "<!-- beadle:memory:begin"
 	// EndMarker closes the digest fence.
-	EndMarker = "<!-- agent-sync:memory:end -->"
+	EndMarker = "<!-- beadle:memory:end -->"
 	// DefaultBudget caps the digest content region in bytes.
 	DefaultBudget = 8192
 	// Version is the current receipt format version.
@@ -29,7 +29,7 @@ const (
 
 const (
 	hookLimit    = 120
-	markerWord   = "agent-sync"
+	markerWord   = "beadle"
 	markerSafe   = "agent&#45;sync"
 	projectsMark = "/.claude/projects/"
 	reasonBudget = "budget"

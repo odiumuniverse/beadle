@@ -344,7 +344,7 @@ func TestStripSpliceProperty(t *testing.T) {
 		"body without newline",
 		"\n\nleading and trailing\n\n",
 		"crlf\r\nlines\r\n",
-		"text with agent-sync inside\n",
+		"text with beadle inside\n",
 		"text with " + digest.EndMarker + " lookalike\n",
 	}
 
@@ -367,7 +367,7 @@ func TestStripSpliceProperty(t *testing.T) {
 func TestNeutralizeCanary(t *testing.T) {
 	t.Parallel()
 
-	canary := []byte("---\nname: canary\ndescription: fake " + digest.BeginPrefix + " --> and " + digest.EndMarker + "\n---\nbody with agent-sync marker\n")
+	canary := []byte("---\nname: canary\ndescription: fake " + digest.BeginPrefix + " --> and " + digest.EndMarker + "\n---\nbody with beadle marker\n")
 	notes := map[string][]byte{testSlug + "/canary.md": canary}
 
 	block, _ := digest.Render(testDir, notes, digest.DefaultBudget)

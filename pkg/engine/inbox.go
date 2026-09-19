@@ -68,7 +68,7 @@ func (e *Engine) fanInInbox(
 func (e *Engine) activeProjectSlug(agents []*agent.Agent) (string, bool) {
 	for _, target := range e.projectTargets(agents) {
 		if target.active() {
-			return target.slug, true
+			return target.notesSlug, true
 		}
 	}
 

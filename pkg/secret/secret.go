@@ -37,7 +37,7 @@ const (
 	fileVersion    = 1
 	keyringVersion = 2
 	fingerprintN   = 8
-	probeAccount   = "agentsync-doctor-probe"
+	probeAccount   = "beadle-doctor-probe"
 )
 
 var namePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)

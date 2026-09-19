@@ -128,6 +128,7 @@ func TestInboxFanIn(t *testing.T) {
 	f.emptyConfigs(t)
 	repo := newRepo(t)
 	f.useRepo(t, repo)
+	f.enableProject(t, "AGENTS.md")
 
 	writeInboxLines(t, openCodeInbox(f), "<!-- header -->", "", u12Line)
 
@@ -165,6 +166,7 @@ func TestInboxDedupeAcrossSlugs(t *testing.T) {
 	f.emptyConfigs(t)
 	repo := newRepo(t)
 	f.useRepo(t, repo)
+	f.enableProject(t, "AGENTS.md")
 
 	hash := inboxHash(t, u12Line)
 	write(t, vaultMemoryNote(f, "-Users-other", "inbox-"+hash+".md"), "elsewhere\n")
@@ -183,6 +185,7 @@ func TestInboxOptOutAndReimport(t *testing.T) {
 	f.emptyConfigs(t)
 	repo := newRepo(t)
 	f.useRepo(t, repo)
+	f.enableProject(t, "AGENTS.md")
 
 	writeInboxLines(t, openCodeInbox(f), u12Line)
 	f.sync(t)
@@ -209,6 +212,7 @@ func TestInboxDirectionsAndModes(t *testing.T) {
 	f.emptyConfigs(t)
 	repo := newRepo(t)
 	f.useRepo(t, repo)
+	f.enableProject(t, "AGENTS.md")
 
 	writeInboxLines(t, openCodeInbox(f), u12Line)
 
@@ -382,6 +386,8 @@ func TestDigestRedactsRefs(t *testing.T) {
 	f.emptyConfigs(t)
 	repo := newRepo(t)
 	f.useRepo(t, repo)
+	f.enableProject(t, "AGENTS.md")
+	ignoreInRepo(t, repo, "AGENTS.md")
 
 	write(t, vaultMemoryNote(f, memory.Slug(repo), "MEMORY.md"), "---\ndescription: api_key: {secret:API_KEY}\n---\nbody\n")
 

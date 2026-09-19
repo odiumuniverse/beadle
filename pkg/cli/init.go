@@ -19,7 +19,7 @@ func (a *app) newInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Create the vault and enable the agents installed on this machine",
-		Long: "init creates the vault (default ~/.agent-sync) and enables every detected agent.\n" +
+		Long: "init creates the vault (default ~/.beadle) and enables every detected agent.\n" +
 			"It writes nothing into any agent: run `beadle sync --dry-run` to preview the\n" +
 			"first synchronization, then `beadle sync`.",
 		RunE: func(cmd *cobra.Command, _ []string) error {

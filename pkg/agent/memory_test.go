@@ -15,7 +15,7 @@ import (
 func memorySurfaceOf(t *testing.T, home string) agent.Surface {
 	t.Helper()
 
-	return surfaceOf(t, agent.ClaudeCode(home), kind.Memory)
+	return surfaceOf(t, agent.ClaudeCode(home, t.TempDir()), kind.Memory)
 }
 
 func projectsDir(home string) string {

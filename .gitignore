@@ -33,6 +33,7 @@ go.work.sum
 KNOWLEDGE.md
 SPEC.md
 AGENTS.md
+!pkg/engine/testdata/**/AGENTS.md
 docs/
 
 # Codegraph index (machine-local)

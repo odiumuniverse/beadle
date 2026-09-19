@@ -2,7 +2,7 @@
   "mcpServers": {
     "context7": {
       "httpUrl": "https://context7.example.com/mcp",
-      "headers": {"Authorization": "Bearer __AGENTSYNC_SECRET_3__"}
+      "headers": {"Authorization": "Bearer __BEADLE_SECRET_3__"}
     },
     "memory": {
       "command": "npx",
