@@ -22,6 +22,7 @@ import (
 	"github.com/odiumuniverse/agents-sync/pkg/kind"
 	"github.com/odiumuniverse/agents-sync/pkg/plugin"
 	"github.com/odiumuniverse/agents-sync/pkg/secret"
+	"github.com/odiumuniverse/agents-sync/pkg/skill"
 	"github.com/odiumuniverse/agents-sync/pkg/state"
 )
 
@@ -73,6 +74,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	}
 
 	issues = append(issues, e.skillCollisionIssues(active)...)
+	issues = append(issues, e.skillShadowIssues(active)...)
 	issues = append(issues, e.secretIssues()...)
 	issues = append(issues, e.projectScopeIssues(ctx, active)...)
 	issues = append(issues, e.pluginRefIssues(active)...)
@@ -444,6 +446,108 @@ func (e *Engine) skillCollisionIssues(active []*agent.Agent) []Issue {
 	}
 
 	return issues
+}
+
+func (e *Engine) skillShadowIssues(active []*agent.Agent) []Issue {
+	var issues []Issue
+
+	for _, a := range active {
+		surface := a.Surface(kind.Skills)
+		if surface == nil {
+			continue
+		}
+
+		reader, ok := surface.(agent.SkillReader)
+		if !ok {
+			continue
+		}
+
+		refs, err := reader.ReadableSkills()
+		if err != nil {
+			issues = append(issues, Issue{Severity: SeverityWarn, Kind: kind.Skills, Agent: a.ID, Message: err.Error()})
+
+			continue
+		}
+
+		issues = append(issues, e.skillShadowIssuesFor(a, refs)...)
+	}
+
+	return issues
+}
+
+func (e *Engine) skillShadowIssuesFor(a *agent.Agent, refs []agent.SkillRef) []Issue {
+	byName := map[string][]agent.SkillRef{}
+
+	for _, ref := range refs {
+		byName[ref.Name] = append(byName[ref.Name], ref)
+	}
+
+	cache := map[string]skill.Tree{}
+
+	var issues []Issue
+
+	for _, name := range slices.Sorted(maps.Keys(byName)) {
+		copies := byName[name]
+
+		for i := range copies {
+			for j := i + 1; j < len(copies); j++ {
+				if copies[i].Dir == copies[j].Dir {
+					continue
+				}
+
+				same, err := e.sameSkillTree(cache, copies[i].Root, copies[j].Root)
+				if err != nil {
+					issues = append(issues, Issue{
+						Severity: SeverityWarn, Kind: kind.Skills, Agent: a.ID,
+						Message: fmt.Sprintf("cannot compare skill %s: %v", name, err),
+					})
+
+					continue
+				}
+
+				if same {
+					continue
+				}
+
+				issues = append(issues, Issue{
+					Severity: SeverityWarn, Kind: kind.Skills, Agent: a.ID,
+					Message: fmt.Sprintf("skill %s differs between %s and %s: precedence is agent-defined; keep one copy or align the contents",
+						name, displayHomePath(copies[i].Dir, e.home), displayHomePath(copies[j].Dir, e.home)),
+				})
+			}
+		}
+	}
+
+	return issues
+}
+
+func (e *Engine) sameSkillTree(cache map[string]skill.Tree, left, right string) (bool, error) {
+	leftTree, err := cachedSkillTree(cache, left)
+	if err != nil {
+		return false, err
+	}
+
+	rightTree, err := cachedSkillTree(cache, right)
+	if err != nil {
+		return false, err
+	}
+
+	return maps.Equal(skill.ManifestOf(leftTree), skill.ManifestOf(rightTree)), nil
+}
+
+func cachedSkillTree(cache map[string]skill.Tree, root string) (skill.Tree, error) {
+	if tree, ok := cache[root]; ok {
+		return tree, nil
+	}
+
+	tree, err := skill.ReadTree(root)
+	if err != nil {
+		return nil, err
+	}
+
+	cache[root] = tree
+
+	return tree, nil
 }
 
 func (e *Engine) secretIssues() []Issue {

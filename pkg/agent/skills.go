@@ -18,7 +18,50 @@ import (
 type skillsSurface struct {
 	dir         string
 	ignoreUnder []string
+	alsoReads   []string
 	traits      Traits
+}
+
+// SkillRef points to one readable copy of a skill.
+type SkillRef struct {
+	Dir  string
+	Name string
+	Root string
+}
+
+// SkillReader lists the skill copies an agent can read.
+type SkillReader interface {
+	ReadableSkills() ([]SkillRef, error)
+}
+
+func (s *skillsSurface) ReadableSkills() ([]SkillRef, error) {
+	var refs []SkillRef
+
+	for _, dir := range slices.Concat([]string{s.dir}, s.alsoReads) {
+		entries, err := os.ReadDir(dir)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+
+		if err != nil {
+			return nil, fmt.Errorf("read skills directory %s: %w", dir, err)
+		}
+
+		for _, entry := range entries {
+			if !skill.ValidName(entry.Name()) {
+				continue
+			}
+
+			root, _, ok := s.skillRootAt(dir, entry)
+			if !ok {
+				continue
+			}
+
+			refs = append(refs, SkillRef{Dir: dir, Name: entry.Name(), Root: root})
+		}
+	}
+
+	return refs, nil
 }
 
 func (s *skillsSurface) Kind() kind.ID { return kind.Skills }
@@ -70,7 +113,11 @@ func (s *skillsSurface) Read(context.Context) (Snapshot, error) {
 }
 
 func (s *skillsSurface) skillRoot(entry fs.DirEntry) (string, string, bool) {
-	path := filepath.Join(s.dir, entry.Name())
+	return s.skillRootAt(s.dir, entry)
+}
+
+func (s *skillsSurface) skillRootAt(dir string, entry fs.DirEntry) (string, string, bool) {
+	path := filepath.Join(dir, entry.Name())
 
 	if entry.Type()&fs.ModeSymlink == 0 {
 		if !entry.IsDir() || isStubDir(path) {

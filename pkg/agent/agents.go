@@ -92,6 +92,7 @@ func OpenCode(home, cwd string) *Agent {
 			&skillsSurface{
 				dir:         filepath.Join(dir, "skills"),
 				ignoreUnder: []string{filepath.Join(home, ".claude", "plugins")},
+				alsoReads:   []string{filepath.Join(home, ".claude", "skills"), filepath.Join(home, ".agents", "skills")},
 				traits: Traits{
 					DefaultMode: config.ModePull,
 					Note:        "OpenCode reads ~/.claude/skills and ~/.agents/skills natively",
@@ -132,6 +133,7 @@ func GeminiCLI(home, cwd string) *Agent {
 			&skillsSurface{
 				dir:         filepath.Join(dir, "skills"),
 				ignoreUnder: []string{filepath.Join(home, ".claude", "plugins")},
+				alsoReads:   []string{filepath.Join(home, ".agents", "skills")},
 				traits:      Traits{DefaultMode: config.ModeSync, Creatable: true},
 			},
 			&permSurface{
@@ -164,6 +166,7 @@ func Cursor(home string) *Agent {
 			&skillsSurface{
 				dir:         filepath.Join(dir, "skills"),
 				ignoreUnder: []string{filepath.Join(home, ".claude", "plugins")},
+				alsoReads:   []string{filepath.Join(home, ".claude", "skills"), filepath.Join(home, ".agents", "skills")},
 				traits: Traits{
 					DefaultMode: config.ModePull,
 					Note:        "Cursor reads ~/.claude/skills and ~/.agents/skills natively",

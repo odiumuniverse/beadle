@@ -671,3 +671,123 @@ func TestReloadHints(t *testing.T) {
 		})
 	}
 }
+
+func readableRefs(t *testing.T, a *agent.Agent) []agent.SkillRef {
+	t.Helper()
+
+	surface := surfaceOf(t, a, kind.Skills)
+
+	reader, ok := surface.(agent.SkillReader)
+	require.True(t, ok)
+
+	refs, err := reader.ReadableSkills()
+	require.NoError(t, err)
+
+	return refs
+}
+
+func readableDirs(refs []agent.SkillRef) []string {
+	dirs := make([]string, 0, len(refs))
+
+	for _, ref := range refs {
+		dirs = append(dirs, ref.Dir)
+	}
+
+	return dirs
+}
+
+func TestReadableSkills(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	home := t.TempDir()
+	cwd := t.TempDir()
+
+	writeFile(t, filepath.Join(home, ".config", "opencode", "skills", "oc-own", "SKILL.md"), "# oc\n")
+	writeFile(t, filepath.Join(home, ".claude", "skills", "claude-own", "SKILL.md"), "# claude\n")
+	writeFile(t, filepath.Join(home, ".agents", "skills", "shared-own", "SKILL.md"), "# shared\n")
+	writeFile(t, filepath.Join(home, ".gemini", "skills", "gemini-own", "SKILL.md"), "# gemini\n")
+	writeFile(t, filepath.Join(home, ".cursor", "skills", "cursor-own", "SKILL.md"), "# cursor\n")
+
+	ocOwn := filepath.Join(home, ".config", "opencode", "skills")
+	claudeOwn := filepath.Join(home, ".claude", "skills")
+	sharedOwn := filepath.Join(home, ".agents", "skills")
+	geminiOwn := filepath.Join(home, ".gemini", "skills")
+	cursorOwn := filepath.Join(home, ".cursor", "skills")
+
+	t.Run("opencode", func(t *testing.T) {
+		t.Setenv("XDG_CONFIG_HOME", "")
+		require.Equal(t, []string{ocOwn, claudeOwn, sharedOwn}, readableDirs(readableRefs(t, agent.OpenCode(home, cwd))))
+	})
+
+	t.Run("cursor", func(t *testing.T) {
+		t.Setenv("XDG_CONFIG_HOME", "")
+		require.Equal(t, []string{cursorOwn, claudeOwn, sharedOwn}, readableDirs(readableRefs(t, agent.Cursor(home))))
+	})
+
+	t.Run("gemini", func(t *testing.T) {
+		t.Setenv("XDG_CONFIG_HOME", "")
+		require.Equal(t, []string{geminiOwn, sharedOwn}, readableDirs(readableRefs(t, agent.GeminiCLI(home, cwd))))
+	})
+
+	t.Run("claude", func(t *testing.T) {
+		t.Setenv("XDG_CONFIG_HOME", "")
+		require.Equal(t, []string{claudeOwn}, readableDirs(readableRefs(t, agent.ClaudeCode(home))))
+	})
+
+	t.Run("shared", func(t *testing.T) {
+		t.Setenv("XDG_CONFIG_HOME", "")
+		require.Equal(t, []string{sharedOwn}, readableDirs(readableRefs(t, agent.SharedSkills(home))))
+	})
+
+	t.Run("xdg config dir", func(t *testing.T) {
+		xdg := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", xdg)
+
+		writeFile(t, filepath.Join(xdg, "opencode", "skills", "xdg-own", "SKILL.md"), "# xdg\n")
+
+		require.Equal(t, []string{filepath.Join(xdg, "opencode", "skills"), claudeOwn, sharedOwn}, readableDirs(readableRefs(t, agent.OpenCode(home, cwd))))
+	})
+}
+
+func TestReadableSkillsGates(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "")
+
+	home := t.TempDir()
+	cwd := t.TempDir()
+
+	skills := filepath.Join(home, ".config", "opencode", "skills")
+
+	writeFile(t, filepath.Join(skills, "own", "SKILL.md"), "# own\n")
+
+	linked := filepath.Join(home, "elsewhere", "linked")
+	writeFile(t, filepath.Join(linked, "SKILL.md"), "# linked\n")
+	require.NoError(t, os.Symlink(linked, filepath.Join(skills, "linked")))
+
+	plugged := filepath.Join(home, ".claude", "plugins", "cache", "acme", "tool", "1.0.0", "skills", "plugged")
+	writeFile(t, filepath.Join(plugged, "SKILL.md"), "# plugged\n")
+	require.NoError(t, os.Symlink(plugged, filepath.Join(skills, "plugged")))
+
+	writeFile(t, filepath.Join(skills, "stub", "SKILL.md"), "# stub\n")
+	writeFile(t, filepath.Join(skills, "stub", ".agent-sync-quarantine"), "v1 acme/tool x 2026-01-01T00:00:00Z\n")
+
+	byName := map[string]string{}
+	for _, ref := range readableRefs(t, agent.OpenCode(home, cwd)) {
+		byName[ref.Name] = ref.Root
+	}
+
+	require.Equal(t, filepath.Join(skills, "own"), byName["own"])
+	require.Equal(t, agent.RealPath(linked), byName["linked"], "a symlinked skill resolves to its real root")
+	require.NotContains(t, byName, "plugged", "plugin cache links are not user duplicates")
+	require.NotContains(t, byName, "stub", "quarantine stubs are skipped")
+
+	require.Empty(t, readableRefs(t, agent.OpenCode(t.TempDir(), cwd)), "missing directories are not an error")
+
+	require.NoError(t, os.Chmod(skills, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(skills, 0o750) }) //nolint:gosec // G302: restoring the fixture directory mode
+
+	reader, ok := surfaceOf(t, agent.OpenCode(home, cwd), kind.Skills).(agent.SkillReader)
+	require.True(t, ok)
+
+	_, err := reader.ReadableSkills()
+	require.Error(t, err, "a real read error is reported")
+}
