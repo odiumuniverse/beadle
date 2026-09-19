@@ -9,11 +9,11 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/odiumuniverse/agents-sync/pkg/agent"
-	"github.com/odiumuniverse/agents-sync/pkg/cas"
-	"github.com/odiumuniverse/agents-sync/pkg/config"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
-	"github.com/odiumuniverse/agents-sync/pkg/state"
+	"github.com/odiumuniverse/beadle/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/cas"
+	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
 type view struct {
@@ -488,7 +488,7 @@ func (e *Engine) loadBase(st *state.State, k kind.ID, agentID string) (kind.Item
 	for key, hash := range base {
 		data, err := e.store.Get(hash)
 		if err != nil {
-			return nil, fmt.Errorf("sync state of %s is damaged (%s): run agent-sync doctor: %w", agentID, key, err)
+			return nil, fmt.Errorf("sync state of %s is damaged (%s): run beadle doctor: %w", agentID, key, err)
 		}
 
 		items[key] = data

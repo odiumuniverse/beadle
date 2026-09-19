@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/odiumuniverse/agents-sync/pkg/config"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/kind"
 )
 
 var ErrNotConfigured = errors.New("agent config not found")

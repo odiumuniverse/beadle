@@ -10,8 +10,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
-	"github.com/odiumuniverse/agents-sync/pkg/skill"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
+	"github.com/odiumuniverse/beadle/pkg/skill"
 )
 
 const (
@@ -49,7 +49,7 @@ func writePluginStub(dir, name, key, version string, at time.Time) (bool, error)
 	}
 
 	date := at.Format(time.RFC3339)
-	message := fmt.Sprintf("This skill was provided by the plugin %s@%s, which is no longer installed (since %s). Run agent-sync heal to clean up, or reinstall the plugin.",
+	message := fmt.Sprintf("This skill was provided by the plugin %s@%s, which is no longer installed (since %s). Run beadle heal to clean up, or reinstall the plugin.",
 		key, version, date)
 
 	if err := os.MkdirAll(dir, 0o750); err != nil {

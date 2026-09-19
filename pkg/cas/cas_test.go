@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/odiumuniverse/agents-sync/pkg/cas"
+	"github.com/odiumuniverse/beadle/pkg/cas"
 )
 
 func TestHashOf(t *testing.T) {

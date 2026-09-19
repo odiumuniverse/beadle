@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/odiumuniverse/agents-sync/pkg/engine"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/kind"
 )
 
 func quarantineCurrent(f *fixture, marketplace, name string) string {
@@ -229,7 +229,7 @@ func TestPluginQuarantineDoctorErrors(t *testing.T) {
 	issues, err := f.engine.Doctor(t.Context())
 	require.NoError(t, err)
 	require.True(t, hasIssue(issues, engine.SeverityError, "is quarantined since"), "issues: %v", issues)
-	require.True(t, hasIssue(issues, engine.SeverityError, "run agent-sync heal"), "issues: %v", issues)
+	require.True(t, hasIssue(issues, engine.SeverityError, "run beadle heal"), "issues: %v", issues)
 
 	_, err = f.engine.Heal(t.Context(), false)
 	require.NoError(t, err)

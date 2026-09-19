@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 )
 
 const noteSuffix = ".md"

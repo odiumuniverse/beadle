@@ -1,4 +1,4 @@
-module github.com/odiumuniverse/agents-sync
+module github.com/odiumuniverse/beadle
 
 go 1.27.1
 

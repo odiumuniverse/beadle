@@ -14,11 +14,11 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/odiumuniverse/agents-sync/pkg/agent"
-	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
-	"github.com/odiumuniverse/agents-sync/pkg/permission"
-	"github.com/odiumuniverse/agents-sync/pkg/state"
+	"github.com/odiumuniverse/beadle/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
+	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/permission"
+	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
 var conflictFileName = regexp.MustCompile(`^(rules|mcp|skills|permissions|memory|projects)-[a-z0-9-]+-[0-9a-f]{8}\.[A-Za-z0-9]+$`)
@@ -352,7 +352,7 @@ func (e *Engine) conflictDocument(c state.Conflict) (string, []byte, error) {
 		"base":        display(c.Kind, base),
 		"vault":       display(c.Kind, vaultValue),
 		"agent_value": display(c.Kind, local),
-		"resolve":     "agent-sync resolve " + c.ID() + " --take vault|agent",
+		"resolve":     "beadle resolve " + c.ID() + " --take vault|agent",
 	}
 
 	data, err := json.MarshalIndent(summary, "", "  ")

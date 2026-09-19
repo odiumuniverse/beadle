@@ -5,7 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/odiumuniverse/agents-sync/pkg/merge"
+	"github.com/odiumuniverse/beadle/pkg/merge"
 )
 
 const conflictExample = "a\n" +

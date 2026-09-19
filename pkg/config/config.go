@@ -8,10 +8,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
-	"github.com/odiumuniverse/agents-sync/pkg/permission"
-	"github.com/odiumuniverse/agents-sync/pkg/secret"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
+	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/permission"
+	"github.com/odiumuniverse/beadle/pkg/secret"
 )
 
 const FileName = "config.json"

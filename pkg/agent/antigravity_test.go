@@ -8,9 +8,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/odiumuniverse/agents-sync/pkg/agent"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
-	"github.com/odiumuniverse/agents-sync/pkg/mcp"
+	"github.com/odiumuniverse/beadle/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/mcp"
 )
 
 const antigravityReloadHint = "Antigravity CLI reads mcp_config.json at startup: restart agy to load the changes"

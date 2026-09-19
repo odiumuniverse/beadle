@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/odiumuniverse/agents-sync/pkg/mcp"
+	"github.com/odiumuniverse/beadle/pkg/mcp"
 )
 
 const (

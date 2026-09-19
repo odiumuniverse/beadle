@@ -10,10 +10,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/odiumuniverse/agents-sync/pkg/agent"
-	"github.com/odiumuniverse/agents-sync/pkg/digest"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
-	"github.com/odiumuniverse/agents-sync/pkg/memory"
+	"github.com/odiumuniverse/beadle/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/digest"
+	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/memory"
 )
 
 type fencedWriter interface {

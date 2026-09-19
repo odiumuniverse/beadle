@@ -16,10 +16,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/odiumuniverse/agents-sync/pkg/agent"
-	"github.com/odiumuniverse/agents-sync/pkg/config"
-	"github.com/odiumuniverse/agents-sync/pkg/engine"
-	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
+	"github.com/odiumuniverse/beadle/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 )
 
 const (
@@ -739,9 +739,9 @@ func TestEnsureGitIgnoreMerges(t *testing.T) {
 		t.Skip("git is not installed")
 	}
 
-	t.Setenv("GIT_AUTHOR_NAME", "agent-sync test")
+	t.Setenv("GIT_AUTHOR_NAME", "beadle test")
 	t.Setenv("GIT_AUTHOR_EMAIL", "test@example.com")
-	t.Setenv("GIT_COMMITTER_NAME", "agent-sync test")
+	t.Setenv("GIT_COMMITTER_NAME", "beadle test")
 	t.Setenv("GIT_COMMITTER_EMAIL", "test@example.com")
 
 	f := newFixture(t)
@@ -753,7 +753,7 @@ func TestEnsureGitIgnoreMerges(t *testing.T) {
 	write(t, f.openCodeConfig(), `{"mcp": {}}`)
 	write(t, f.openCodeRules(), "# r\n")
 
-	old := "# AgentSync: credentials and machine-local state stay on this machine.\nmcp/secrets.json\nstate/\nstate.json\nobjects/\nconflicts/"
+	old := "# Beadle: credentials and machine-local state stay on this machine.\nmcp/secrets.json\nstate/\nstate.json\nobjects/\nconflicts/"
 	ignorePath := filepath.Join(f.vault.Root(), ".gitignore")
 	write(t, ignorePath, old)
 

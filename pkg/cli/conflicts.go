@@ -9,9 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/odiumuniverse/agents-sync/pkg/engine"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
-	"github.com/odiumuniverse/agents-sync/pkg/state"
+	"github.com/odiumuniverse/beadle/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
 func (a *app) newConflictsCmd() *cobra.Command {
@@ -61,7 +61,7 @@ func listConflicts(w io.Writer, conflicts []state.Conflict) {
 		fmt.Fprintf(w, "%-8s  %-11s  %-12s  %-11s  %s\n", c.ID(), c.Kind, c.Agent, c.Reason, c.TargetKey())
 	}
 
-	fmt.Fprintln(w, "\ndetails: agent-sync conflicts <id>    settle: agent-sync resolve <id> --take vault|agent|file")
+	fmt.Fprintln(w, "\ndetails: beadle conflicts <id>    settle: beadle resolve <id> --take vault|agent|file")
 }
 
 func findConflict(conflicts []state.Conflict, id string) (state.Conflict, error) {
@@ -102,11 +102,11 @@ func showConflict(w io.Writer, e *engine.Engine, c state.Conflict) error {
 	printSide(w, "vault", c.Kind, vaultValue)
 	printSide(w, "agent "+c.Agent, c.Kind, local)
 
-	fmt.Fprintf(w, "settle:\n  agent-sync resolve %s --take vault   # keep the vault value; %s receives it\n", c.ID(), c.Agent)
-	fmt.Fprintf(w, "  agent-sync resolve %s --take agent   # take the value of %s everywhere\n", c.ID(), c.Agent)
+	fmt.Fprintf(w, "settle:\n  beadle resolve %s --take vault   # keep the vault value; %s receives it\n", c.ID(), c.Agent)
+	fmt.Fprintf(w, "  beadle resolve %s --take agent   # take the value of %s everywhere\n", c.ID(), c.Agent)
 
 	if err == nil && filepath.Ext(file) != ".json" {
-		fmt.Fprintf(w, "  or edit %s, remove the conflict markers, then: agent-sync resolve %s --take file\n", file, c.ID())
+		fmt.Fprintf(w, "  or edit %s, remove the conflict markers, then: beadle resolve %s --take file\n", file, c.ID())
 	}
 
 	return nil

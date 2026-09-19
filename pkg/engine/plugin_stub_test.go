@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/odiumuniverse/agents-sync/pkg/skill"
+	"github.com/odiumuniverse/beadle/pkg/skill"
 )
 
 var stubAt = time.Date(2026, 9, 16, 10, 30, 0, 0, time.UTC)
@@ -64,7 +64,7 @@ func TestStubScriptFailsLoudly(t *testing.T) {
 	require.ErrorAs(t, err, &exit)
 	require.Equal(t, 1, exit.ExitCode())
 	require.Contains(t, string(out), "acme/tool@1.0.0, which is no longer installed")
-	require.Contains(t, string(out), "agent-sync heal")
+	require.Contains(t, string(out), "beadle heal")
 }
 
 func TestStubRefusesForeign(t *testing.T) {

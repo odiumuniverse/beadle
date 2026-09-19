@@ -1,9 +1,9 @@
 package engine
 
 import (
-	"github.com/odiumuniverse/agents-sync/pkg/config"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
-	"github.com/odiumuniverse/agents-sync/pkg/state"
+	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
 type Action string

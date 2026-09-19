@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 )
 
 var ErrInvalidHash = errors.New("invalid content hash")

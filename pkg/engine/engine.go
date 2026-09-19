@@ -11,17 +11,17 @@ import (
 
 	"github.com/vmkteam/embedlog"
 
-	"github.com/odiumuniverse/agents-sync/pkg/agent"
-	"github.com/odiumuniverse/agents-sync/pkg/cas"
-	"github.com/odiumuniverse/agents-sync/pkg/config"
-	"github.com/odiumuniverse/agents-sync/pkg/digest"
-	"github.com/odiumuniverse/agents-sync/pkg/history"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
-	"github.com/odiumuniverse/agents-sync/pkg/lock"
-	"github.com/odiumuniverse/agents-sync/pkg/memory"
-	"github.com/odiumuniverse/agents-sync/pkg/secret"
-	"github.com/odiumuniverse/agents-sync/pkg/state"
-	"github.com/odiumuniverse/agents-sync/pkg/vault"
+	"github.com/odiumuniverse/beadle/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/cas"
+	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/digest"
+	"github.com/odiumuniverse/beadle/pkg/history"
+	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/lock"
+	"github.com/odiumuniverse/beadle/pkg/memory"
+	"github.com/odiumuniverse/beadle/pkg/secret"
+	"github.com/odiumuniverse/beadle/pkg/state"
+	"github.com/odiumuniverse/beadle/pkg/vault"
 )
 
 const lockWait = 30 * time.Second
@@ -247,7 +247,7 @@ func (e *Engine) commitHistory(ctx context.Context) {
 		return
 	}
 
-	message := "agentsync: sync " + e.now().Format("2006-01-02 15:04:05")
+	message := "beadle: sync " + e.now().Format("2006-01-02 15:04:05")
 
 	if err := history.Commit(ctx, e.vault.Root(), message, e.log); err != nil {
 		e.log.Error(ctx, "vault history failed", "err", err)
@@ -568,7 +568,7 @@ func (e *Engine) holdDigest(report *Report, st *state.State, target projectTarge
 	st.Drift[path] = drift
 
 	report.Warnings = append(report.Warnings, fmt.Sprintf(
-		"digest: manual edits inside the generated block in %s; the digest is frozen: restore the bytes, delete the block, or run agent-sync sync --refresh-digest", path))
+		"digest: manual edits inside the generated block in %s; the digest is frozen: restore the bytes, delete the block, or run beadle sync --refresh-digest", path))
 }
 
 func (e *Engine) adoptDigest(report *Report, st *state.State, target projectTarget, fence []byte, opts SyncOptions) {
@@ -576,7 +576,7 @@ func (e *Engine) adoptDigest(report *Report, st *state.State, target projectTarg
 
 	receipt, ok := digest.Verify(fence)
 	if !ok {
-		report.Warnings = append(report.Warnings, fmt.Sprintf("digest: %s: cannot parse the agent-sync block", path))
+		report.Warnings = append(report.Warnings, fmt.Sprintf("digest: %s: cannot parse the beadle block", path))
 
 		return
 	}

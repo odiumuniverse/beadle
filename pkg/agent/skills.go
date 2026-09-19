@@ -11,8 +11,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
-	"github.com/odiumuniverse/agents-sync/pkg/skill"
+	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/skill"
 )
 
 type skillsSurface struct {

@@ -50,7 +50,7 @@ func TestFirstRunFlow(t *testing.T) {
 	require.Contains(t, out, "[x] Claude Code")
 	require.Contains(t, out, "[x] OpenCode")
 	require.Contains(t, out, "[ ] Gemini CLI")
-	require.Contains(t, out, "agent-sync sync --dry-run")
+	require.Contains(t, out, "beadle sync --dry-run")
 
 	out, err = runCLI(t, "sync", "--dry-run")
 	require.NoError(t, err)

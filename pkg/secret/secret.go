@@ -14,7 +14,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 )
 
 const FileName = "secrets.json"

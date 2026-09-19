@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
-	"github.com/odiumuniverse/agents-sync/pkg/state"
+	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
 func (e *Engine) History(k kind.ID) ([]state.Snapshot, error) {

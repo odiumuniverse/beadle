@@ -7,8 +7,8 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
-	"github.com/odiumuniverse/agents-sync/pkg/mcp"
+	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/mcp"
 )
 
 type mcpCodec struct {

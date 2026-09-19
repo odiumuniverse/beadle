@@ -1,4 +1,4 @@
-BINARY_NAME=agent-sync
+BINARY_NAME=beadle
 GO=go
 VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS=-ldflags "-X main.version=$(VERSION)"
@@ -9,7 +9,7 @@ all: fmt lint test build
 
 build:
 	@echo "Building $(BINARY_NAME)..."
-	$(GO) build $(LDFLAGS) -o bin/$(BINARY_NAME) ./cmd/agentsync
+	$(GO) build $(LDFLAGS) -o bin/$(BINARY_NAME) ./cmd/beadle
 
 clean:
 	rm -rf bin/ coverage.out coverage.html

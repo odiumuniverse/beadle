@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/odiumuniverse/agents-sync/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/agent"
 )
 
 func TestInboxPath(t *testing.T) {

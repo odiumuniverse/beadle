@@ -10,7 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/odiumuniverse/agents-sync/pkg/merge"
+	"github.com/odiumuniverse/beadle/pkg/merge"
 )
 
 type ID string

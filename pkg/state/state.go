@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/odiumuniverse/agents-sync/pkg/cas"
-	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/cas"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
+	"github.com/odiumuniverse/beadle/pkg/kind"
 )
 
 const FileName = "state.json"

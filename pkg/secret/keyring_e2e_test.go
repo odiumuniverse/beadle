@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/odiumuniverse/agents-sync/pkg/secret"
+	"github.com/odiumuniverse/beadle/pkg/secret"
 )
 
 func TestKeyringRealRoundTrip(t *testing.T) { //nolint:paralleltest // touches the real keychain

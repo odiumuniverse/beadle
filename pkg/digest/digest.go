@@ -1,4 +1,4 @@
-// Package digest renders, splices and verifies the agent-sync memory digest
+// Package digest renders, splices and verifies the beadle memory digest
 // fence embedded into project rules files.
 package digest
 

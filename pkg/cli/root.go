@@ -31,9 +31,9 @@ func newRootCmd(opts Options) *cobra.Command {
 	var verbose, logJSON bool
 
 	root := &cobra.Command{
-		Use:   "agent-sync",
+		Use:   "beadle",
 		Short: "One configuration for every AI coding agent",
-		Long: "agent-sync keeps the rules, MCP servers, skills and permissions of your AI coding\n" +
+		Long: "beadle keeps the rules, MCP servers, skills and permissions of your AI coding\n" +
 			"agents (Claude Code, OpenCode, Gemini CLI, Cursor, ...) in sync through a vault\n" +
 			"you own. Change them in any agent: the others follow. Real files, 3-way merges,\n" +
 			"no symlinks; conflicts wait for you instead of being guessed.",

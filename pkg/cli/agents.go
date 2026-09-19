@@ -5,9 +5,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/odiumuniverse/agents-sync/pkg/agent"
-	"github.com/odiumuniverse/agents-sync/pkg/config"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/kind"
 )
 
 func (a *app) newAgentsCmd() *cobra.Command {
@@ -82,7 +82,7 @@ func (a *app) newAgentsToggleCmd(enable bool) *cobra.Command {
 			}
 
 			if enable {
-				fmt.Fprintln(cmd.OutOrStdout(), "enabled; preview the first sync with: agent-sync sync --dry-run")
+				fmt.Fprintln(cmd.OutOrStdout(), "enabled; preview the first sync with: beadle sync --dry-run")
 			} else {
 				fmt.Fprintln(cmd.OutOrStdout(), "disabled; its files are left as they are")
 			}

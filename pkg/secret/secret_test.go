@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/odiumuniverse/agents-sync/pkg/secret"
+	"github.com/odiumuniverse/beadle/pkg/secret"
 )
 
 func TestNormalizeName(t *testing.T) {

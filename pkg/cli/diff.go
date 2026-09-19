@@ -10,8 +10,8 @@ import (
 	"github.com/pmezard/go-difflib/difflib"
 	"github.com/spf13/cobra"
 
-	"github.com/odiumuniverse/agents-sync/pkg/engine"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/kind"
 )
 
 func (a *app) newDiffCmd() *cobra.Command {
@@ -85,7 +85,7 @@ func printDiff(w io.Writer, report *engine.Report, agentID string) {
 
 		empty = false
 
-		fmt.Fprintf(w, "%s: conflict %s on %s with %s (%s): agent-sync conflicts %s\n", c.Kind, c.ID(), c.TargetKey(), c.Agent, c.Reason, c.ID())
+		fmt.Fprintf(w, "%s: conflict %s on %s with %s (%s): beadle conflicts %s\n", c.Kind, c.ID(), c.TargetKey(), c.Agent, c.Reason, c.ID())
 	}
 
 	if empty {

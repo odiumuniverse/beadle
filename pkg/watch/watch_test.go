@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/odiumuniverse/agents-sync/pkg/watch"
+	"github.com/odiumuniverse/beadle/pkg/watch"
 )
 
 func TestWatchTriggersSync(t *testing.T) {

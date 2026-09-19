@@ -5,8 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/odiumuniverse/agents-sync/pkg/config"
-	"github.com/odiumuniverse/agents-sync/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/engine"
 )
 
 func (a *app) newSyncCmd() *cobra.Command {
@@ -54,7 +54,7 @@ func (a *app) newPushCmd() *cobra.Command {
 		Use:   "push",
 		Short: "Write the vault into every agent, overwriting their local changes",
 		Long: "push makes every agent hold exactly the vault content. Changes made in an agent\n" +
-			"since the last sync are overwritten, not merged: use `agent-sync sync` for that.",
+			"since the last sync are overwritten, not merged: use `beadle sync` for that.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return a.runSync(cmd, engine.SyncOptions{DryRun: dryRun, Direction: config.ModePush}, nil)
 		},

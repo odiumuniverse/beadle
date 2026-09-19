@@ -11,7 +11,7 @@ import (
 	"github.com/gofrs/flock"
 )
 
-var ErrBusy = errors.New("vault is locked by another agent-sync process")
+var ErrBusy = errors.New("vault is locked by another beadle process")
 
 const retryDelay = 100 * time.Millisecond
 

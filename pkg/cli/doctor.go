@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/odiumuniverse/agents-sync/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/engine"
 )
 
 func (a *app) newDoctorCmd() *cobra.Command {

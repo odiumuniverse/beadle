@@ -7,9 +7,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/odiumuniverse/agents-sync/pkg/engine"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
-	"github.com/odiumuniverse/agents-sync/pkg/state"
+	"github.com/odiumuniverse/beadle/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
 const maxListed = 5
@@ -48,7 +48,7 @@ func printReport(w io.Writer, report *engine.Report) {
 	}
 
 	if n := len(report.Conflicts); n > 0 {
-		fmt.Fprintf(w, "\n%d open conflict(s): review with `agent-sync conflicts`, settle with `agent-sync resolve <id> --take vault|agent`\n", n)
+		fmt.Fprintf(w, "\n%d open conflict(s): review with `beadle conflicts`, settle with `beadle resolve <id> --take vault|agent`\n", n)
 	}
 
 	for _, warning := range report.Warnings {

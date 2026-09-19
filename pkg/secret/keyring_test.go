@@ -278,7 +278,7 @@ func TestKeyringGetReturnsForeignRawValue(t *testing.T) {
 	value, found, err := keyring.Get("ALPHA")
 	require.NoError(t, err)
 	require.True(t, found)
-	require.Equal(t, "hand-added password", value, "items added outside agent-sync are returned as-is")
+	require.Equal(t, "hand-added password", value, "items added outside beadle are returned as-is")
 }
 
 func TestKeyringGetRejectsCorruptPayload(t *testing.T) {

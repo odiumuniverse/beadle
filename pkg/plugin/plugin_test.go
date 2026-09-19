@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/odiumuniverse/agents-sync/pkg/plugin"
+	"github.com/odiumuniverse/beadle/pkg/plugin"
 )
 
 func writeFile(t *testing.T, path, content string) {

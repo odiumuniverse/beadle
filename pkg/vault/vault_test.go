@@ -7,7 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/odiumuniverse/agents-sync/pkg/vault"
+	"github.com/odiumuniverse/beadle/pkg/vault"
 )
 
 func TestResolveRoot(t *testing.T) {

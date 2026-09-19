@@ -1,4 +1,4 @@
-# AgentSync
+# Beadle
 
 > ## Don't be loyal to companies.
 >
@@ -11,7 +11,7 @@
 
 AI coding agents want you to live inside their world: their config directory, their format, their little ecosystem. The moment you try a different agent, you start from zero. That is not an accident — lock-in is the business model.
 
-**AgentSync treats every agent as a replaceable client of your vault.** Your configuration lives in one place, in plain files you own. Agents come and go; the vault stays.
+**Beadle treats every agent as a replaceable client of your vault.** Your configuration lives in one place, in plain files you own. Agents come and go; the vault stays.
 
 ```
 ~/.agent-sync/                  your vault — the only thing you edit
@@ -38,7 +38,7 @@ Edit config in **any** agent — or directly in the vault — and everything els
 - **Skills** — whole directory trees, 3-way merged file by file. Plugin caches are skipped; symlinked skills are read but never overwritten.
 - **Permissions** (opt-in) — tool/shell/MCP rules as a set, merged with `deny > ask > allow`. Agent-local defaults (`*: allow`) and path globs stay local by design.
 
-Conflicts are explicit, never silent: a disagreeing server, skill or rule is held back from that agent while everything else keeps syncing. `agent-sync conflicts` lists the open ones; `agent-sync resolve <id> --take vault|agent|file` settles them. Text conflicts get git-style markers in `conflicts/`.
+Conflicts are explicit, never silent: a disagreeing server, skill or rule is held back from that agent while everything else keeps syncing. `beadle conflicts` lists the open ones; `beadle resolve <id> --take vault|agent|file` settles them. Text conflicts get git-style markers in `conflicts/`.
 
 ## Supported agents
 
@@ -57,25 +57,25 @@ Claude Code project-scope MCP (`.mcp.json` in a repository, `projects.*` in `~/.
 ```bash
 git clone git@github.com:odiumuniverse/agents-sync.git
 cd agents-sync
-make build          # bin/agent-sync
+make build          # bin/beadle
 ```
 
 ## Quick start
 
 ```bash
-agent-sync init                 # detect agents, create the vault
-agent-sync sync                 # pull every agent into the vault, push the union back
-agent-sync status               # resources, conflicts, agents
-agent-sync diff                 # what a sync would change, item by item
-agent-sync conflicts            # what waits for a decision
-agent-sync doctor               # broken symlinks, permissions, drift, collisions
+beadle init                 # detect agents, create the vault
+beadle sync                 # pull every agent into the vault, push the union back
+beadle status               # resources, conflicts, agents
+beadle diff                 # what a sync would change, item by item
+beadle conflicts            # what waits for a decision
+beadle doctor               # broken symlinks, permissions, drift, collisions
 ```
 
 Run it continuously:
 
 ```bash
-agent-sync watch                                  # foreground watcher
-agent-sync daemon install                         # launchd (macOS) / systemd user unit (Linux)
+beadle watch                                  # foreground watcher
+beadle daemon install                         # launchd (macOS) / systemd user unit (Linux)
 ```
 
 Or let each agent trigger it — the watcher watches agent files too, not just the vault.
@@ -107,7 +107,7 @@ Global flags: `--vault` (default `~/.agent-sync`, or `$AGENTSYNC_HOME`), `--verb
 - **JSONC is kept JSONC.** Comments and formatting of untouched parts survive edits.
 - **Atomic writes.** tmp file + fsync + rename in the target directory, then fsync of the directory; the file mode is preserved.
 - **Local stays local.** OAuth state, hooks, plugins, UI settings, folder trust — untouched. Secrets live in `mcp/secrets.json` (0600) and never reach the synced canon, the object store or git history.
-- **Secrets can live in the OS keychain.** `agent-sync secrets migrate keyring` moves the values into the macOS keychain (`security`) or Linux `secret-tool`; the file then holds names only (`backend: keyring`). The keyring is opt-in and fail-closed: an unavailable or locked keyring yields skips and warnings — never a plaintext fallback. `secrets migrate file` brings the values back; deleting `secrets.json` returns to the file backend.
+- **Secrets can live in the OS keychain.** `beadle secrets migrate keyring` moves the values into the macOS keychain (`security`) or Linux `secret-tool`; the file then holds names only (`backend: keyring`). The keyring is opt-in and fail-closed: an unavailable or locked keyring yields skips and warnings — never a plaintext fallback. `secrets migrate file` brings the values back; deleting `secrets.json` returns to the file backend.
 - **Vendor formats are guests.** `pkg/kind` defines how each resource merges; `pkg/agent` translates an agent's own format and keeps everything it does not own.
 
 ## Development

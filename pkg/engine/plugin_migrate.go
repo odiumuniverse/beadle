@@ -11,8 +11,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
-	"github.com/odiumuniverse/agents-sync/pkg/skill"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
+	"github.com/odiumuniverse/beadle/pkg/skill"
 )
 
 const forkMigratingSuffix = ".migrating"
@@ -439,10 +439,10 @@ func (e *Engine) migrationLinkIssues(plan farmPlan, ledger pluginLedger, path, n
 
 	reason := e.linkReason(plan, key, skillName)
 	if reason == linkMigratable {
-		return []Issue{{Severity: SeverityWarn, Message: fmt.Sprintf("skill %s points into the plugin cache (%s); run agent-sync heal", name, link)}}
+		return []Issue{{Severity: SeverityWarn, Message: fmt.Sprintf("skill %s points into the plugin cache (%s); run beadle heal", name, link)}}
 	}
 
-	return []Issue{{Severity: SeverityWarn, Message: fmt.Sprintf("skill %s points into the plugin cache; %s (run agent-sync sync or remove the stale link)", name, e.linkReasonText(plan, reason, key, skillName))}}
+	return []Issue{{Severity: SeverityWarn, Message: fmt.Sprintf("skill %s points into the plugin cache; %s (run beadle sync or remove the stale link)", name, e.linkReasonText(plan, reason, key, skillName))}}
 }
 
 func (e *Engine) migrationForkIssues(plan farmPlan, path, name string) []Issue {

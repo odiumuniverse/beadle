@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/odiumuniverse/agents-sync/pkg/engine"
-	"github.com/odiumuniverse/agents-sync/pkg/watch"
+	"github.com/odiumuniverse/beadle/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/watch"
 )
 
 func (a *app) newWatchCmd() *cobra.Command {
@@ -62,7 +62,7 @@ func (a *app) watchSync(ctx context.Context) error {
 	}
 
 	if n := len(report.Conflicts); n > 0 {
-		a.logger.Error(ctx, "open conflicts wait for agent-sync resolve", "conflicts", n)
+		a.logger.Error(ctx, "open conflicts wait for beadle resolve", "conflicts", n)
 	}
 
 	if report.VaultChanged() || report.Pushed() {

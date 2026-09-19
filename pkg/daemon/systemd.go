@@ -20,7 +20,7 @@ func RenderSystemd(spec Spec) (string, string, error) {
 	path := filepath.Join(spec.Home, systemdSubdir, name)
 
 	content := `[Unit]
-Description=AgentSync watcher
+Description=Beadle watcher
 After=default.target
 
 [Service]

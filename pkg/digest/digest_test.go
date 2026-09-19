@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/odiumuniverse/agents-sync/pkg/digest"
+	"github.com/odiumuniverse/beadle/pkg/digest"
 )
 
 const (

@@ -9,7 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 )
 
 func TestWriteFileAtomic(t *testing.T) {

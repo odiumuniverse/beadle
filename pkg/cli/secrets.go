@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/odiumuniverse/agents-sync/pkg/secret"
+	"github.com/odiumuniverse/beadle/pkg/secret"
 )
 
 func (a *app) newSecretsCmd() *cobra.Command {

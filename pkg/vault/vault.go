@@ -9,9 +9,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/odiumuniverse/agents-sync/pkg/config"
-	"github.com/odiumuniverse/agents-sync/pkg/secret"
-	"github.com/odiumuniverse/agents-sync/pkg/state"
+	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/secret"
+	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
 const (
@@ -19,7 +19,7 @@ const (
 	EnvHome        = "AGENTSYNC_HOME"
 )
 
-const gitIgnore = `# AgentSync: credentials and machine-local state stay on this machine.
+const gitIgnore = `# Beadle: credentials and machine-local state stay on this machine.
 mcp/secrets.json
 state/
 state.json

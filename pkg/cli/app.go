@@ -6,11 +6,11 @@ import (
 
 	"github.com/vmkteam/embedlog"
 
-	"github.com/odiumuniverse/agents-sync/pkg/agent"
-	"github.com/odiumuniverse/agents-sync/pkg/config"
-	"github.com/odiumuniverse/agents-sync/pkg/engine"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
-	"github.com/odiumuniverse/agents-sync/pkg/vault"
+	"github.com/odiumuniverse/beadle/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/vault"
 )
 
 type app struct {
@@ -26,7 +26,7 @@ func (a *app) resolveVault() (*vault.Vault, error) {
 
 	v := vault.New(root)
 	if !v.Initialized() {
-		return nil, fmt.Errorf("vault %s is not initialized (run agent-sync init)", root)
+		return nil, fmt.Errorf("vault %s is not initialized (run beadle init)", root)
 	}
 
 	return v, nil

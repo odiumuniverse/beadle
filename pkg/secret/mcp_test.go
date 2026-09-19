@@ -6,8 +6,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/odiumuniverse/agents-sync/pkg/mcp"
-	"github.com/odiumuniverse/agents-sync/pkg/secret"
+	"github.com/odiumuniverse/beadle/pkg/mcp"
+	"github.com/odiumuniverse/beadle/pkg/secret"
 )
 
 func newStore(t *testing.T) *secret.Store {

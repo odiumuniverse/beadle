@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/odiumuniverse/agents-sync/pkg/daemon"
+	"github.com/odiumuniverse/beadle/pkg/daemon"
 )
 
 func (a *app) newDaemonCmd() *cobra.Command {

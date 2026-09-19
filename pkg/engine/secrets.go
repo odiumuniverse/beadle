@@ -6,10 +6,10 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/odiumuniverse/agents-sync/pkg/cas"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
-	"github.com/odiumuniverse/agents-sync/pkg/secret"
-	"github.com/odiumuniverse/agents-sync/pkg/state"
+	"github.com/odiumuniverse/beadle/pkg/cas"
+	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/secret"
+	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
 func (e *Engine) Secrets() *secret.Store {

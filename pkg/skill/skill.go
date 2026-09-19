@@ -10,8 +10,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/odiumuniverse/agents-sync/pkg/cas"
-	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
+	"github.com/odiumuniverse/beadle/pkg/cas"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 )
 
 type Tree map[string][]byte

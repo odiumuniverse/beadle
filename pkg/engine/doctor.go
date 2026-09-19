@@ -14,16 +14,16 @@ import (
 
 	"golang.org/x/text/unicode/norm"
 
-	"github.com/odiumuniverse/agents-sync/pkg/agent"
-	"github.com/odiumuniverse/agents-sync/pkg/cas"
-	"github.com/odiumuniverse/agents-sync/pkg/config"
-	"github.com/odiumuniverse/agents-sync/pkg/digest"
-	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
-	"github.com/odiumuniverse/agents-sync/pkg/plugin"
-	"github.com/odiumuniverse/agents-sync/pkg/secret"
-	"github.com/odiumuniverse/agents-sync/pkg/skill"
-	"github.com/odiumuniverse/agents-sync/pkg/state"
+	"github.com/odiumuniverse/beadle/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/cas"
+	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/digest"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
+	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/plugin"
+	"github.com/odiumuniverse/beadle/pkg/secret"
+	"github.com/odiumuniverse/beadle/pkg/skill"
+	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
 const (
@@ -120,7 +120,7 @@ func (e *Engine) memorySecretIssues() []Issue {
 	if len(plaintexts) > 0 && !ignored {
 		issues = append(issues, Issue{
 			Severity: SeverityError, Kind: kind.Memory,
-			Message: fmt.Sprintf("memory notes with plaintext secrets are not ignored by git: %s; run agent-sync sync", strings.Join(plaintexts, ", ")),
+			Message: fmt.Sprintf("memory notes with plaintext secrets are not ignored by git: %s; run beadle sync", strings.Join(plaintexts, ", ")),
 		})
 	}
 
@@ -173,7 +173,7 @@ func (e *Engine) digestTargetIssues(st *state.State, target projectTarget, vault
 
 	_, fence, found, err := digest.Strip(data)
 	if err != nil {
-		return []Issue{{Severity: SeverityError, Kind: kind.Projects, Agent: target.agent.ID, Message: "cannot parse the agent-sync block in " + path}}
+		return []Issue{{Severity: SeverityError, Kind: kind.Projects, Agent: target.agent.ID, Message: "cannot parse the beadle block in " + path}}
 	}
 
 	if !found {
@@ -190,12 +190,12 @@ func (e *Engine) digestTargetIssues(st *state.State, target projectTarget, vault
 
 		return []Issue{{
 			Severity: severity, Kind: kind.Projects, Agent: target.agent.ID,
-			Message: fmt.Sprintf("manual edits inside the generated block in %s; the digest is frozen: restore the bytes, delete the block, or run agent-sync sync --refresh-digest", path),
+			Message: fmt.Sprintf("manual edits inside the generated block in %s; the digest is frozen: restore the bytes, delete the block, or run beadle sync --refresh-digest", path),
 		}}
 	}
 
 	if _, ok := digest.Verify(fence); !ok {
-		return []Issue{{Severity: SeverityError, Kind: kind.Projects, Agent: target.agent.ID, Message: "cannot parse the agent-sync block in " + path}}
+		return []Issue{{Severity: SeverityError, Kind: kind.Projects, Agent: target.agent.ID, Message: "cannot parse the beadle block in " + path}}
 	}
 
 	if !hasStored {
@@ -215,7 +215,7 @@ func missingDigestIssue(target projectTarget, path string, hasNotes bool) []Issu
 
 	return []Issue{{
 		Severity: SeverityInfo, Kind: kind.Projects, Agent: target.agent.ID,
-		Message: fmt.Sprintf("no memory digest in %s; run agent-sync sync", path),
+		Message: fmt.Sprintf("no memory digest in %s; run beadle sync", path),
 	}}
 }
 
@@ -286,7 +286,7 @@ func conflictIssues(st *state.State) []Issue {
 			Severity: SeverityWarn,
 			Kind:     c.Kind,
 			Agent:    c.Agent,
-			Message: fmt.Sprintf("conflict %s: %s differs between the vault and %s (%s); run agent-sync resolve %s",
+			Message: fmt.Sprintf("conflict %s: %s differs between the vault and %s (%s); run beadle resolve %s",
 				c.ID(), c.TargetKey(), c.Agent, c.Reason, c.ID()),
 		})
 	}
@@ -315,7 +315,7 @@ func planIssues(plan *Report) []Issue {
 		for _, agentID := range slices.Sorted(maps.Keys(pending)) {
 			issues = append(issues, Issue{
 				Severity: SeverityWarn, Kind: kr.Kind, Agent: agentID,
-				Message: fmt.Sprintf("%d change(s) are not in the vault yet; run agent-sync sync", pending[agentID]),
+				Message: fmt.Sprintf("%d change(s) are not in the vault yet; run beadle sync", pending[agentID]),
 			})
 		}
 
@@ -335,7 +335,7 @@ func resultIssue(k kind.ID, result AgentResult) (Issue, bool) {
 	switch result.Action {
 	case ActionWouldPush:
 		issue.Severity = SeverityWarn
-		issue.Message = fmt.Sprintf("differs from the vault in %d item(s); run agent-sync sync", len(result.Changes))
+		issue.Message = fmt.Sprintf("differs from the vault in %d item(s); run beadle sync", len(result.Changes))
 	case ActionError:
 		issue.Severity = SeverityError
 		issue.Message = result.Note
@@ -566,14 +566,14 @@ func (e *Engine) secretIssues() []Issue {
 		if !e.secrets.Has(name) {
 			issues = append(issues, Issue{
 				Severity: SeverityError,
-				Message:  fmt.Sprintf("secret %s has no value in %s; run agent-sync secrets set %s", name, e.vault.SecretsPath(), name),
+				Message:  fmt.Sprintf("secret %s has no value in %s; run beadle secrets set %s", name, e.vault.SecretsPath(), name),
 			})
 		}
 	}
 
 	for _, name := range e.secrets.Names() {
 		if !slices.Contains(refs, name) {
-			issues = append(issues, Issue{Severity: SeverityInfo, Message: fmt.Sprintf("secret %s is unused; run agent-sync secrets prune", name)})
+			issues = append(issues, Issue{Severity: SeverityInfo, Message: fmt.Sprintf("secret %s is unused; run beadle secrets prune", name)})
 		}
 	}
 
@@ -601,7 +601,7 @@ func (e *Engine) projectScopeIssues(ctx context.Context, active []*agent.Agent) 
 
 	switch {
 	case err != nil:
-		issues = append(issues, projectIssue(SeverityWarn, fmt.Sprintf("cannot read .mcp.json in %s: %v (project scope is not managed by agent-sync)", dir, err)))
+		issues = append(issues, projectIssue(SeverityWarn, fmt.Sprintf("cannot read .mcp.json in %s: %v (project scope is not managed by beadle)", dir, err)))
 	case present:
 		issues = append(issues, scopeIssues(".mcp.json", repo, vaultItems)...)
 	}
@@ -631,7 +631,7 @@ func scopeIssues(source string, scope, vaultItems kind.Items) []Issue {
 	for _, name := range scope.Keys() {
 		if _, ok := vaultItems[name]; ok {
 			issues = append(issues, projectIssue(SeverityWarn, fmt.Sprintf(
-				"MCP server %q collides with a vault server via %s: Claude Code prefers the project scope, which agent-sync does not manage",
+				"MCP server %q collides with a vault server via %s: Claude Code prefers the project scope, which beadle does not manage",
 				name, source)))
 
 			continue
@@ -642,7 +642,7 @@ func scopeIssues(source string, scope, vaultItems kind.Items) []Issue {
 
 	if len(extra) > 0 {
 		issues = append(issues, projectIssue(SeverityInfo, fmt.Sprintf(
-			"%s defines MCP servers outside the vault (project scope, not managed by agent-sync): %s",
+			"%s defines MCP servers outside the vault (project scope, not managed by beadle): %s",
 			source, strings.Join(extra, ", "))))
 	}
 
@@ -759,7 +759,7 @@ func (e *Engine) pivotDriftIssues(key string, record plugin.Plugin, installed bo
 	case parked && !installed:
 		return []Issue{pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s is no longer installed (pivot left in place)", key))}
 	case installed && !parked:
-		return []Issue{pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s is not parked yet; run agent-sync sync", key))}
+		return []Issue{pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s is not parked yet; run beadle sync", key))}
 	}
 
 	var issues []Issue
@@ -771,7 +771,7 @@ func (e *Engine) pivotDriftIssues(key string, record plugin.Plugin, installed bo
 	link, err := os.Readlink(pivot)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		issues = append(issues, pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s pivot is missing; run agent-sync sync", key)))
+		issues = append(issues, pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s pivot is missing; run beadle sync", key)))
 	case err != nil:
 		issues = append(issues, pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s pivot cannot be read: %v", key, err)))
 	case link != rec.Target:
@@ -793,7 +793,7 @@ func pivotTargetIssues(key string, record plugin.Plugin, rec pluginLedgerRec) []
 	}
 
 	if rec.Version != record.Version || rec.Sha != record.GitCommitSha || rec.Target != record.InstallPath {
-		issues = append(issues, pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s changed %s → %s; run agent-sync sync", key, rec.Version, record.Version)))
+		issues = append(issues, pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s changed %s → %s; run beadle sync", key, rec.Version, record.Version)))
 	}
 
 	return issues
@@ -802,7 +802,7 @@ func pivotTargetIssues(key string, record plugin.Plugin, rec pluginLedgerRec) []
 func pivotLifecycleIssues(key string, rec pluginLedgerRec) ([]Issue, bool) {
 	switch {
 	case !rec.QuarantinedAt.IsZero():
-		return []Issue{pivotIssue(SeverityError, fmt.Sprintf("plugin %s@%s is quarantined since %s; run agent-sync heal",
+		return []Issue{pivotIssue(SeverityError, fmt.Sprintf("plugin %s@%s is quarantined since %s; run beadle heal",
 			key, rec.Version, rec.QuarantinedAt.Format(time.RFC3339)))}, true
 	case !rec.RetiredAt.IsZero():
 		return nil, true

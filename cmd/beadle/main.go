@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/odiumuniverse/agents-sync/pkg/cli"
+	"github.com/odiumuniverse/beadle/pkg/cli"
 )
 
 var version = "dev"

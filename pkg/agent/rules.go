@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/kind"
 )
 
 type rulesSurface struct {

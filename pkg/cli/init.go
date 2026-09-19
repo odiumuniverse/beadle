@@ -8,9 +8,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/odiumuniverse/agents-sync/pkg/agent"
-	"github.com/odiumuniverse/agents-sync/pkg/config"
-	"github.com/odiumuniverse/agents-sync/pkg/vault"
+	"github.com/odiumuniverse/beadle/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/vault"
 )
 
 func (a *app) newInitCmd() *cobra.Command {
@@ -20,8 +20,8 @@ func (a *app) newInitCmd() *cobra.Command {
 		Use:   "init",
 		Short: "Create the vault and enable the agents installed on this machine",
 		Long: "init creates the vault (default ~/.agent-sync) and enables every detected agent.\n" +
-			"It writes nothing into any agent: run `agent-sync sync --dry-run` to preview the\n" +
-			"first synchronization, then `agent-sync sync`.",
+			"It writes nothing into any agent: run `beadle sync --dry-run` to preview the\n" +
+			"first synchronization, then `beadle sync`.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			root, err := vault.ResolveRoot(a.vaultPath, os.Getenv(vault.EnvHome))
 			if err != nil {
@@ -64,9 +64,9 @@ func (a *app) newInitCmd() *cobra.Command {
 			fmt.Fprintln(out)
 			printModes(out, cfg, agents)
 			fmt.Fprint(out, "\nnext:\n"+
-				"  agent-sync sync --dry-run   # preview the first synchronization, nothing is written\n"+
-				"  agent-sync sync             # synchronize; conflicts wait for `agent-sync resolve`\n"+
-				"  agent-sync daemon install   # keep everything in sync in the background\n")
+				"  beadle sync --dry-run   # preview the first synchronization, nothing is written\n"+
+				"  beadle sync             # synchronize; conflicts wait for `beadle resolve`\n"+
+				"  beadle daemon install   # keep everything in sync in the background\n")
 
 			return nil
 		},
@@ -93,7 +93,7 @@ func enableOnInit(out io.Writer, cfg *config.Config, ag *agent.Agent, requested 
 		cfg.Enable(ag.ID)
 		fmt.Fprintf(out, "  [x] %-34s %s\n", ag.Name, ag.ID)
 	case ag.OptIn:
-		fmt.Fprintf(out, "  [ ] %-34s %s (opt-in: agent-sync agents enable %s)\n", ag.Name, ag.ID, ag.ID)
+		fmt.Fprintf(out, "  [ ] %-34s %s (opt-in: beadle agents enable %s)\n", ag.Name, ag.ID, ag.ID)
 	case !detected:
 		fmt.Fprintf(out, "  [ ] %-34s %s (not installed)\n", ag.Name, ag.ID)
 	default:
@@ -106,7 +106,7 @@ func enableOnInit(out io.Writer, cfg *config.Config, ag *agent.Agent, requested 
 func validateAgentIDs(agents []*agent.Agent, ids []string) error {
 	for _, id := range ids {
 		if agent.ByID(agents, id) == nil {
-			return fmt.Errorf("unknown agent %q (see agent-sync agents)", id)
+			return fmt.Errorf("unknown agent %q (see beadle agents)", id)
 		}
 	}
 

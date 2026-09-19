@@ -7,11 +7,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/odiumuniverse/agents-sync/pkg/agent"
-	"github.com/odiumuniverse/agents-sync/pkg/config"
-	"github.com/odiumuniverse/agents-sync/pkg/engine"
-	"github.com/odiumuniverse/agents-sync/pkg/state"
-	"github.com/odiumuniverse/agents-sync/pkg/vault"
+	"github.com/odiumuniverse/beadle/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/state"
+	"github.com/odiumuniverse/beadle/pkg/vault"
 )
 
 func (a *app) newStatusCmd() *cobra.Command {
@@ -33,7 +33,7 @@ func (a *app) newStatusCmd() *cobra.Command {
 			fmt.Fprintf(out, "vault: %s\n", v.Root())
 
 			if !v.Initialized() {
-				fmt.Fprintln(out, "state: not initialized (run agent-sync init)")
+				fmt.Fprintln(out, "state: not initialized (run beadle init)")
 
 				return nil
 			}
@@ -58,13 +58,13 @@ func (a *app) newStatusCmd() *cobra.Command {
 			}
 
 			if conflicts := st.OpenConflicts(); len(conflicts) > 0 {
-				fmt.Fprintf(out, "conflicts: %d open (agent-sync conflicts)\n", len(conflicts))
+				fmt.Fprintf(out, "conflicts: %d open (beadle conflicts)\n", len(conflicts))
 			} else {
 				fmt.Fprintln(out, "conflicts: none")
 			}
 
 			if !check {
-				fmt.Fprintln(out, "pending changes: agent-sync status --check (or agent-sync diff)")
+				fmt.Fprintln(out, "pending changes: beadle status --check (or beadle diff)")
 
 				return nil
 			}

@@ -11,10 +11,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/odiumuniverse/agents-sync/pkg/agent"
-	"github.com/odiumuniverse/agents-sync/pkg/config"
-	"github.com/odiumuniverse/agents-sync/pkg/engine"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/kind"
 )
 
 func versionedLink(t *testing.T, dir, name, target string) {
@@ -633,7 +633,7 @@ func TestDoctorPluginMigrationIssues(t *testing.T) {
 	issues, err := f.engine.Doctor(t.Context())
 	require.NoError(t, err)
 	require.True(t, hasIssue(issues, engine.SeverityWarn, "skill alpha points into the plugin cache"), "issues: %v", issues)
-	require.True(t, hasIssue(issues, engine.SeverityWarn, "run agent-sync heal"), "issues: %v", issues)
+	require.True(t, hasIssue(issues, engine.SeverityWarn, "run beadle heal"), "issues: %v", issues)
 	require.True(t, hasIssue(issues, engine.SeverityWarn, "skill alpha looks like a drifted copy of acme/tool"), "issues: %v", issues)
 	require.True(t, hasIssue(issues, engine.SeverityError, "broken symlink: "+broken), "issues: %v", issues)
 	require.False(t, hasIssue(issues, engine.SeverityError, "broken symlink: "+filepath.Join(dir, "beta")), "a plugin-cache dangling link must not be an error: %v", issues)

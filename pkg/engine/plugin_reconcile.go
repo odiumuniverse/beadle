@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
-	"github.com/odiumuniverse/agents-sync/pkg/plugin"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
+	"github.com/odiumuniverse/beadle/pkg/plugin"
 )
 
 const (
@@ -30,7 +30,7 @@ const (
 	noteInvalidPluginKey   = "invalid plugin key"
 	noteMissingInstall     = "install path is missing"
 	noteNotInstalled       = "plugin is no longer installed"
-	noteQuarantined        = "install path is missing; pivot quarantined; run agent-sync heal"
+	noteQuarantined        = "install path is missing; pivot quarantined; run beadle heal"
 	noteQuarantinedAlready = "quarantined already"
 
 	noteUnstableRegistry = "the plugin registry kept changing while being read; using the last consistent view"

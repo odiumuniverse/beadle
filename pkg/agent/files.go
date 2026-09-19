@@ -13,8 +13,8 @@ import (
 
 	"github.com/tailscale/hujson"
 
-	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
+	"github.com/odiumuniverse/beadle/pkg/kind"
 )
 
 var errConcurrentWrite = errors.New("file changed concurrently")

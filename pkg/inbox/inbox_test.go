@@ -8,8 +8,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/odiumuniverse/agents-sync/pkg/digest"
-	"github.com/odiumuniverse/agents-sync/pkg/inbox"
+	"github.com/odiumuniverse/beadle/pkg/digest"
+	"github.com/odiumuniverse/beadle/pkg/inbox"
 )
 
 func writeInbox(t *testing.T, content string) string {

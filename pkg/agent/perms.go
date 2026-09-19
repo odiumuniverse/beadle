@@ -6,8 +6,8 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
-	"github.com/odiumuniverse/agents-sync/pkg/permission"
+	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/permission"
 )
 
 type permCodec interface {

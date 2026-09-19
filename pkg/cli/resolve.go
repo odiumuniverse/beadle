@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/odiumuniverse/agents-sync/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/engine"
 )
 
 func (a *app) newResolveCmd() *cobra.Command {
@@ -19,7 +19,7 @@ func (a *app) newResolveCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "resolve [id...]",
 		Short: "Settle conflicts and propagate the decision to every agent",
-		Long: "resolve settles open conflicts (see `agent-sync conflicts`):\n" +
+		Long: "resolve settles open conflicts (see `beadle conflicts`):\n" +
 			"  --take vault   keep the vault value; the agent receives it\n" +
 			"  --take agent   take the agent value into the vault and every other agent\n" +
 			"  --take file    take the edited conflict file (markers removed) from the vault conflicts directory\n" +
@@ -37,7 +37,7 @@ func (a *app) newResolveCmd() *cobra.Command {
 			}
 
 			if len(ids) == 0 {
-				return errors.New("nothing to resolve: pass conflict ids or --all (see agent-sync conflicts)")
+				return errors.New("nothing to resolve: pass conflict ids or --all (see beadle conflicts)")
 			}
 
 			res, err := resolution(take, from)

@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/kind"
 )
 
 func (a *app) newHistoryCmd() *cobra.Command {
@@ -47,7 +47,7 @@ func (a *app) newHistoryCmd() *cobra.Command {
 				fmt.Fprintf(out, "%3d  %s  %s%s\n", i-len(history), snap.At.Local().Format(time.DateTime), string(snap.Manifest)[:12], marker)
 			}
 
-			fmt.Fprintf(out, "\nrestore one: agent-sync restore %s --to <number>\n", k)
+			fmt.Fprintf(out, "\nrestore one: beadle restore %s --to <number>\n", k)
 
 			return nil
 		},
@@ -86,7 +86,7 @@ func (a *app) newRestoreCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().IntVar(&to, "to", -2, "snapshot number from `agent-sync history` (-1 is current, -2 the previous state)")
+	cmd.Flags().IntVar(&to, "to", -2, "snapshot number from `beadle history` (-1 is current, -2 the previous state)")
 
 	return cmd
 }

@@ -6,7 +6,7 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/odiumuniverse/agents-sync/pkg/mcp"
+	"github.com/odiumuniverse/beadle/pkg/mcp"
 )
 
 func Extract(servers mcp.Servers, store *Store) (mcp.Servers, bool, error) {

@@ -12,16 +12,16 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/odiumuniverse/agents-sync/pkg/agent"
-	"github.com/odiumuniverse/agents-sync/pkg/config"
-	"github.com/odiumuniverse/agents-sync/pkg/engine"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
-	"github.com/odiumuniverse/agents-sync/pkg/lock"
-	"github.com/odiumuniverse/agents-sync/pkg/mcp"
-	"github.com/odiumuniverse/agents-sync/pkg/permission"
-	"github.com/odiumuniverse/agents-sync/pkg/secret"
-	"github.com/odiumuniverse/agents-sync/pkg/state"
-	"github.com/odiumuniverse/agents-sync/pkg/vault"
+	"github.com/odiumuniverse/beadle/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/lock"
+	"github.com/odiumuniverse/beadle/pkg/mcp"
+	"github.com/odiumuniverse/beadle/pkg/permission"
+	"github.com/odiumuniverse/beadle/pkg/secret"
+	"github.com/odiumuniverse/beadle/pkg/state"
+	"github.com/odiumuniverse/beadle/pkg/vault"
 )
 
 type fixture struct {
@@ -1252,10 +1252,10 @@ func TestGitHistory(t *testing.T) {
 		t.Skip("git is not installed")
 	}
 
-	t.Setenv("GIT_AUTHOR_NAME", "agent-sync test")
-	t.Setenv("GIT_AUTHOR_EMAIL", "agent-sync@example.invalid")
-	t.Setenv("GIT_COMMITTER_NAME", "agent-sync test")
-	t.Setenv("GIT_COMMITTER_EMAIL", "agent-sync@example.invalid")
+	t.Setenv("GIT_AUTHOR_NAME", "beadle test")
+	t.Setenv("GIT_AUTHOR_EMAIL", "beadle@example.invalid")
+	t.Setenv("GIT_COMMITTER_NAME", "beadle test")
+	t.Setenv("GIT_COMMITTER_EMAIL", "beadle@example.invalid")
 
 	f := newFixture(t)
 	f.config.History = config.HistoryGit
@@ -1266,7 +1266,7 @@ func TestGitHistory(t *testing.T) {
 	f.sync(t)
 
 	first := gitLog(t, f.vault.Root())
-	require.Contains(t, first, "agentsync: sync")
+	require.Contains(t, first, "beadle: sync")
 
 	f.sync(t)
 	require.Equal(t, first, gitLog(t, f.vault.Root()), "a run without changes creates no commit")

@@ -4,8 +4,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
-	"github.com/odiumuniverse/agents-sync/pkg/permission"
+	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/permission"
 )
 
 var claudeTools = map[string]string{

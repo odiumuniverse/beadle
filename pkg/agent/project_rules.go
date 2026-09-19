@@ -11,10 +11,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/odiumuniverse/agents-sync/pkg/config"
-	"github.com/odiumuniverse/agents-sync/pkg/digest"
-	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/digest"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
+	"github.com/odiumuniverse/beadle/pkg/kind"
 )
 
 type projectRulesSurface struct {
@@ -33,7 +33,7 @@ func (s *projectRulesSurface) Traits() Traits {
 	return Traits{
 		DefaultMode: config.ModeSync,
 		Creatable:   true,
-		Note:        "project rules with the agent-sync memory digest block at the top",
+		Note:        "project rules with the beadle memory digest block at the top",
 	}
 }
 

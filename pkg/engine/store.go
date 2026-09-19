@@ -11,13 +11,13 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/odiumuniverse/agents-sync/pkg/cas"
-	"github.com/odiumuniverse/agents-sync/pkg/fsutil"
-	"github.com/odiumuniverse/agents-sync/pkg/kind"
-	"github.com/odiumuniverse/agents-sync/pkg/memory"
-	"github.com/odiumuniverse/agents-sync/pkg/permission"
-	"github.com/odiumuniverse/agents-sync/pkg/skill"
-	"github.com/odiumuniverse/agents-sync/pkg/state"
+	"github.com/odiumuniverse/beadle/pkg/cas"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
+	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/memory"
+	"github.com/odiumuniverse/beadle/pkg/permission"
+	"github.com/odiumuniverse/beadle/pkg/skill"
+	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
 func (e *Engine) loadVault(k kind.ID) (kind.Items, bool, error) {
