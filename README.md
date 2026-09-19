@@ -101,7 +101,7 @@ brew trust odiumuniverse/tap
 brew install beadle
 ```
 
-The tap is private, so `brew tap` clones over SSH. Or build from source:
+Or build from source:
 
 ```bash
 git clone git@github.com:odiumuniverse/beadle.git
