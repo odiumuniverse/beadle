@@ -31,7 +31,6 @@ jobs:
           path = "Formula/beadle.rb"
           src = File.read(path)
           src = src.sub(/tag: ".*"/, "tag: \"v#{ARGV[0]}\"")
-          src = src.sub(/version ".*"/, "version \"#{ARGV[0]}\"")
           File.write(path, src)
           RB
           git add Formula/beadle.rb
