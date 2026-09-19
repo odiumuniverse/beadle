@@ -10,11 +10,12 @@ import (
 )
 
 const (
-	ClaudeCodeID = "claude-code"
-	OpenCodeID   = "opencode"
-	GeminiCLIID  = "gemini-cli"
-	CursorID     = "cursor"
-	SharedID     = "shared"
+	ClaudeCodeID     = "claude-code"
+	OpenCodeID       = "opencode"
+	GeminiCLIID      = "gemini-cli"
+	AntigravityCLIID = "antigravity-cli"
+	CursorID         = "cursor"
+	SharedID         = "shared"
 )
 
 func ClaudeCode(home string) *Agent {
@@ -144,6 +145,28 @@ func GeminiCLI(home, cwd string) *Agent {
 				},
 			},
 			&projectRulesSurface{dir: cwd, file: "GEMINI.md", slug: memory.Slug(cwd)},
+		},
+	}
+}
+
+func AntigravityCLI(home string) *Agent {
+	dir := filepath.Join(home, ".gemini", "antigravity-cli")
+	mcpConfig := filepath.Join(home, ".gemini", "config", "mcp_config.json")
+
+	return &Agent{
+		ID:     AntigravityCLIID,
+		Name:   "Antigravity CLI",
+		Detect: func() (bool, error) { return anyExists(dir, mcpConfig) },
+		Surfaces: []Surface{
+			&mcpSurface{
+				file:    fixedPath(mcpConfig),
+				pointer: mcpServersPointer,
+				codec:   antigravityMCP,
+				traits: Traits{
+					DefaultMode: config.ModeSync,
+					ReloadHint:  "Antigravity CLI reads mcp_config.json at startup: restart agy to load the changes",
+				},
+			},
 		},
 	}
 }

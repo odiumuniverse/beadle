@@ -15,6 +15,7 @@ const (
 	keyEnvironment = "environment"
 	keyHeaders     = "headers"
 	keyHTTPURL     = "httpUrl"
+	keyServerURL   = "serverUrl"
 	keyType        = "type"
 	keyURL         = "url"
 )
@@ -257,6 +258,45 @@ var cursorMCP = mcpCodec{
 
 		entry[keyType] = mcp.TransportStdio
 		renderCommand(entry, server, keyEnv, cursorRefs)
+
+		return entry
+	},
+}
+
+var antigravityMCP = mcpCodec{
+	owned: []string{keyCommand, keyArgs, keyEnv, keyServerURL, keyURL, keyHTTPURL, keyHeaders},
+	decode: func(entry map[string]any) (mcp.Server, bool) {
+		server := mcp.Server{
+			Env:     mapValues(toStringMap(entry[keyEnv]), geminiRefs.in),
+			Headers: mapValues(toStringMap(entry[keyHeaders]), geminiRefs.in),
+		}
+
+		if command := stringField(entry, keyCommand); command != "" {
+			server.Command = append(server.Command, command)
+		}
+
+		server.Command = append(server.Command, toStringSlice(entry[keyArgs])...)
+
+		if serverURL := stringField(entry, keyServerURL); serverURL != "" {
+			server.URL = serverURL
+			server.Transport = mcp.TransportHTTP
+		}
+
+		server = inferTransport(server)
+
+		return server, server.Valid()
+	},
+	encode: func(server mcp.Server) map[string]any {
+		entry := map[string]any{}
+
+		if server.Remote() {
+			entry[keyServerURL] = server.URL
+			renderHeaders(entry, server, geminiRefs)
+
+			return entry
+		}
+
+		renderCommand(entry, server, keyEnv, geminiRefs)
 
 		return entry
 	},

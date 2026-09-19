@@ -26,6 +26,7 @@ AI coding agents want you to live inside their world: their config directory, th
         │  pull changes               │  push changes
    ┌────┴─────┬───────────┬───────────┴────┐
  Claude Code  OpenCode   Gemini CLI     Cursor
+  + Antigravity CLI
 ```
 
 ## What it does
@@ -47,6 +48,7 @@ Conflicts are explicit, never silent: a disagreeing server, skill or rule is hel
 | OpenCode | ✅ `~/.config/opencode/AGENTS.md` | ✅ `opencode.jsonc` (comments preserved) | reads Claude/shared dirs natively | ✅ opt-in (tools, shell, MCP) |
 | Gemini CLI | ✅ `~/.gemini/GEMINI.md` | ✅ `settings.json` (`httpUrl`) | ✅ `~/.gemini/skills` | ✅ opt-in (shell rules) |
 | Cursor | — (user rules live in the account) | ✅ `~/.cursor/mcp.json` | reads Claude/shared dirs natively | ✅ opt-in (shell, MCP) |
+| Antigravity CLI | — (reads `~/.gemini/GEMINI.md` via the Gemini CLI adapter) | ✅ `~/.gemini/config/mcp_config.json` (`serverUrl`) | — (v1 not managed; agy reads `~/.gemini/antigravity-cli/skills` and `.agents/skills`) | — (not managed: `action(target)` dialect) |
 
 Claude Code project-scope MCP (`.mcp.json` in a repository, `projects.*` in `~/.claude.json`) is never written: `doctor` reports collisions with the vault, because project scope exists precisely to differ between repositories.
 

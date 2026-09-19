@@ -59,6 +59,7 @@ func All(home, cwd string) []*Agent {
 		ClaudeCode(home),
 		OpenCode(home, cwd),
 		GeminiCLI(home, cwd),
+		AntigravityCLI(home),
 		Cursor(home),
 		SharedSkills(home),
 	}
