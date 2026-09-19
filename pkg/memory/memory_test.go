@@ -38,7 +38,7 @@ func TestValidSlug(t *testing.T) {
 		name string
 		want bool
 	}{
-		{name: "-Users-universe-my-agents-sync", want: true},
+		{name: "-Users-universe-my-beadle", want: true},
 		{name: "-Users-universe", want: true},
 		{name: "plain", want: true},
 		{name: "with space", want: true},
