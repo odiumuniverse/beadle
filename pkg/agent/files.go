@@ -171,8 +171,18 @@ func writeFileMode(path string, data []byte, perm fs.FileMode, check func() erro
 }
 
 func linkCount(info fs.FileInfo) uint64 {
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-		return uint64(stat.Nlink)
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 1
+	}
+
+	switch n := any(stat.Nlink).(type) {
+	case uint64:
+		return n
+	case uint32:
+		return uint64(n)
+	case uint16:
+		return uint64(n)
 	}
 
 	return 1
