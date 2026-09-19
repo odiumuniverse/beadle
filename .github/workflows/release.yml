@@ -1,0 +1,43 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --generate-notes
+
+      - name: Bump the formula in homebrew-tap
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          revision="$(git rev-parse HEAD)"
+          git clone -q "https://x-access-token:${TAP_TOKEN}@github.com/odiumuniverse/homebrew-tap.git" tap
+          cd tap
+          ruby - "$version" "$revision" <<'RB'
+          path = "Formula/beadle.rb"
+          src = File.read(path)
+          src = src.sub(/version ".*"/, "version \"#{ARGV[0]}\"")
+          src = src.sub(/revision: ".*"/, "revision: \"#{ARGV[1]}\"")
+          File.write(path, src)
+          RB
+          git add Formula/beadle.rb
+          git diff --cached --quiet && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "beadle ${version}"
+          git push
