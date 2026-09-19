@@ -551,12 +551,16 @@ func cachedSkillTree(cache map[string]skill.Tree, root string) (skill.Tree, erro
 }
 
 func (e *Engine) secretIssues() []Issue {
-	refs, err := e.secretRefs()
-	if err != nil {
-		return []Issue{{Severity: SeverityError, Kind: kind.MCP, Message: "read secret references: " + err.Error()}}
+	issues := []Issue{{Severity: SeverityInfo, Message: "secrets backend: " + e.secrets.Backend()}}
+
+	if err := e.secrets.Probe(); err != nil {
+		return append(issues, Issue{Severity: SeverityWarn, Message: "keyring unavailable: " + err.Error()})
 	}
 
-	var issues []Issue
+	refs, err := e.secretRefs()
+	if err != nil {
+		return append(issues, Issue{Severity: SeverityError, Kind: kind.MCP, Message: "read secret references: " + err.Error()})
+	}
 
 	for _, name := range refs {
 		if !e.secrets.Has(name) {

@@ -25,12 +25,19 @@ const (
 )
 
 const (
+	BackendFile    = "file"
+	BackendKeyring = "keyring"
+)
+
+const (
 	refPrefix = "{secret:"
 	envPrefix = "{env:"
 	refSuffix = "}"
 
-	fileVersion  = 1
-	fingerprintN = 8
+	fileVersion    = 1
+	keyringVersion = 2
+	fingerprintN   = 8
+	probeAccount   = "agentsync-doctor-probe"
 )
 
 var namePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -72,18 +79,35 @@ var valueHints = []string{
 }
 
 type Store struct {
-	path    string
-	values  map[string]string
-	changed bool
+	path       string
+	values     map[string]string
+	backend    string
+	keyring    Keyring
+	keyringErr error
+	touched    map[string]struct{}
+	deleted    map[string]struct{}
+	migrated   bool
+	changed    bool
 }
 
 type document struct {
 	Version int               `json:"version"`
+	Backend string            `json:"backend,omitempty"`
 	Secrets map[string]string `json:"secrets"`
 }
 
-func Load(path string) (*Store, error) {
-	store := &Store{path: path, values: map[string]string{}}
+type Option func(*Store)
+
+func WithKeyring(keyring Keyring) Option {
+	return func(s *Store) { s.keyring = keyring }
+}
+
+func Load(path string, opts ...Option) (*Store, error) {
+	store := &Store{path: path, values: map[string]string{}, backend: BackendFile}
+
+	for _, opt := range opts {
+		opt(store)
+	}
 
 	data, err := os.ReadFile(path) //nolint:gosec // G304: path is the vault secrets file
 	if errors.Is(err, fs.ErrNotExist) {
@@ -103,11 +127,115 @@ func Load(path string) (*Store, error) {
 		return nil, fmt.Errorf("parse secrets: %w", err)
 	}
 
+	switch doc.Backend {
+	case "", BackendFile:
+	case BackendKeyring:
+		store.backend = BackendKeyring
+	default:
+		return nil, fmt.Errorf("parse secrets: unknown backend %q", doc.Backend)
+	}
+
 	if doc.Secrets != nil {
 		store.values = doc.Secrets
 	}
 
+	store.prefetch()
+
 	return store, nil
+}
+
+func (s *Store) prefetch() {
+	if s.backend != BackendKeyring {
+		return
+	}
+
+	keyring, err := s.shellKeyring()
+	if err != nil {
+		s.keyringErr = err
+		s.values = map[string]string{}
+
+		return
+	}
+
+	values := make(map[string]string, len(s.values))
+
+	for _, name := range slices.Sorted(maps.Keys(s.values)) {
+		value, found, err := keyring.Get(name)
+		if err != nil {
+			s.keyringErr = err
+			s.values = map[string]string{}
+
+			return
+		}
+
+		if found {
+			values[name] = value
+		}
+	}
+
+	s.values = values
+}
+
+func (s *Store) shellKeyring() (Keyring, error) {
+	if s.keyring != nil {
+		return s.keyring, nil
+	}
+
+	keyring, err := NewShellKeyring(ExecRunner{})
+	if err != nil {
+		return nil, err
+	}
+
+	s.keyring = keyring
+
+	return keyring, nil
+}
+
+func (s *Store) Backend() string {
+	return s.backend
+}
+
+func (s *Store) KeyringErr() error {
+	return s.keyringErr
+}
+
+func (s *Store) Probe() error {
+	if s.keyringErr != nil {
+		return s.keyringErr
+	}
+
+	if s.backend != BackendKeyring {
+		return nil
+	}
+
+	keyring, err := s.shellKeyring()
+	if err != nil {
+		return err
+	}
+
+	if _, _, err := keyring.Get(probeAccount); err != nil {
+		return fmt.Errorf("keyring probe: %w", err)
+	}
+
+	return nil
+}
+
+func (s *Store) SetBackend(backend string) error {
+	switch backend {
+	case BackendFile, BackendKeyring:
+	default:
+		return fmt.Errorf("unknown secrets backend %q", backend)
+	}
+
+	if backend == s.backend {
+		return nil
+	}
+
+	s.backend = backend
+	s.migrated = backend == BackendKeyring
+	s.changed = true
+
+	return nil
 }
 
 func (s *Store) Path() string {
@@ -137,6 +265,14 @@ func (s *Store) Set(name, value string) {
 
 	s.values[name] = value
 	s.changed = true
+
+	if s.touched == nil {
+		s.touched = map[string]struct{}{}
+	}
+
+	s.touched[name] = struct{}{}
+
+	delete(s.deleted, name)
 }
 
 func (s *Store) Delete(name string) bool {
@@ -145,7 +281,16 @@ func (s *Store) Delete(name string) bool {
 	}
 
 	delete(s.values, name)
+
 	s.changed = true
+
+	if s.deleted == nil {
+		s.deleted = map[string]struct{}{}
+	}
+
+	s.deleted[name] = struct{}{}
+
+	delete(s.touched, name)
 
 	return true
 }
@@ -163,7 +308,11 @@ func (s *Store) Save() error {
 		return nil
 	}
 
-	data, err := json.MarshalIndent(document{Version: fileVersion, Secrets: s.values}, "", "  ")
+	if err := s.saveKeyring(); err != nil {
+		return err
+	}
+
+	data, err := json.MarshalIndent(s.document(), "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode secrets: %w", err)
 	}
@@ -177,8 +326,62 @@ func (s *Store) Save() error {
 	}
 
 	s.changed = false
+	s.migrated = false
+	s.touched = nil
+	s.deleted = nil
 
 	return nil
+}
+
+func (s *Store) document() document {
+	if s.backend != BackendKeyring {
+		return document{Version: fileVersion, Secrets: s.values}
+	}
+
+	secrets := make(map[string]string, len(s.values))
+
+	for name := range s.values {
+		secrets[name] = ""
+	}
+
+	return document{Version: keyringVersion, Backend: BackendKeyring, Secrets: secrets}
+}
+
+func (s *Store) saveKeyring() error {
+	if s.backend != BackendKeyring {
+		return nil
+	}
+
+	if s.keyringErr != nil {
+		return fmt.Errorf("save secrets to the keyring: %w", s.keyringErr)
+	}
+
+	keyring, err := s.shellKeyring()
+	if err != nil {
+		return fmt.Errorf("save secrets to the keyring: %w", err)
+	}
+
+	for _, name := range s.upsertNames() {
+		if err := keyring.Set(name, s.values[name]); err != nil {
+			return fmt.Errorf("save secrets to the keyring: %w", err)
+		}
+	}
+
+	for _, name := range slices.Sorted(maps.Keys(s.deleted)) {
+		if _, err := keyring.Delete(name); err != nil {
+			return fmt.Errorf("remove secrets from the keyring: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (s *Store) upsertNames() []string {
+	if s.migrated {
+		return slices.Sorted(maps.Keys(s.values))
+	}
+
+	return slices.Sorted(maps.Keys(s.touched))
 }
 
 func (s *Store) NameFor(key, value string) string {

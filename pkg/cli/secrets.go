@@ -25,6 +25,7 @@ func (a *app) newSecretsCmd() *cobra.Command {
 		a.newSecretsSetCmd(),
 		a.newSecretsRemoveCmd(),
 		a.newSecretsPruneCmd(),
+		a.newSecretsMigrateCmd(),
 	)
 
 	return cmd
@@ -43,7 +44,7 @@ func (a *app) newSecretsListCmd() *cobra.Command {
 
 			names := engine.Secrets().Names()
 
-			cmd.Printf("secrets: %d (mode: %s)\n", len(names), engine.SecretsMode())
+			cmd.Printf("secrets: %d (backend: %s, mode: %s)\n", len(names), engine.Secrets().Backend(), engine.SecretsMode())
 
 			for _, name := range names {
 				cmd.Printf("  %s\n", name)
@@ -136,6 +137,53 @@ func (a *app) newSecretsPruneCmd() *cobra.Command {
 			}
 
 			cmd.Printf("pruned: %d\n", len(removed))
+
+			return nil
+		},
+	}
+}
+
+func (a *app) newSecretsMigrateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "migrate <file|keyring>",
+		Short: "Move stored values between the local file and the OS keyring",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			target := args[0]
+			if target != secret.BackendFile && target != secret.BackendKeyring {
+				return fmt.Errorf("unknown backend %q: use file or keyring", target)
+			}
+
+			engine, err := a.engine()
+			if err != nil {
+				return err
+			}
+
+			store := engine.Secrets()
+
+			if store.Backend() == target {
+				if err := store.Probe(); err != nil {
+					return fmt.Errorf("keyring unavailable: %w", err)
+				}
+
+				cmd.Printf("backend is already %s\n", target)
+
+				return nil
+			}
+
+			if err := store.SetBackend(target); err != nil {
+				return err
+			}
+
+			if err := store.Probe(); err != nil {
+				return fmt.Errorf("keyring unavailable: %w", err)
+			}
+
+			if err := store.Save(); err != nil {
+				return err
+			}
+
+			cmd.Printf("secrets backend: %s (%d value(s))\n", target, store.Len())
 
 			return nil
 		},

@@ -96,7 +96,7 @@ Or let each agent trigger it — the watcher watches agent files too, not just t
 | `kinds` | switch kinds on or off for every agent |
 | `doctor` | diagnostics; non-zero exit on errors |
 | `watch` / `daemon` | background sync, autostart service |
-| `secrets list\|set\|rm\|prune` | credential values; never printed |
+| `secrets list\|set\|rm\|prune\|migrate` | credential values; never printed |
 
 Global flags: `--vault` (default `~/.agent-sync`, or `$AGENTSYNC_HOME`), `--verbose`, `--log-json`.
 
@@ -107,6 +107,7 @@ Global flags: `--vault` (default `~/.agent-sync`, or `$AGENTSYNC_HOME`), `--verb
 - **JSONC is kept JSONC.** Comments and formatting of untouched parts survive edits.
 - **Atomic writes.** tmp file + fsync + rename in the target directory, then fsync of the directory; the file mode is preserved.
 - **Local stays local.** OAuth state, hooks, plugins, UI settings, folder trust — untouched. Secrets live in `mcp/secrets.json` (0600) and never reach the synced canon, the object store or git history.
+- **Secrets can live in the OS keychain.** `agent-sync secrets migrate keyring` moves the values into the macOS keychain (`security`) or Linux `secret-tool`; the file then holds names only (`backend: keyring`). The keyring is opt-in and fail-closed: an unavailable or locked keyring yields skips and warnings — never a plaintext fallback. `secrets migrate file` brings the values back; deleting `secrets.json` returns to the file backend.
 - **Vendor formats are guests.** `pkg/kind` defines how each resource merges; `pkg/agent` translates an agent's own format and keeps everything it does not own.
 
 ## Development

@@ -32,6 +32,7 @@ type Engine struct {
 	config  *config.Config
 	agents  []*agent.Agent
 	secrets *secret.Store
+	keyring secret.Keyring
 	log     embedlog.Logger
 	now     func() time.Time
 	home    string
@@ -51,24 +52,29 @@ func WithHome(home string) Option {
 	return func(e *Engine) { e.home = home }
 }
 
-func New(v *vault.Vault, cfg *config.Config, agents []*agent.Agent, opts ...Option) (*Engine, error) {
-	secrets, err := secret.Load(v.SecretsPath())
-	if err != nil {
-		return nil, err
-	}
+func WithKeyring(keyring secret.Keyring) Option {
+	return func(e *Engine) { e.keyring = keyring }
+}
 
+func New(v *vault.Vault, cfg *config.Config, agents []*agent.Agent, opts ...Option) (*Engine, error) {
 	e := &Engine{
-		vault:   v,
-		store:   cas.NewStore(v.ObjectsDir()),
-		config:  cfg,
-		agents:  agents,
-		secrets: secrets,
-		now:     time.Now,
+		vault:  v,
+		store:  cas.NewStore(v.ObjectsDir()),
+		config: cfg,
+		agents: agents,
+		now:    time.Now,
 	}
 
 	for _, opt := range opts {
 		opt(e)
 	}
+
+	secrets, err := secret.Load(v.SecretsPath(), secret.WithKeyring(e.keyring))
+	if err != nil {
+		return nil, err
+	}
+
+	e.secrets = secrets
 
 	return e, nil
 }
@@ -115,6 +121,7 @@ func (e *Engine) sync(ctx context.Context, opts SyncOptions) (*Report, error) {
 	}
 
 	report := &Report{DryRun: opts.DryRun}
+	e.warnKeyring(report)
 
 	if !opts.DryRun {
 		e.syncPluginSurfaces(ctx, report, active, opts)
@@ -157,6 +164,12 @@ func (e *Engine) sync(ctx context.Context, opts SyncOptions) (*Report, error) {
 	}
 
 	return report, nil
+}
+
+func (e *Engine) warnKeyring(report *Report) {
+	if err := e.secrets.KeyringErr(); err != nil {
+		report.Warnings = append(report.Warnings, "keyring unavailable: "+err.Error())
+	}
 }
 
 func (e *Engine) memoryCleanupEnabled(opts SyncOptions) bool {
