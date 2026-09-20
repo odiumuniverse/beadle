@@ -10,11 +10,16 @@ import (
 )
 
 const (
+	agentsMarkdown = "AGENTS.md"
+
 	ClaudeCodeID     = "claude-code"
 	OpenCodeID       = "opencode"
 	GeminiCLIID      = "gemini-cli"
 	AntigravityCLIID = "antigravity-cli"
 	CursorID         = "cursor"
+	CodexID          = "codex"
+	PiID             = "pi"
+	KiloID           = "kilo"
 	SharedID         = "shared"
 )
 
@@ -81,7 +86,7 @@ func OpenCode(home, cwd string) *Agent {
 		Detect: func() (bool, error) { return anyExists(dir) },
 		Surfaces: []Surface{
 			&rulesSurface{
-				path: filepath.Join(dir, "AGENTS.md"),
+				path: filepath.Join(dir, agentsMarkdown),
 				traits: Traits{
 					DefaultMode: config.ModeSync,
 					Note:        "without its own AGENTS.md OpenCode reads ~/.claude/CLAUDE.md natively",
@@ -110,7 +115,7 @@ func OpenCode(home, cwd string) *Agent {
 					ReloadHint:  "OpenCode reads its config at startup: restart OpenCode to load the changes",
 				},
 			},
-			&projectRulesSurface{dir: cwd, file: "AGENTS.md", id: id},
+			&projectRulesSurface{dir: cwd, file: agentsMarkdown, id: id},
 		},
 	}
 }
@@ -211,6 +216,132 @@ func Cursor(home, cwd string) *Agent {
 			},
 			&projectMCPSurface{dir: cwd, rel: ".cursor/mcp.json", id: id},
 			&cursorRulesSurface{dir: cwd, id: id},
+		},
+	}
+}
+
+func Codex(home, cwd string) *Agent {
+	dir := filepath.Join(home, ".codex")
+	id := project.Resolve(cwd).ID
+
+	return &Agent{
+		ID:     CodexID,
+		Name:   "Codex CLI",
+		Detect: func() (bool, error) { return anyExists(dir) },
+		Surfaces: []Surface{
+			&rulesSurface{
+				path:   filepath.Join(dir, agentsMarkdown),
+				traits: Traits{DefaultMode: config.ModeSync, Note: "AGENTS.override.md takes precedence over AGENTS.md"},
+			},
+			&tomlMCPSurface{
+				file:  fixedPath(filepath.Join(dir, "config.toml")),
+				codec: codexMCP,
+				traits: Traits{
+					DefaultMode: config.ModeSync,
+					Creatable:   true,
+					ReloadHint:  "Codex CLI reads config.toml at startup: restart Codex to load the changes",
+				},
+			},
+			&skillsSurface{
+				dir:         filepath.Join(dir, "skills"),
+				ignoreUnder: []string{filepath.Join(home, ".claude", "plugins")},
+				alsoReads:   []string{filepath.Join(home, ".agents", "skills")},
+				traits: Traits{
+					DefaultMode: config.ModePull,
+					Note:        "Codex reads ~/.agents/skills natively; ~/.codex/skills is the deprecated location",
+				},
+			},
+			&projectRulesSurface{dir: cwd, file: agentsMarkdown, id: id},
+		},
+	}
+}
+
+func Pi(home, cwd string) *Agent {
+	dir := filepath.Join(home, ".pi", "agent")
+	id := project.Resolve(cwd).ID
+
+	return &Agent{
+		ID:     PiID,
+		Name:   "Pi",
+		Detect: func() (bool, error) { return anyExists(dir) },
+		Surfaces: []Surface{
+			&rulesSurface{
+				path:   filepath.Join(dir, agentsMarkdown),
+				traits: Traits{DefaultMode: config.ModeSync, Note: "AGENTS.override.md takes precedence over AGENTS.md"},
+			},
+			&mcpSurface{
+				file:    fixedPath(filepath.Join(dir, "mcp.json")),
+				pointer: mcpServersPointer,
+				codec:   piMCP,
+				traits: Traits{
+					DefaultMode: config.ModeSync,
+					ReloadHint:  "Pi reads its config at startup: restart Pi to load the changes",
+				},
+			},
+			&skillsSurface{
+				dir:         filepath.Join(dir, "skills"),
+				ignoreUnder: []string{filepath.Join(home, ".claude", "plugins")},
+				alsoReads:   []string{filepath.Join(home, ".agents", "skills")},
+				traits: Traits{
+					DefaultMode: config.ModePull,
+					Note:        "Pi reads ~/.agents/skills natively",
+				},
+			},
+			&projectRulesSurface{dir: cwd, file: agentsMarkdown, id: id},
+		},
+	}
+}
+
+func Kilo(home, cwd string) *Agent {
+	dir := filepath.Join(home, ".config", "kilo")
+	id := project.Resolve(cwd).ID
+
+	configFile := func() string {
+		for _, name := range []string{"kilo.jsonc", "kilo.json"} {
+			if path := filepath.Join(dir, name); fsutil.Exists(path) {
+				return path
+			}
+		}
+
+		return filepath.Join(dir, "kilo.json")
+	}
+
+	return &Agent{
+		ID:     KiloID,
+		Name:   "Kilo Code",
+		Detect: func() (bool, error) { return anyExists(dir) },
+		Surfaces: []Surface{
+			&rulesSurface{
+				path: filepath.Join(dir, agentsMarkdown),
+				traits: Traits{
+					DefaultMode: config.ModeSync,
+					Note:        "Kilo reads AGENTS.md; the legacy opencode.json(c) is not managed",
+				},
+			},
+			&mcpSurface{
+				file: configFile, pointer: "/mcp", codec: openCodeMCP,
+				traits: Traits{
+					DefaultMode: config.ModeSync,
+					ReloadHint:  "Kilo reads its config at startup: restart Kilo to load the changes",
+				},
+			},
+			&skillsSurface{
+				dir:         filepath.Join(home, ".kilo", "skills"),
+				ignoreUnder: []string{filepath.Join(home, ".claude", "plugins")},
+				alsoReads:   []string{filepath.Join(home, ".agents", "skills")},
+				traits: Traits{
+					DefaultMode: config.ModePull,
+					Note:        "Kilo reads ~/.agents/skills natively",
+				},
+			},
+			&permSurface{
+				file: configFile, pointer: "/permission", codec: openCodeCodec{},
+				traits: Traits{
+					DefaultMode: config.ModeSync,
+					ReloadHint:  "Kilo reads its config at startup: restart Kilo to load the changes",
+				},
+			},
+			&projectRulesSurface{dir: cwd, file: agentsMarkdown, id: id},
 		},
 	}
 }

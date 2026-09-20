@@ -20,6 +20,12 @@ func InboxPath(home, id string) string {
 		return filepath.Join(home, ".gemini", "inbox.md")
 	case CursorID:
 		return filepath.Join(home, ".cursor", "inbox.md")
+	case CodexID:
+		return filepath.Join(home, ".codex", "inbox.md")
+	case PiID:
+		return filepath.Join(home, ".pi", "agent", "inbox.md")
+	case KiloID:
+		return filepath.Join(home, ".config", "kilo", "inbox.md")
 	default:
 		return ""
 	}

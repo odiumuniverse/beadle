@@ -18,8 +18,10 @@ const (
 	keyEnv         = "env"
 	keyEnvironment = "environment"
 	keyHeaders     = "headers"
+	keyHTTPHeaders = "http_headers"
 	keyHTTPURL     = "httpUrl"
 	keyServerURL   = "serverUrl"
+	keyTransport   = "transport"
 	keyType        = "type"
 	keyURL         = "url"
 )
@@ -41,7 +43,8 @@ var (
 		in:  func(v string) string { return dollarBraceRef.ReplaceAllString(v, "{env:$1}") },
 		out: func(v string) string { return canonicalRef.ReplaceAllString(v, "$${$1}") },
 	}
-	openCodeRefs = refSyntax{
+	openCodeRefs = plainRefs
+	plainRefs    = refSyntax{
 		in:  func(v string) string { return v },
 		out: func(v string) string { return v },
 	}
@@ -304,6 +307,87 @@ var antigravityMCP = mcpCodec{
 
 		return entry
 	},
+}
+
+var codexMCP = mcpCodec{
+	owned: []string{keyCommand, keyArgs, keyEnv, keyURL, keyHTTPHeaders},
+	decode: func(entry map[string]any) (mcp.Server, bool) {
+		server := mcp.Server{
+			Env:     mapValues(toStringMap(entry[keyEnv]), plainRefs.in),
+			URL:     stringField(entry, keyURL),
+			Headers: mapValues(toStringMap(entry[keyHTTPHeaders]), plainRefs.in),
+		}
+
+		if command := stringField(entry, keyCommand); command != "" {
+			server.Command = append(server.Command, command)
+		}
+
+		server.Command = append(server.Command, toStringSlice(entry[keyArgs])...)
+		server = inferTransport(server)
+
+		return server, server.Valid()
+	},
+	encode: func(server mcp.Server) map[string]any {
+		entry := map[string]any{}
+
+		if server.Remote() {
+			entry[keyURL] = server.URL
+
+			if headers := mapValues(server.Headers, plainRefs.out); len(headers) > 0 {
+				entry[keyHTTPHeaders] = headers
+			}
+
+			return entry
+		}
+
+		renderCommand(entry, server, keyEnv, plainRefs)
+
+		return entry
+	},
+}
+
+var piMCP = mcpCodec{
+	owned: []string{keyCommand, keyArgs, keyEnv, keyURL, keyHeaders, keyTransport},
+	decode: func(entry map[string]any) (mcp.Server, bool) {
+		server := commandServer(entry, plainRefs)
+
+		switch normalizeTransport(stringField(entry, keyTransport)) {
+		case "streamable-http":
+			server.Transport = mcp.TransportHTTP
+		case mcp.TransportSSE:
+			server.Transport = mcp.TransportSSE
+		case mcp.TransportStdio:
+			server.Transport = mcp.TransportStdio
+		}
+
+		server = inferTransport(server)
+
+		return server, server.Valid()
+	},
+	encode: func(server mcp.Server) map[string]any {
+		entry := map[string]any{}
+
+		if server.Remote() {
+			entry[keyURL] = server.URL
+			renderHeaders(entry, server, plainRefs)
+			entry[keyTransport] = piTransport(server.Transport)
+
+			return entry
+		}
+
+		renderCommand(entry, server, keyEnv, plainRefs)
+		entry[keyTransport] = mcp.TransportStdio
+
+		return entry
+	},
+}
+
+func piTransport(transport string) string {
+	if transport == mcp.TransportSSE {
+		return mcp.TransportSSE
+	}
+
+	return "streamable-http"
 }
 
 var bundleMCPCodecs = map[string]mcpCodec{

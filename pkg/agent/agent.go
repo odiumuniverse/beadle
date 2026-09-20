@@ -85,6 +85,9 @@ func All(home, cwd string) []*Agent {
 		GeminiCLI(home, cwd),
 		AntigravityCLI(home, cwd),
 		Cursor(home, cwd),
+		Codex(home, cwd),
+		Pi(home, cwd),
+		Kilo(home, cwd),
 		SharedSkills(home),
 	}
 }
