@@ -128,6 +128,10 @@ func (e *Engine) Sync(ctx context.Context, opts SyncOptions) (*Report, error) {
 }
 
 func (e *Engine) sync(ctx context.Context, opts SyncOptions) (*Report, error) {
+	if err := e.mergetoolGuard(); err != nil {
+		return nil, err
+	}
+
 	st, err := state.Load(e.vault.StatePath())
 	if err != nil {
 		return nil, err

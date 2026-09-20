@@ -150,6 +150,14 @@ func (v *Vault) RulingsDir() string {
 	return filepath.Join(v.root, "rulings")
 }
 
+// MergetoolPath returns the machine-local file describing the active
+// mergetool merge, if any.
+func (v *Vault) MergetoolPath() string {
+	return filepath.Join(v.root, "state", mergetoolFileName)
+}
+
+const mergetoolFileName = "mergetool.json"
+
 func (v *Vault) RulingsPath() string {
 	return filepath.Join(v.RulingsDir(), rulesFilename)
 }

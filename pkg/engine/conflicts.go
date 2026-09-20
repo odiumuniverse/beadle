@@ -281,6 +281,8 @@ func (e *Engine) Resolve(ctx context.Context, ids []string, res Resolution) (*Re
 		return nil, err
 	}
 
+	cleanup := e.mergetoolAfterResolve(out.resolved, res.Take == TakeVault)
+
 	report, err := e.sync(ctx, SyncOptions{})
 	if err != nil {
 		return nil, err
@@ -289,6 +291,7 @@ func (e *Engine) Resolve(ctx context.Context, ids []string, res Resolution) (*Re
 	report.Resolved = out.resolved
 	report.Refusals = out.refusals
 	report.RulingsDemoted = append(report.RulingsDemoted, out.demotions...)
+	report.Warnings = append(report.Warnings, cleanup...)
 
 	return report, nil
 }

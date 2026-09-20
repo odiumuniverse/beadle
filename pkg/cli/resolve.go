@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -19,6 +20,7 @@ func (a *app) newResolveCmd() *cobra.Command {
 		take, from, kindName, agentID        string
 		expectBase, expectVault, expectAgent string
 		all, stdin, allowRisky, jsonOut      bool
+		mergetool, mergetoolAbort            bool
 	)
 
 	cmd := &cobra.Command{
@@ -32,8 +34,23 @@ func (a *app) newResolveCmd() *cobra.Command {
 			"  --stdin        take the content from stdin (requires the three --expect-* hashes)\n" +
 			"--expect-base/--expect-vault/--expect-agent bind the decision to the conflict as it was\n" +
 			"read; any mismatch is refused (stale-conflict), never partially applied.\n" +
-			"A full sync follows, so unrelated changes made meanwhile are merged, never overwritten.",
+			"A full sync follows, so unrelated changes made meanwhile are merged, never overwritten.\n" +
+			"  --mergetool    materialize the conflict as a real git merge state in the vault (audit mode);\n" +
+			"                 settle it with git mergetool, then apply the file with --from <file>\n" +
+			"                 (binding from beadle conflicts --json) or edit the conflict file and use --take file\n" +
+			"  --mergetool-abort  remove that merge state; the refs/beadle/mergetool/* audit refs stay",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if mergetool || mergetoolAbort {
+				opts := mergetoolOptions{
+					start: mergetool, abort: mergetoolAbort, json: jsonOut,
+					all: all, take: take, from: from, stdin: stdin,
+					kind: kindName, agent: agentID, risky: allowRisky,
+					expect: cmd.Flags().Changed("expect-base") || cmd.Flags().Changed("expect-vault") || cmd.Flags().Changed("expect-agent"),
+				}
+
+				return a.runMergetool(cmd, opts, args)
+			}
+
 			e, err := a.engine()
 			if err != nil {
 				return err
@@ -96,8 +113,96 @@ func (a *app) newResolveCmd() *cobra.Command {
 	cmd.Flags().StringVar(&kindName, "kind", "", "with --all: only conflicts of this kind")
 	cmd.Flags().StringVar(&agentID, "agent", "", "with --all: only conflicts of this agent")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "machine-readable output")
+	cmd.Flags().BoolVar(&mergetool, "mergetool", false, "materialize the conflict as a git merge state in the vault (audit mode)")
+	cmd.Flags().BoolVar(&mergetoolAbort, "mergetool-abort", false, "remove the mergetool merge state, keeping the audit refs")
 
 	return cmd
+}
+
+type mergetoolOptions struct {
+	start, abort, json, all, stdin bool
+	risky, expect                  bool
+	take, from, kind, agent        string
+}
+
+func (a *app) runMergetool(cmd *cobra.Command, opts mergetoolOptions, args []string) error {
+	if err := validateMergetool(opts, args); err != nil {
+		return err
+	}
+
+	e, err := a.engine()
+	if err != nil {
+		return err
+	}
+
+	out := cmd.OutOrStdout()
+
+	if opts.abort {
+		result, err := e.MergetoolAbort(cmd.Context(), args[0])
+		if err != nil {
+			return err
+		}
+
+		if opts.json {
+			return printMergetoolJSON(out, result)
+		}
+
+		cmd.Printf("mergetool aborted: %s\n", result.Path)
+
+		return nil
+	}
+
+	result, warnings, err := e.Mergetool(cmd.Context(), args[0])
+	if err != nil {
+		return err
+	}
+
+	for _, warning := range warnings {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s\n", warning)
+	}
+
+	if opts.json {
+		return printMergetoolJSON(out, result)
+	}
+
+	cmd.Printf("mergetool active: %s\n", result.Path)
+	cmd.Printf("  refs: %s\n", strings.Join(result.Refs, " "))
+	cmd.Printf("  resolve it with git mergetool, then apply the file with\n")
+	cmd.Printf("  beadle resolve %s --from <file> --expect-base <hash> --expect-vault <hash> --expect-agent <hash>\n", result.ID)
+	cmd.Printf("  or edit the conflict file and run beadle resolve %s --take file\n", result.ID)
+	cmd.Printf("  abort: beadle resolve %s --mergetool-abort\n", result.ID)
+
+	return nil
+}
+
+func validateMergetool(opts mergetoolOptions, args []string) error {
+	switch {
+	case opts.start && opts.abort:
+		return errors.New("choose either --mergetool or --mergetool-abort")
+	case opts.all:
+		return errors.New("--all cannot be combined with --mergetool or --mergetool-abort")
+	case opts.take != "" || opts.from != "" || opts.stdin || opts.risky || opts.expect || opts.kind != "" || opts.agent != "":
+		return errors.New("--mergetool takes no resolution flags (--take/--from/--stdin/--kind/--agent/--expect-*/--allow-risky)")
+	case len(args) != 1 || args[0] == "":
+		return errors.New("mergetool takes exactly one conflict id (see beadle conflicts --json)")
+	}
+
+	return nil
+}
+
+func printMergetoolJSON(w io.Writer, result engine.MergetoolResult) error {
+	payload := struct {
+		Mergetool engine.MergetoolResult `json:"mergetool"`
+	}{Mergetool: result}
+
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	_, err = fmt.Fprintln(w, string(data))
+
+	return err
 }
 
 type resolveJSON struct {
