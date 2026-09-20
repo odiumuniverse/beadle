@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -59,14 +60,21 @@ func TestMergetoolCLIValidation(t *testing.T) {
 }
 
 func TestMergetoolCLIJSON(t *testing.T) {
-	Convey("Given a rules conflict in a git vault", t, func() {
+	Convey("Given a rules conflict in a git vault without a git identity", t, func() {
 		home := gwsHome(t)
-		gwsRules(t, home, "# v1\n", "# v1\n")
-		gwsInitSync(t)
+
+		t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+		t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
 
 		vault := filepath.Join(home, ".beadle")
 
+		So(os.MkdirAll(vault, 0o700), ShouldBeNil)
+
 		gitCLI(t, vault, "init", "-q")
+		gitCLI(t, vault, "config", "user.useConfigOnly", "true")
+
+		gwsRules(t, home, "# v1\n", "# v1\n")
+		gwsInitSync(t)
 
 		gwsWrite(t, filepath.Join(vault, "rules", "base.md"), "# vault v2\n")
 		gwsWrite(t, filepath.Join(home, ".claude", "CLAUDE.md"), "# claude v2\n")
@@ -83,6 +91,7 @@ func TestMergetoolCLIJSON(t *testing.T) {
 		Convey("When mergetool runs with --json", func() {
 			out, err := gwsRun(t, "resolve", c.ID, "--mergetool", "--json")
 			So(err, ShouldBeNil)
+			So(gitCLI(t, vault, "log", "-1", "--format=%ae"), ShouldContainSubstring, "beadle@localhost")
 
 			var payload gwsMergetool
 			So(json.Unmarshal([]byte(out), &payload), ShouldBeNil)
