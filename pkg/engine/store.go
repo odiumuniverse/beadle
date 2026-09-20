@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -147,7 +148,11 @@ func (e *Engine) saveVault(k kind.ID, items kind.Items) error {
 	case kind.Skills:
 		return e.saveSkills(items)
 	case kind.Memory:
-		guarded, _ := e.guardNoteSecrets(items)
+		guarded, extracted := e.guardNoteSecrets(items)
+
+		if extracted > 0 {
+			e.log.Print(context.Background(), "note secrets moved to the vault store", "count", extracted)
+		}
 
 		return saveNotesDir(e.vault.MemoryDir(), "memory", guarded)
 	case kind.Projects:

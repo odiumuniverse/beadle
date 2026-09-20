@@ -285,11 +285,271 @@ func applyPatch(data []byte, ops []patchOp) ([]byte, error) {
 		return nil, fmt.Errorf("encode patch: %w", err)
 	}
 
+	added := addedOps(root, ops)
+	inline := inlineParents(root, added)
+
 	if err := root.Patch(patch); err != nil {
 		return nil, fmt.Errorf("apply patch: %w", err)
 	}
 
+	formatPatchedValues(&root, added, inline, detectIndent(data))
+
 	return root.Pack(), nil
+}
+
+func addedOps(root hujson.Value, ops []patchOp) []patchOp {
+	var added []patchOp
+
+	for _, op := range ops {
+		if op.Op == "add" && root.Find(op.Path) == nil {
+			added = append(added, op)
+		}
+	}
+
+	return added
+}
+
+func inlineParents(root hujson.Value, ops []patchOp) map[string]bool {
+	inline := map[string]bool{}
+
+	for _, op := range ops {
+		parent, _, ok := splitPointer(op.Path)
+		if !ok {
+			continue
+		}
+
+		if _, seen := inline[parent]; seen {
+			continue
+		}
+
+		node := root.Find(parent)
+		if node == nil {
+			inline[parent] = false
+
+			continue
+		}
+
+		if obj, ok := node.Value.(*hujson.Object); ok {
+			inline[parent] = objectInline(obj)
+		}
+	}
+
+	return inline
+}
+
+func objectInline(obj *hujson.Object) bool {
+	if len(obj.Members) == 0 {
+		return false
+	}
+
+	for i := range obj.Members {
+		if _, ok := trailingWhitespace(obj.Members[i].Name.BeforeExtra); ok {
+			return false
+		}
+	}
+
+	return true
+}
+
+func formatPatchedValues(root *hujson.Value, ops []patchOp, inline map[string]bool, unit string) {
+	if unit == "" {
+		return
+	}
+
+	for _, op := range ops {
+		formatPatchedValue(root, op, inline, unit)
+	}
+}
+
+func formatPatchedValue(root *hujson.Value, op patchOp, inline map[string]bool, unit string) {
+	parent, name, ok := splitPointer(op.Path)
+	if !ok || inline[parent] {
+		return
+	}
+
+	node := root.Find(parent)
+	if node == nil {
+		return
+	}
+
+	obj, ok := node.Value.(*hujson.Object)
+	if !ok {
+		return
+	}
+
+	member := objectMember(obj, name)
+	if member == nil {
+		return
+	}
+
+	formatMember(obj, member, op.Value, unit, pointerDepth(op.Path))
+}
+
+func formatMember(obj *hujson.Object, member *hujson.ObjectMember, value any, unit string, depth int) {
+	indent, after, ok := memberIndent(obj, member, depth, unit)
+	if !ok || (after != nil && !isWhitespace(obj.AfterExtra)) {
+		return
+	}
+
+	fragment, err := prettyValue(value, indent, unit)
+	if err != nil {
+		return
+	}
+
+	parsed, err := hujson.Parse(fragment)
+	if err != nil {
+		return
+	}
+
+	if len(member.Name.BeforeExtra) == 0 {
+		member.Name.BeforeExtra = hujson.Extra("\n" + indent)
+	}
+
+	if len(member.Value.BeforeExtra) == 0 {
+		if extra := colonWhitespace(obj, member); extra != nil {
+			member.Value.BeforeExtra = extra
+		} else {
+			member.Value.BeforeExtra = hujson.Extra(" ")
+		}
+	}
+
+	if after != nil {
+		obj.AfterExtra = hujson.Extra(*after)
+	}
+
+	member.Value.Value = parsed.Value
+}
+
+func colonWhitespace(obj *hujson.Object, member *hujson.ObjectMember) hujson.Extra {
+	for i := range obj.Members {
+		if &obj.Members[i] == member {
+			continue
+		}
+
+		if extra := obj.Members[i].Value.BeforeExtra; len(extra) > 0 && isWhitespace(extra) {
+			return extra
+		}
+	}
+
+	return nil
+}
+
+func isWhitespace(extra hujson.Extra) bool {
+	for _, b := range extra {
+		if b != ' ' && b != '\t' {
+			return false
+		}
+	}
+
+	return true
+}
+
+func splitPointer(path string) (string, string, bool) {
+	idx := strings.LastIndexByte(path, '/')
+	if idx < 0 {
+		return "", "", false
+	}
+
+	token := strings.NewReplacer("~1", "/", "~0", "~").Replace(path[idx+1:])
+
+	return path[:idx], token, true
+}
+
+func pointerDepth(path string) int {
+	return strings.Count(path, "/")
+}
+
+func objectMember(obj *hujson.Object, name string) *hujson.ObjectMember {
+	for i := len(obj.Members) - 1; i >= 0; i-- {
+		literal, ok := obj.Members[i].Name.Value.(hujson.Literal)
+		if ok && literal.String() == name {
+			return &obj.Members[i]
+		}
+	}
+
+	return nil
+}
+
+func memberIndent(obj *hujson.Object, member *hujson.ObjectMember, depth int, unit string) (string, *string, bool) {
+	if indent, ok := trailingWhitespace(member.Name.BeforeExtra); ok {
+		return indent, nil, true
+	}
+
+	for i := range obj.Members {
+		if &obj.Members[i] == member {
+			continue
+		}
+
+		if indent, ok := trailingWhitespace(obj.Members[i].Name.BeforeExtra); ok {
+			return indent, nil, true
+		}
+	}
+
+	if indent, ok := trailingWhitespace(obj.AfterExtra); ok {
+		return indent + unit, nil, true
+	}
+
+	after := "\n" + strings.Repeat(unit, max(depth-1, 0))
+
+	return strings.Repeat(unit, depth), &after, true
+}
+
+func trailingWhitespace(extra hujson.Extra) (string, bool) {
+	idx := bytes.LastIndexByte(extra, '\n')
+	if idx < 0 {
+		return "", false
+	}
+
+	suffix := string(extra[idx+1:])
+	if !isWhitespace(hujson.Extra(suffix)) {
+		return "", false
+	}
+
+	return suffix, true
+}
+
+func prettyValue(value any, indent, unit string) ([]byte, error) {
+	rendered, err := json.MarshalIndent(value, "", unit)
+	if err != nil {
+		return nil, fmt.Errorf("encode value: %w", err)
+	}
+
+	return []byte(strings.ReplaceAll(string(rendered), "\n", "\n"+indent)), nil
+}
+
+func detectIndent(data []byte) string {
+	indent := ""
+	structural := false
+
+	for line := range strings.SplitSeq(string(data), "\n") {
+		trimmed := strings.TrimLeft(line, " \t")
+		if trimmed == "" || trimmed == line {
+			continue
+		}
+
+		switch trimmed[0] {
+		case '"', '}', ']':
+		default:
+			continue
+		}
+
+		structural = true
+
+		prefix := line[:len(line)-len(trimmed)]
+		if prefix == "" {
+			continue
+		}
+
+		if indent == "" || len(prefix) < len(indent) {
+			indent = prefix
+		}
+	}
+
+	if !structural {
+		return ""
+	}
+
+	return indent
 }
 
 func pointerJoin(pointer, token string) string {

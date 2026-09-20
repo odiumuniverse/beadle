@@ -28,11 +28,15 @@ func Seed(skillsDir string, force bool) (bool, error) {
 		return false, nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(file), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(file), 0o700); err != nil {
 		return false, err
 	}
 
-	if err := fsutil.WriteFileAtomic(file, conflictsSkill, 0o644); err != nil {
+	if err := os.Chmod(filepath.Dir(file), 0o700); err != nil { //nolint:gosec // G302: a directory needs the execute bit; 0700 is owner-only
+		return false, err
+	}
+
+	if err := fsutil.WriteFileAtomic(file, conflictsSkill, 0o600); err != nil {
 		return false, err
 	}
 

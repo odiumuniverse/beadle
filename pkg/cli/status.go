@@ -10,6 +10,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/state"
 	"github.com/odiumuniverse/beadle/pkg/vault"
 )
@@ -110,9 +111,16 @@ func printAgents(out interface{ Write([]byte) (int, error) }, cfg *config.Config
 }
 
 func modesOf(cfg *config.Config, ag *agent.Agent) string {
+	seen := map[kind.ID]bool{}
 	parts := make([]string, 0, len(ag.Surfaces))
 
 	for _, surface := range ag.Surfaces {
+		if seen[surface.Kind()] {
+			continue
+		}
+
+		seen[surface.Kind()] = true
+
 		mode := cfg.ModeFor(ag.ID, surface.Kind(), surface.Traits().DefaultMode)
 		if !cfg.KindEnabled(surface.Kind()) {
 			mode = config.ModeOff

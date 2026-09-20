@@ -21,6 +21,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/digest"
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/permission"
 	"github.com/odiumuniverse/beadle/pkg/plugin"
 	proj "github.com/odiumuniverse/beadle/pkg/project"
 	"github.com/odiumuniverse/beadle/pkg/secret"
@@ -93,8 +94,79 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.digestIssues(active, st)...)
 	issues = append(issues, e.memorySecretIssues()...)
 	issues = append(issues, e.rulesSecretIssues()...)
+	issues = append(issues, e.permissionCanonIssues()...)
 
 	return issues, nil
+}
+
+func (e *Engine) permissionCanonIssues() []Issue {
+	data, present, err := readOptional(e.vault.PermissionsPath())
+	if err != nil || !present {
+		return nil
+	}
+
+	rules, err := permission.Parse(data)
+	if err != nil {
+		return nil
+	}
+
+	var issues []Issue
+
+	for _, key := range rules.Keys() {
+		if permission.Canonical(key) {
+			continue
+		}
+
+		message := fmt.Sprintf("canonical permission key %q is not in canonical form and is never applied", key)
+
+		if example := permissionCanonExample(key); example != "" {
+			message += fmt.Sprintf("; expected %q", example)
+		}
+
+		issues = append(issues, Issue{Severity: SeverityWarn, Kind: kind.Permissions, Message: message})
+	}
+
+	return issues
+}
+
+func permissionCanonExample(key string) string {
+	k, server, pattern, ok := permission.Split(key)
+	if !ok {
+		return ""
+	}
+
+	switch k {
+	case permission.KindTool:
+		return permission.ToolKey(strings.ToLower(pattern))
+	case permission.KindMCP:
+		return permission.MCPKey(server, strings.ToLower(pattern))
+	default:
+		return ""
+	}
+}
+
+func (e *Engine) notePermissionCanonIssues(spec kind.Spec, opts SyncOptions, items kind.Items, report *KindReport) {
+	if spec.ID != kind.Permissions || opts.DryRun {
+		return
+	}
+
+	report.Warnings = append(report.Warnings, permissionCanonWarnings(items)...)
+}
+
+func permissionCanonWarnings(items kind.Items) []string {
+	invalid := 0
+
+	for key := range items {
+		if !permission.Canonical(key) {
+			invalid++
+		}
+	}
+
+	if invalid == 0 {
+		return nil
+	}
+
+	return []string{fmt.Sprintf("%d permission key(s) are not in canonical form and are never applied; run beadle doctor", invalid)}
 }
 
 func (e *Engine) rulesSecretIssues() []Issue {

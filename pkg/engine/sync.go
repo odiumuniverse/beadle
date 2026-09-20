@@ -27,6 +27,7 @@ type view struct {
 	base            kind.Items
 	presented       kind.Items
 	presentedFailed bool
+	moved           int
 	holds           map[string]bool
 	conflicts       []state.Conflict
 	blobs           [][]byte
@@ -50,6 +51,8 @@ func (e *Engine) syncKind(ctx context.Context, spec kind.Spec, agents []*agent.A
 
 	e.noteMCPCanonIssues(spec, opts, vaultItems, &report)
 
+	e.notePermissionCanonIssues(spec, opts, vaultItems, &report)
+
 	if !e.prepareProjects(spec, &report) {
 		return report
 	}
@@ -65,6 +68,8 @@ func (e *Engine) syncKind(ctx context.Context, spec kind.Spec, agents []*agent.A
 
 	views := e.readViews(ctx, spec, agents, st, opts, &report)
 	original := maps.Clone(vaultItems)
+
+	e.logNoteSecretMoves(ctx, spec, views, opts)
 
 	e.fanInInbox(ctx, spec, agents, vaultItems, &report, opts)
 
@@ -302,7 +307,7 @@ func (e *Engine) readView(
 
 	raw := maps.Clone(snap.Items)
 
-	items, _, err := e.inbound(spec.ID, snap.Items)
+	items, moved, err := e.inboundCount(spec.ID, snap.Items)
 	if err != nil {
 		return nil, err
 	}
@@ -318,7 +323,7 @@ func (e *Engine) readView(
 		base = ownedBy(surface, base)
 	}
 
-	return &view{agent: a, surface: surface, mode: mode, snap: snap, raw: raw, base: base, holds: map[string]bool{}}, nil
+	return &view{agent: a, surface: surface, mode: mode, snap: snap, raw: raw, base: base, moved: moved, holds: map[string]bool{}}, nil
 }
 
 func ownedBy(surface agent.Surface, items kind.Items) kind.Items {

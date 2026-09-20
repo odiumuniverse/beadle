@@ -25,6 +25,24 @@ const (
 	KindMCP  = "mcp"
 )
 
+// Canonical reports whether key is a permission rule every codec can express:
+// a bash pattern, a lowercase tool name or an MCP server with a lowercase tool.
+func Canonical(key string) bool {
+	k, _, pattern, ok := Split(key)
+	if !ok {
+		return false
+	}
+
+	switch k {
+	case KindBash:
+		return true
+	case KindTool, KindMCP:
+		return !strings.ContainsRune(pattern, ':') && pattern == strings.ToLower(pattern)
+	default:
+		return false
+	}
+}
+
 func ValidEffect(effect string) bool {
 	switch effect {
 	case EffectAllow, EffectAsk, EffectDeny:

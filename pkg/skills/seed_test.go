@@ -29,9 +29,17 @@ func TestSeedConflictsSkill(t *testing.T) {
 		Convey("When the built-in skill is seeded", func() {
 			written, err := skills.Seed(dir, false)
 
-			Convey("Then it is written with frontmatter and the required section tags", func() {
+			Convey("Then it is written with frontmatter and owner-only permissions", func() {
 				So(err, ShouldBeNil)
 				So(written, ShouldBeTrue)
+
+				dirInfo, statErr := os.Stat(filepath.Join(dir, skills.ConflictsName))
+				So(statErr, ShouldBeNil)
+				So(dirInfo.Mode().Perm(), ShouldEqual, os.FileMode(0o700))
+
+				fileInfo, statErr := os.Stat(file)
+				So(statErr, ShouldBeNil)
+				So(fileInfo.Mode().Perm(), ShouldEqual, os.FileMode(0o600))
 
 				text := readSkill(t, file)
 				So(text, ShouldStartWith, "---\nname: beadle-conflicts")
@@ -56,6 +64,19 @@ func TestSeedConflictsSkill(t *testing.T) {
 						So(err, ShouldBeNil)
 						So(written, ShouldBeTrue)
 						So(readSkill(t, file), ShouldContainSubstring, "name: beadle-conflicts")
+					})
+
+					Convey("And a forced reseed tightens a loose directory mode", func() {
+						skillDir := filepath.Join(dir, skills.ConflictsName)
+						So(os.Chmod(skillDir, 0o750), ShouldBeNil) //nolint:gosec // G302: loosened on purpose to test the tightening
+
+						written, err := skills.Seed(dir, true)
+						So(err, ShouldBeNil)
+						So(written, ShouldBeTrue)
+
+						info, statErr := os.Stat(skillDir)
+						So(statErr, ShouldBeNil)
+						So(info.Mode().Perm(), ShouldEqual, os.FileMode(0o700))
 					})
 				})
 			})

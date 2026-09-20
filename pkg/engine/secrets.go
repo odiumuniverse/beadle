@@ -26,18 +26,48 @@ func (e *Engine) SecretsMode() string {
 }
 
 func (e *Engine) inbound(k kind.ID, items kind.Items) (kind.Items, bool, error) {
+	out, count, err := e.inboundCount(k, items)
+
+	return out, count > 0, err
+}
+
+func (e *Engine) inboundCount(k kind.ID, items kind.Items) (kind.Items, int, error) {
 	switch k {
 	case kind.MCP:
-		return e.inboundMCP(items)
+		return cappedCount(e.inboundMCP(items))
 	case kind.Memory:
 		out, extracted := e.guardNoteSecrets(items)
 
-		return out, extracted > 0, nil
+		return out, extracted, nil
 	case kind.Projects:
-		return e.inboundProjects(items)
+		return cappedCount(e.inboundProjects(items))
 	default:
-		return items, false, nil
+		return items, 0, nil
 	}
+}
+
+func (e *Engine) logNoteSecretMoves(ctx context.Context, spec kind.Spec, views []*view, opts SyncOptions) {
+	if spec.ID != kind.Memory || opts.DryRun {
+		return
+	}
+
+	moved := 0
+
+	for _, v := range views {
+		moved += v.moved
+	}
+
+	if moved > 0 {
+		e.log.Print(ctx, "note secrets moved to the vault store", "count", moved)
+	}
+}
+
+func cappedCount(out kind.Items, changed bool, err error) (kind.Items, int, error) {
+	if err != nil || !changed {
+		return out, 0, err
+	}
+
+	return out, 1, nil
 }
 
 func (e *Engine) inboundMCP(items kind.Items) (kind.Items, bool, error) {
@@ -144,7 +174,6 @@ func (e *Engine) guardNoteSecrets(items kind.Items) (kind.Items, int) {
 
 		if changed {
 			extracted += len(names)
-			e.log.Print(context.Background(), "note secrets moved to the vault store", "note", key, "count", len(names))
 		}
 
 		out[key] = replaced
