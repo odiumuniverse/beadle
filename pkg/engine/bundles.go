@@ -619,3 +619,19 @@ func (e *Engine) bundleHostIssues(hostName string, entry state.BundleState) []Is
 
 	return issues
 }
+
+func bundlePluginKey() string {
+	return bundle.MarketplaceName + "/" + bundle.PluginName
+}
+
+func dropBundleLedgerEntry(ledger pluginLedger) bool {
+	key := bundlePluginKey()
+
+	if _, ok := ledger.Plugins[key]; !ok {
+		return false
+	}
+
+	delete(ledger.Plugins, key)
+
+	return true
+}

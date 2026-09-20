@@ -103,6 +103,10 @@ func (e *Engine) reconcilePlugins(_ context.Context) ([]PluginResult, []string, 
 		ledger = emptyPluginLedger()
 	}
 
+	if dropBundleLedgerEntry(ledger) {
+		dirty = true
+	}
+
 	groups := groupPlugins(manifest.Plugins)
 	results := make([]PluginResult, 0, len(groups)+len(ledger.Plugins))
 	installed := make(map[string]struct{}, len(groups))
@@ -110,6 +114,10 @@ func (e *Engine) reconcilePlugins(_ context.Context) ([]PluginResult, []string, 
 	for _, group := range groups {
 		key := pluginKey(group.Marketplace, group.Name)
 		installed[key] = struct{}{}
+
+		if key == bundlePluginKey() {
+			continue
+		}
 
 		if !validPluginKey(group.Marketplace, group.Name) {
 			results = append(results, PluginResult{Key: key, Action: PluginSkipped, Note: noteInvalidPluginKey})

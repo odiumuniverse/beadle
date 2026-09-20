@@ -141,7 +141,7 @@ func (e *Engine) buildPluginMCPAgent(plan *pluginMCPPlan, agentID string, ledger
 
 	failed := false
 
-	for _, key := range slices.Sorted(maps.Keys(ledger.Plugins)) {
+	for _, key := range pluginLedgerKeys(ledger) {
 		marketplace, name, ok := strings.Cut(key, "/")
 		if !ok || !validPluginKey(marketplace, name) {
 			continue
@@ -373,6 +373,20 @@ func prefixWarns(prefix string, warns []string) []string {
 
 	for _, warn := range warns {
 		out = append(out, prefix+warn)
+	}
+
+	return out
+}
+
+func pluginLedgerKeys(ledger pluginLedger) []string {
+	var out []string
+
+	for _, key := range slices.Sorted(maps.Keys(ledger.Plugins)) {
+		if key == bundlePluginKey() {
+			continue
+		}
+
+		out = append(out, key)
 	}
 
 	return out

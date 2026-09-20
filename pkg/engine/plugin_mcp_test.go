@@ -517,3 +517,29 @@ func TestPluginMCPWarningsVisible(t *testing.T) {
 		})
 	})
 }
+
+func TestPluginMCPBundlePluginIsCanonOnly(t *testing.T) {
+	Convey("Given the beadle bundle plugin in the plugin cache", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		plugin := pluginTree(t, f.home, "beadle", "beadle-canon", "0.0.0-e1b4dc767a95")
+		writeMCPServers(t, plugin, `{"mcpServers": {"ghost": {"command": "ghost-cmd"}}}`)
+
+		write(t, f.vault.PluginsLedgerPath(), `{"version":1,"plugins":{"beadle/beadle-canon":{"version":"0.0.0-e1b4dc767a95","target":"`+plugin+`","servers":["ghost"],"updated_at":"2026-09-21T00:00:00Z"}}}`)
+
+		report := f.sync(t)
+
+		Convey("When it syncs", func() {
+			Convey("Then the bundle never presents its servers to hosts", func() {
+				claude := hostMCPServers(t, f.claudeConfig(), "mcpServers")
+				_, hasGhost := claude["ghost"]
+				So(hasGhost, ShouldBeFalse)
+				So(warnedAbout(report, "ghost"), ShouldBeFalse)
+				So(read(t, f.vault.PluginsLedgerPath()), ShouldNotContainSubstring, "beadle-canon")
+			})
+		})
+	})
+}
