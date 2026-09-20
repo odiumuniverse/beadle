@@ -11,7 +11,9 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
+	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/skill"
 )
 
@@ -38,6 +40,7 @@ type migrateState struct {
 	engine *Engine
 	plan   farmPlan
 	ledger pluginLedger
+	agent  string
 	dryRun bool
 	moved  map[string]int
 	notes  map[string][]string
@@ -79,6 +82,30 @@ func (e *Engine) cacheLinkKey(link string, ledger pluginLedger) (string, string,
 	return key, skillName, true
 }
 
+func (e *Engine) skillsDirAgents(ctx context.Context) (map[string]string, error) {
+	if e.home == "" {
+		return nil, nil
+	}
+
+	active, err := e.activeAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	out := map[string]string{}
+
+	for _, a := range active {
+		surface := a.Surface(kind.Skills)
+		if surface == nil || e.config.ModeFor(a.ID, kind.Skills, surface.Traits().DefaultMode) == config.ModeOff {
+			continue
+		}
+
+		out[surface.Path()] = a.ID
+	}
+
+	return out, nil
+}
+
 func (e *Engine) migrateHosts(ctx context.Context, dryRun bool) ([]MigrateResult, []string) {
 	if e.home == "" {
 		return nil, nil
@@ -96,6 +123,11 @@ func (e *Engine) migrateHosts(ctx context.Context, dryRun bool) ([]MigrateResult
 		return nil, []string{"plugin migrate: " + err.Error()}
 	}
 
+	agents, err := e.skillsDirAgents(ctx)
+	if err != nil {
+		return nil, []string{"plugin migrate: " + err.Error()}
+	}
+
 	state := migrateState{
 		engine: e,
 		plan:   plan,
@@ -108,6 +140,8 @@ func (e *Engine) migrateHosts(ctx context.Context, dryRun bool) ([]MigrateResult
 	var warns []string
 
 	for _, dir := range dirs {
+		state.agent = agents[dir]
+
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
@@ -146,13 +180,13 @@ func (m *migrateState) link(path, name string) {
 		return
 	}
 
-	if reason := m.engine.linkReason(m.plan, key, skillName); reason != linkMigratable {
+	if reason := m.engine.linkReason(m.agent, m.plan, key, skillName); reason != linkMigratable {
 		m.noteUnmigratable(reason, key, skillName, name)
 
 		return
 	}
 
-	pivot, _ := m.engine.pivotSkillPath(key, skillName)
+	pivot, _ := m.engine.agentSkillTarget(m.agent, key, skillName)
 
 	if m.dryRun {
 		m.moved[key]++
@@ -179,8 +213,10 @@ func (m *migrateState) fork(path, name string) {
 		return
 	}
 
-	lot, ok := m.engine.pivotSkillPath(key, name)
+	lot, ok := m.engine.agentSkillTarget(m.agent, key, name)
 	if !ok {
+		m.note(key, "cannot resolve the pivot of %s; keeping the copy %s", key, name)
+
 		return
 	}
 
@@ -268,7 +304,7 @@ func (m *migrateState) results() []MigrateResult {
 
 // linkReason classifies why a cache link target can or cannot be repointed to
 // the vault pivot.
-func (e *Engine) linkReason(plan farmPlan, key, skillName string) linkReason {
+func (e *Engine) linkReason(agentID string, plan farmPlan, key, skillName string) linkReason {
 	if _, parked := plan.Parked[key]; !parked {
 		return linkPluginNotParked
 	}
@@ -277,8 +313,8 @@ func (e *Engine) linkReason(plan farmPlan, key, skillName string) linkReason {
 		return linkOwnerTaken
 	}
 
-	pivot, ok := e.pivotSkillPath(key, skillName)
-	if !ok || !isDir(pivot) {
+	lot, ok := e.agentSkillTarget(agentID, key, skillName)
+	if !ok || !isDir(lot) {
 		return linkSkillGone
 	}
 
@@ -296,15 +332,6 @@ func (e *Engine) linkReasonText(plan farmPlan, reason linkReason, key, skillName
 	default:
 		return fmt.Sprintf("plugin %s no longer offers skill %s", key, skillName)
 	}
-}
-
-func (e *Engine) pivotSkillPath(key, skillName string) (string, bool) {
-	marketplace, name, ok := strings.Cut(key, "/")
-	if !ok || !validPluginKey(marketplace, name) || !filepath.IsLocal(skillName) {
-		return "", false
-	}
-
-	return filepath.Join(e.vault.PluginsDir(), marketplace, name, farmPivotName, farmSkillsDir, skillName), true
 }
 
 func (e *Engine) canonAllowsFork(plan farmPlan, name, lot string) bool {
@@ -396,9 +423,16 @@ func (e *Engine) pluginMigrationIssues(ctx context.Context, ledger pluginLedger)
 		return []Issue{{Severity: SeverityWarn, Message: "plugin migration: " + err.Error()}}
 	}
 
+	agents, err := e.skillsDirAgents(ctx)
+	if err != nil {
+		return []Issue{{Severity: SeverityWarn, Message: "plugin migration: " + err.Error()}}
+	}
+
 	var issues []Issue
 
 	for _, dir := range dirs {
+		agentID := agents[dir]
+
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
@@ -416,9 +450,9 @@ func (e *Engine) pluginMigrationIssues(ctx context.Context, ledger pluginLedger)
 
 			switch {
 			case entry.Type()&fs.ModeSymlink != 0:
-				issues = append(issues, e.migrationLinkIssues(plan, ledger, path, name)...)
+				issues = append(issues, e.migrationLinkIssues(agentID, plan, ledger, path, name)...)
 			case entry.IsDir():
-				issues = append(issues, e.migrationForkIssues(plan, path, name)...)
+				issues = append(issues, e.migrationForkIssues(agentID, plan, path, name)...)
 			}
 		}
 	}
@@ -426,7 +460,7 @@ func (e *Engine) pluginMigrationIssues(ctx context.Context, ledger pluginLedger)
 	return issues
 }
 
-func (e *Engine) migrationLinkIssues(plan farmPlan, ledger pluginLedger, path, name string) []Issue {
+func (e *Engine) migrationLinkIssues(agentID string, plan farmPlan, ledger pluginLedger, path, name string) []Issue {
 	link, err := os.Readlink(path)
 	if err != nil {
 		return nil
@@ -437,7 +471,7 @@ func (e *Engine) migrationLinkIssues(plan farmPlan, ledger pluginLedger, path, n
 		return nil
 	}
 
-	reason := e.linkReason(plan, key, skillName)
+	reason := e.linkReason(agentID, plan, key, skillName)
 	if reason == linkMigratable {
 		return []Issue{{Severity: SeverityWarn, Message: fmt.Sprintf("skill %s points into the plugin cache (%s); run beadle heal", name, link)}}
 	}
@@ -445,7 +479,7 @@ func (e *Engine) migrationLinkIssues(plan farmPlan, ledger pluginLedger, path, n
 	return []Issue{{Severity: SeverityWarn, Message: fmt.Sprintf("skill %s points into the plugin cache; %s (run beadle sync or remove the stale link)", name, e.linkReasonText(plan, reason, key, skillName))}}
 }
 
-func (e *Engine) migrationForkIssues(plan farmPlan, path, name string) []Issue {
+func (e *Engine) migrationForkIssues(agentID string, plan farmPlan, path, name string) []Issue {
 	if _, stub := skill.IsStubDir(path); stub {
 		return nil
 	}
@@ -455,7 +489,7 @@ func (e *Engine) migrationForkIssues(plan farmPlan, path, name string) []Issue {
 		return nil
 	}
 
-	lot, ok := e.pivotSkillPath(key, name)
+	lot, ok := e.agentSkillTarget(agentID, key, name)
 	if !ok {
 		return nil
 	}

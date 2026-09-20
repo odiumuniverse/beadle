@@ -58,6 +58,11 @@ manage alone.
   skipped, symlinked skills are read but never overwritten, and plugin skills
   are farmed through a stable pivot so upgrades don't break links. *Why:*
   skills are the biggest pile of files to keep in sync.
+- **Plugin pins** — pin one plugin to a cached version per agent (`plugins pin
+  <key> <version> --agent <id>`). The pin travels in the vault; the farm, MCP
+  paths and `heal` follow it, and a version missing from the cache is reported
+  instead of silently upgraded. *Why:* an upgrade can break a plugin's skills
+  or MCP servers mid-task.
 - **Project scope** — opt-in per repository: `.mcp.json`, `.cursor/mcp.json`,
   `.cursor/rules/*.mdc`, `.agents/mcp_config.json`, `AGENTS.md`, `GEMINI.md`.
   The project identity comes from the git origin, so clones and worktrees
@@ -144,6 +149,7 @@ beadle daemon install                         # launchd (macOS) / systemd user u
 | `doctor` | diagnostics; non-zero exit on errors |
 | `watch` / `daemon` | background sync, autostart service |
 | `secrets list\|set\|rm\|prune\|migrate` | credential values; never printed |
+| `plugins pins\|pin\|unpin` | per-agent plugin version pins |
 | `project status\|enable <file>\|disable <file>\|forget <file>` | per-repository project scope; nothing happens without an enabled policy |
 
 Global flags: `--vault` (default `~/.beadle`, or `$BEADLE_HOME`), `--verbose`,

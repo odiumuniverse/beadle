@@ -22,13 +22,26 @@ import (
 )
 
 const (
-	farmPivotName = "current"
-	farmSkillsDir = "skills"
-	farmSkillFile = "SKILL.md"
-	farmNoteLimit = 5
+	farmPivotName  = "current"
+	pinPivotPrefix = "at-"
+	farmSkillsDir  = "skills"
+	farmSkillFile  = "SKILL.md"
+	farmNoteLimit  = 5
 )
 
 var replaceSymlink = fsutil.ReplaceSymlink
+
+func pinPivotName(version string) string {
+	return pinPivotPrefix + version
+}
+
+func pivotEntryName(name string) bool {
+	return name == farmPivotName || strings.HasPrefix(name, pinPivotPrefix)
+}
+
+func pinnedMissingNote(key, version string) string {
+	return fmt.Sprintf("pinned version %s of %s is not in the plugin cache; keeping the pin (no silent upgrade)", version, key)
+}
 
 type FarmAction string
 
@@ -52,7 +65,7 @@ type farmPlan struct {
 	Parked      map[string][]string
 	Quarantined map[string]pluginLedgerRec
 	Owner       map[string]string
-	Desired     map[string]string
+	Desired     map[string]struct{}
 	Canon       map[string]struct{}
 }
 
@@ -125,18 +138,13 @@ func (e *Engine) buildFarmPlan(ledger pluginLedger) (farmPlan, []string) {
 		Parked:      map[string][]string{},
 		Quarantined: map[string]pluginLedgerRec{},
 		Owner:       map[string]string{},
-		Desired:     map[string]string{},
+		Desired:     map[string]struct{}{},
 		Canon:       map[string]struct{}{},
 	}
 
 	warns := e.scanLedgerPlan(plan, ledger)
 
 	for _, key := range slices.Sorted(maps.Keys(plan.Parked)) {
-		marketplace, name, ok := strings.Cut(key, "/")
-		if !ok {
-			continue
-		}
-
 		for _, skillName := range plan.Parked[key] {
 			if owner, taken := plan.Owner[skillName]; taken {
 				warns = append(warns, fmt.Sprintf("plugin farm: skill %s of %s is already provided by %s", skillName, key, owner))
@@ -145,7 +153,7 @@ func (e *Engine) buildFarmPlan(ledger pluginLedger) (farmPlan, []string) {
 			}
 
 			plan.Owner[skillName] = key
-			plan.Desired[skillName] = filepath.Join(e.vault.PluginsDir(), marketplace, name, farmPivotName, farmSkillsDir, skillName)
+			plan.Desired[skillName] = struct{}{}
 		}
 	}
 
@@ -306,6 +314,82 @@ func normSkillName(name string) string {
 	return norm.NFC.String(strings.ToLower(name))
 }
 
+// pluginPivotFor resolves the pivot directory an agent reads a plugin from:
+// at-<version> when the plugin is pinned, current otherwise. A pinned pivot
+// that is missing yields ok=false — there is no fallback to current.
+func (e *Engine) pluginPivotFor(agentID, key string) (string, bool) {
+	marketplace, name, ok := strings.Cut(key, "/")
+	if !ok || !validPluginKey(marketplace, name) {
+		return "", false
+	}
+
+	base := filepath.Join(e.vault.PluginsDir(), marketplace, name)
+
+	version, pinned := e.config.PluginPin(agentID, key)
+	if !pinned {
+		return filepath.Join(base, farmPivotName), true
+	}
+
+	pivot := filepath.Join(base, pinPivotName(version))
+	if !pivotValid(pivot) {
+		return "", false
+	}
+
+	return pivot, true
+}
+
+func pivotValid(path string) bool {
+	info, err := os.Lstat(path)
+
+	return err == nil && info.Mode()&fs.ModeSymlink != 0 && isDir(path)
+}
+
+func (e *Engine) agentSkillTarget(agentID, key, skillName string) (string, bool) {
+	pivot, ok := e.pluginPivotFor(agentID, key)
+	if !ok || !filepath.IsLocal(skillName) {
+		return "", false
+	}
+
+	return filepath.Join(pivot, farmSkillsDir, skillName), true
+}
+
+func (e *Engine) notePinnedMiss(warns []string, warned map[string]bool, agentID, key string) []string {
+	if warned[key] {
+		return warns
+	}
+
+	warned[key] = true
+
+	return append(warns, "plugin farm: "+e.pinnedPivotNote(agentID, key))
+}
+
+func (e *Engine) pinnedPivotNote(agentID, key string) string {
+	version, _ := e.config.PluginPin(agentID, key)
+
+	marketplace, name, ok := strings.Cut(key, "/")
+	if ok {
+		pivot := filepath.Join(e.vault.PluginsDir(), marketplace, name, pinPivotName(version))
+
+		if _, err := os.Lstat(pivot); err == nil {
+			return fmt.Sprintf("plugin %s pivot %s is not a usable symlink for %s; run beadle sync", key, pinPivotName(version), agentID)
+		}
+	}
+
+	return fmt.Sprintf("pinned version %s of %s is not in the plugin cache for %s; keeping the pin (no silent upgrade)", version, key, agentID)
+}
+
+func (e *Engine) notePinnedSkillMiss(warns []string, warned map[string]bool, agentID, key, skillName string) []string {
+	if warned[key] {
+		return warns
+	}
+
+	warned[key] = true
+
+	version, _ := e.config.PluginPin(agentID, key)
+
+	return append(warns, fmt.Sprintf("plugin farm: skill %s is missing in %s@%s; skipped", skillName, key, version))
+}
+
 func (e *Engine) farmAgentSkills(agentID, dir string, plan farmPlan) ([]FarmResult, []string) {
 	var warns []string
 
@@ -321,11 +405,25 @@ func (e *Engine) farmAgentSkills(agentID, dir string, plan farmPlan) ([]FarmResu
 
 	linked := map[string]int{}
 	skips := map[string][]string{}
+	warned := map[string]bool{}
 
 	for _, skillName := range slices.Sorted(maps.Keys(plan.Desired)) {
 		plugin := plan.Owner[skillName]
 
-		action, err := e.farmLinkSkill(dir, skillName, plan.Desired[skillName])
+		target, ok := e.agentSkillTarget(agentID, plugin, skillName)
+		if !ok {
+			warns = e.notePinnedMiss(warns, warned, agentID, plugin)
+
+			continue
+		}
+
+		if _, pinned := e.config.PluginPin(agentID, plugin); pinned && !isDir(target) {
+			warns = e.notePinnedSkillMiss(warns, warned, agentID, plugin, skillName)
+
+			continue
+		}
+
+		action, err := e.farmLinkSkill(dir, skillName, target)
 		switch {
 		case errors.Is(err, fsutil.ErrSymlinksUnsupported):
 			return []FarmResult{{Agent: agentID, Action: FarmSkipped, Note: symlinkUnsupportedNote(dir)}}, warns
@@ -338,17 +436,11 @@ func (e *Engine) farmAgentSkills(agentID, dir string, plan farmPlan) ([]FarmResu
 		}
 	}
 
-	pruned, pruneWarns := e.pruneFarmLinks(dir, plan)
+	pruned, pruneWarns := e.pruneFarmLinks(agentID, dir, plan)
 
 	warns = append(warns, pruneWarns...)
 
-	if len(stubPruned) > 0 && pruned == nil {
-		pruned = map[string]int{}
-	}
-
-	for key, count := range stubPruned {
-		pruned[key] += count
-	}
+	pruned = mergeFarmPruned(pruned, stubPruned)
 
 	var results []FarmResult
 
@@ -361,6 +453,22 @@ func (e *Engine) farmAgentSkills(agentID, dir string, plan farmPlan) ([]FarmResu
 	}
 
 	return results, warns
+}
+
+func mergeFarmPruned(pruned, stubPruned map[string]int) map[string]int {
+	if len(stubPruned) == 0 {
+		return pruned
+	}
+
+	if pruned == nil {
+		pruned = map[string]int{}
+	}
+
+	for key, count := range stubPruned {
+		pruned[key] += count
+	}
+
+	return pruned
 }
 
 func symlinkUnsupportedNote(dir string) string {
@@ -508,7 +616,7 @@ func (e *Engine) farmLinkSkill(dir, skillName, target string) (FarmAction, error
 	return FarmLinked, nil
 }
 
-func (e *Engine) pruneFarmLinks(dir string, plan farmPlan) (map[string]int, []string) {
+func (e *Engine) pruneFarmLinks(agentID, dir string, plan farmPlan) (map[string]int, []string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -536,7 +644,7 @@ func (e *Engine) pruneFarmLinks(dir string, plan farmPlan) (map[string]int, []st
 			continue
 		}
 
-		if !e.farmPrunable(plan, plugin, name) {
+		if !e.farmPrunable(agentID, plan, plugin, name) && !e.pinDangling(agentID, plugin, link, name) {
 			continue
 		}
 
@@ -559,7 +667,11 @@ func (e *Engine) pruneFarmLinks(dir string, plan farmPlan) (map[string]int, []st
 	return pruned, warns
 }
 
-func (e *Engine) farmPrunable(plan farmPlan, plugin, skillName string) bool {
+func (e *Engine) farmPrunable(agentID string, plan farmPlan, plugin, skillName string) bool {
+	if _, ok := e.pluginPivotFor(agentID, plugin); !ok {
+		return true
+	}
+
 	if _, canon := plan.Canon[normSkillName(skillName)]; canon {
 		return true
 	}
@@ -570,6 +682,19 @@ func (e *Engine) farmPrunable(plan farmPlan, plugin, skillName string) bool {
 	}
 
 	return !slices.Contains(names, skillName)
+}
+
+func (e *Engine) pinDangling(agentID, plugin, link, skillName string) bool {
+	if _, pinned := e.config.PluginPin(agentID, plugin); !pinned {
+		return false
+	}
+
+	target, ok := e.agentSkillTarget(agentID, plugin, skillName)
+	if !ok || !isDir(target) {
+		return true
+	}
+
+	return !fsutil.Exists(link)
 }
 
 func (e *Engine) farmOwned(link string) bool {
@@ -585,7 +710,7 @@ func (e *Engine) farmLinkOwner(link string) (string, string, bool) {
 	}
 
 	parts := strings.Split(rest, "/")
-	if len(parts) != 5 || parts[2] != farmPivotName || parts[3] != farmSkillsDir {
+	if len(parts) != 5 || !pivotEntryName(parts[2]) || parts[3] != farmSkillsDir {
 		return "", "", false
 	}
 

@@ -84,6 +84,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.projectPolicyIssues(active)...)
 	issues = append(issues, e.pluginRefIssues(active)...)
 	issues = append(issues, e.pluginPivotIssues(ctx)...)
+	issues = append(issues, e.pluginPinIssues(active)...)
 	issues = append(issues, e.pluginMigrationIssues(ctx, ledger)...)
 	issues = append(issues, e.farmPresentationIssues(active, ledger)...)
 	issues = append(issues, e.digestIssues(active, st)...)
@@ -765,6 +766,155 @@ func displayHomePath(path, home string) string {
 	}
 
 	return path
+}
+
+func (e *Engine) pluginPinIssues(active []*agent.Agent) []Issue {
+	if e.home == "" {
+		return nil
+	}
+
+	ledger, _, err := loadPluginLedger(e.vault.PluginsLedgerPath())
+	if err != nil {
+		return []Issue{{Severity: SeverityWarn, Message: "cannot read the plugin ledger: " + err.Error()}}
+	}
+
+	manifest, manifestErr := plugin.Read(e.home)
+
+	activeIDs := make(map[string]struct{}, len(active))
+
+	for _, a := range active {
+		activeIDs[a.ID] = struct{}{}
+	}
+
+	var issues []Issue
+
+	for _, agentID := range slices.Sorted(maps.Keys(e.config.Agents)) {
+		if _, on := activeIDs[agentID]; !on {
+			continue
+		}
+
+		pins := e.config.Agents[agentID].PluginPins
+
+		for _, key := range slices.Sorted(maps.Keys(pins)) {
+			issues = append(issues, e.pinIssues(agentID, key, pins[key], ledger, manifest, manifestErr)...)
+		}
+	}
+
+	return append(issues, e.strayPinPivotIssues(ledger)...)
+}
+
+func (e *Engine) pinIssues(agentID, key, version string, ledger pluginLedger, manifest plugin.Manifest, manifestErr error) []Issue {
+	marketplace, name, ok := strings.Cut(key, "/")
+	if !ok || !validPluginKey(marketplace, name) {
+		return []Issue{pinIssue(SeverityWarn, agentID, fmt.Sprintf("plugin pin %q has an invalid key", key))}
+	}
+
+	var issues []Issue
+
+	target := filepath.Join(e.home, pluginCacheDir, marketplace, name, version)
+	if !isDir(target) {
+		issues = append(issues, pinIssue(SeverityError, agentID, fmt.Sprintf(
+			"plugin %s pinned to %s is not in the plugin cache; %s is missing its skills and MCP servers", key, version, agentID)))
+	}
+
+	pivot := filepath.Join(e.vault.PluginsDir(), marketplace, name, pinPivotName(version))
+
+	pivotInfo, pivotErr := os.Lstat(pivot)
+	if pivotErr == nil && isDir(target) && !pivotValid(pivot) {
+		note := "is dangling"
+		if pivotInfo.Mode()&fs.ModeSymlink == 0 {
+			note = "is not a symlink"
+		}
+
+		issues = append(issues, pinIssue(SeverityError, agentID, fmt.Sprintf("plugin %s %s pivot %s; run beadle sync", key, pinPivotName(version), note)))
+	}
+
+	if e.pinUnknownPlugin(key, ledger, manifest, manifestErr) {
+		issues = append(issues, pinIssue(SeverityWarn, agentID, fmt.Sprintf("plugin %s is not installed; the pin has no effect", key)))
+	}
+
+	return issues
+}
+
+func (e *Engine) pinUnknownPlugin(key string, ledger pluginLedger, manifest plugin.Manifest, manifestErr error) bool {
+	if _, parked := ledger.Plugins[key]; parked {
+		return false
+	}
+
+	if manifestErr != nil {
+		return false
+	}
+
+	for _, p := range manifest.Plugins {
+		if pluginKey(p.Marketplace, p.Name) == key {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (e *Engine) strayPinPivotIssues(ledger pluginLedger) []Issue {
+	pinned := e.pinnedVersions()
+
+	marketplaces, err := os.ReadDir(e.vault.PluginsDir())
+	if err != nil {
+		return nil
+	}
+
+	var issues []Issue
+
+	for _, marketplace := range marketplaces {
+		if !marketplace.IsDir() || marketplace.Name() == quarantineDirName {
+			continue
+		}
+
+		names, err := os.ReadDir(filepath.Join(e.vault.PluginsDir(), marketplace.Name()))
+		if err != nil {
+			continue
+		}
+
+		for _, name := range names {
+			if !name.IsDir() {
+				continue
+			}
+
+			key := pluginKey(marketplace.Name(), name.Name())
+			if pinQuarantined(ledger, key) {
+				continue
+			}
+
+			dir := filepath.Join(e.vault.PluginsDir(), marketplace.Name(), name.Name())
+
+			issues = append(issues, strayPinDirIssues(key, pinned[key], dir)...)
+		}
+	}
+
+	return issues
+}
+
+func strayPinDirIssues(key string, versions []string, dir string) []Issue {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	var issues []Issue
+
+	for _, entry := range entries {
+		version, pinned := strings.CutPrefix(entry.Name(), pinPivotPrefix)
+		if !pinned || version == "" || entry.Type()&fs.ModeSymlink == 0 || slices.Contains(versions, version) {
+			continue
+		}
+
+		issues = append(issues, pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s has a stale %s pivot; run beadle sync", key, entry.Name())))
+	}
+
+	return issues
+}
+
+func pinIssue(severity, agentID, message string) Issue {
+	return Issue{Severity: severity, Kind: kind.Skills, Agent: agentID, Message: message}
 }
 
 func (e *Engine) pluginPivotIssues(_ context.Context) []Issue {

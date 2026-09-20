@@ -43,15 +43,15 @@ func bareFarmEngine(t *testing.T) *Engine {
 	require.NoError(t, os.MkdirAll(v.SkillsDir(), 0o700))
 	require.NoError(t, os.MkdirAll(v.PluginsDir(), 0o700))
 
-	return &Engine{vault: v}
+	return &Engine{vault: v, config: config.Default()}
 }
 
 func farmPlanFor(skills ...string) farmPlan {
-	desired := map[string]string{}
+	desired := map[string]struct{}{}
 	owner := map[string]string{}
 
 	for _, name := range skills {
-		desired[name] = "/pivot/skills/" + name
+		desired[name] = struct{}{}
 		owner[name] = "acme/tool"
 	}
 

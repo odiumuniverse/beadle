@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
@@ -51,9 +53,10 @@ func (m Mode) Pushes() bool {
 }
 
 type Agent struct {
-	Enabled bool             `json:"enabled"`
-	Modes   map[kind.ID]Mode `json:"modes,omitempty"`
-	Skills  string           `json:"skills,omitempty"`
+	Enabled    bool              `json:"enabled"`
+	Modes      map[kind.ID]Mode  `json:"modes,omitempty"`
+	Skills     string            `json:"skills,omitempty"`
+	PluginPins map[string]string `json:"plugin_pins,omitempty"`
 }
 
 func (a Agent) Mode(k kind.ID, fallback Mode) Mode {
@@ -184,6 +187,12 @@ func (c *Config) validate() error {
 				return fmt.Errorf("agent %s, %s: %w", id, k, err)
 			}
 		}
+
+		for key, version := range agent.PluginPins {
+			if err := ValidatePluginPin(key, version); err != nil {
+				return fmt.Errorf("agent %s: %w", id, err)
+			}
+		}
 	}
 
 	for k, mode := range c.Kinds {
@@ -230,6 +239,64 @@ func (c *Config) Disable(agentID string) {
 
 	if c.Agents == nil {
 		c.Agents = map[string]Agent{}
+	}
+
+	c.Agents[agentID] = agent
+}
+
+var pinVersionPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// ValidatePluginPin checks a plugin pin key ("<marketplace>/<name>") and a
+// version that must be a single path element.
+func ValidatePluginPin(key, version string) error {
+	marketplace, name, ok := strings.Cut(key, "/")
+	if !ok || strings.Contains(name, "/") || !filepath.IsLocal(marketplace) || !filepath.IsLocal(name) {
+		return fmt.Errorf("invalid plugin key %q (expected <marketplace>/<name>)", key)
+	}
+
+	if !filepath.IsLocal(version) || !pinVersionPattern.MatchString(version) {
+		return fmt.Errorf("invalid version %q (expected one element of [A-Za-z0-9._-])", version)
+	}
+
+	return nil
+}
+
+func (c *Config) PluginPin(agentID, key string) (string, bool) {
+	version, ok := c.Agents[agentID].PluginPins[key]
+
+	return version, ok
+}
+
+func (c *Config) SetPluginPin(agentID, key, version string) error {
+	if err := ValidatePluginPin(key, version); err != nil {
+		return err
+	}
+
+	if c.Agents == nil {
+		c.Agents = map[string]Agent{}
+	}
+
+	agent := c.Agents[agentID]
+	if agent.PluginPins == nil {
+		agent.PluginPins = map[string]string{}
+	}
+
+	agent.PluginPins[key] = version
+	c.Agents[agentID] = agent
+
+	return nil
+}
+
+func (c *Config) UnsetPluginPin(agentID, key string) {
+	agent, ok := c.Agents[agentID]
+	if !ok {
+		return
+	}
+
+	delete(agent.PluginPins, key)
+
+	if len(agent.PluginPins) == 0 {
+		agent.PluginPins = nil
 	}
 
 	c.Agents[agentID] = agent

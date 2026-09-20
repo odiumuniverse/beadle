@@ -25,6 +25,7 @@ const (
 	scopeUser            = "user"
 	pluginRegistryPath   = ".claude/plugins/installed_plugins.json"
 	pluginMarketplaceDir = ".claude/plugins/marketplaces"
+	pluginCacheDir       = ".claude/plugins/cache"
 	quarantineDirName    = "quarantine"
 
 	noteInvalidPluginKey   = "invalid plugin key"
@@ -132,6 +133,8 @@ func (e *Engine) reconcilePlugins(_ context.Context) ([]PluginResult, []string, 
 
 	dirty = dirty || removedDirty
 
+	warns = append(warns, e.reconcilePinPivots(ledger)...)
+
 	if dirty {
 		if err := ledger.save(e.vault.PluginsLedgerPath()); err != nil {
 			warns = append(warns, "plugins: "+err.Error())
@@ -174,6 +177,127 @@ func (e *Engine) quarantineRemoved(installed map[string]struct{}, ledger *plugin
 	}
 
 	return results, dirty
+}
+
+func (e *Engine) pinnedVersions() map[string][]string {
+	out := map[string][]string{}
+
+	for _, agent := range e.config.Agents {
+		for key, version := range agent.PluginPins {
+			if !slices.Contains(out[key], version) {
+				out[key] = append(out[key], version)
+			}
+		}
+	}
+
+	return out
+}
+
+func pinQuarantined(ledger pluginLedger, key string) bool {
+	rec, parked := ledger.Plugins[key]
+
+	return parked && !rec.QuarantinedAt.IsZero()
+}
+
+func (e *Engine) reconcilePinPivots(ledger pluginLedger) []string {
+	pinned := e.pinnedVersions()
+
+	var warns []string
+
+	for _, key := range slices.Sorted(maps.Keys(pinned)) {
+		marketplace, name, ok := strings.Cut(key, "/")
+		if !ok || !validPluginKey(marketplace, name) || pinQuarantined(ledger, key) {
+			continue
+		}
+
+		for _, version := range slices.Sorted(slices.Values(pinned[key])) {
+			warns = append(warns, e.reconcilePinPivot(key, marketplace, name, version)...)
+		}
+	}
+
+	return append(warns, e.prunePinPivots(ledger, pinned)...)
+}
+
+func (e *Engine) reconcilePinPivot(key, marketplace, name, version string) []string {
+	target := filepath.Join(e.home, pluginCacheDir, marketplace, name, version)
+	if !isDir(target) {
+		return []string{pinnedMissingNote(key, version)}
+	}
+
+	pivot := filepath.Join(e.vault.PluginsDir(), marketplace, name, pinPivotName(version))
+
+	if link, err := os.Readlink(pivot); err == nil && link == target {
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(pivot), 0o700); err != nil {
+		return []string{fmt.Sprintf("cannot pin %s@%s: %v", key, version, err)}
+	}
+
+	if err := fsutil.ReplaceSymlink(pivot, target); err != nil {
+		return []string{fmt.Sprintf("cannot pin %s@%s: %v", key, version, err)}
+	}
+
+	return nil
+}
+
+func (e *Engine) prunePinPivots(ledger pluginLedger, pinned map[string][]string) []string {
+	marketplaces, err := os.ReadDir(e.vault.PluginsDir())
+	if err != nil {
+		return nil
+	}
+
+	var warns []string
+
+	for _, marketplace := range marketplaces {
+		if !marketplace.IsDir() || marketplace.Name() == quarantineDirName {
+			continue
+		}
+
+		names, err := os.ReadDir(filepath.Join(e.vault.PluginsDir(), marketplace.Name()))
+		if err != nil {
+			continue
+		}
+
+		for _, name := range names {
+			if !name.IsDir() {
+				continue
+			}
+
+			key := pluginKey(marketplace.Name(), name.Name())
+			if pinQuarantined(ledger, key) {
+				continue
+			}
+
+			dir := filepath.Join(e.vault.PluginsDir(), marketplace.Name(), name.Name())
+
+			warns = append(warns, e.prunePinDir(key, pinned[key], dir)...)
+		}
+	}
+
+	return warns
+}
+
+func (e *Engine) prunePinDir(key string, versions []string, dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	var warns []string
+
+	for _, entry := range entries {
+		version, pinned := strings.CutPrefix(entry.Name(), pinPivotPrefix)
+		if !pinned || version == "" || entry.Type()&fs.ModeSymlink == 0 || slices.Contains(versions, version) {
+			continue
+		}
+
+		if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			warns = append(warns, fmt.Sprintf("cannot remove stale pin %s@%s: %v", key, version, err))
+		}
+	}
+
+	return warns
 }
 
 func (e *Engine) pivotPlugin(key string, group pluginGroup, prev pluginLedgerRec) (PluginResult, pluginLedgerRec, bool) {
