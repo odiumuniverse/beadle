@@ -14,6 +14,7 @@ import (
 const (
 	DefaultLabel = "com.beadle.watch"
 	brewLabel    = "homebrew.mxcl.beadle"
+	brewShLabel  = "sh.brew.beadle"
 	osDarwin     = "darwin"
 )
 

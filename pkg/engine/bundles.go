@@ -102,8 +102,15 @@ func bundleUnregisterInstructions(host bundle.Host, dir, home string) string {
 	}
 }
 
-func (e *Engine) BundlesEnable(_ context.Context, hostName string) (Report, error) {
+func (e *Engine) BundlesEnable(ctx context.Context, hostName string) (Report, error) {
 	var report Report
+
+	release, err := e.lock(ctx)
+	if err != nil {
+		return report, err
+	}
+
+	defer release()
 
 	host, err := bundle.ParseHost(hostName)
 	if err != nil {
@@ -207,8 +214,15 @@ func (e *Engine) registerBundle(host bundle.Host, dir string, entry *state.Bundl
 	}
 }
 
-func (e *Engine) BundlesDisable(_ context.Context, hostName string) (Report, error) {
+func (e *Engine) BundlesDisable(ctx context.Context, hostName string) (Report, error) {
 	var report Report
+
+	release, err := e.lock(ctx)
+	if err != nil {
+		return report, err
+	}
+
+	defer release()
 
 	host, err := bundle.ParseHost(hostName)
 	if err != nil {

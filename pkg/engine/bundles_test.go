@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -870,6 +871,27 @@ func TestBundleIssuesValidateSkippedWithoutCLI(t *testing.T) {
 				So(hasIssue(issues, engine.SeverityWarn, "claude CLI not found"), ShouldBeTrue)
 				So(cli.calls, ShouldBeEmpty)
 			})
+		})
+	})
+}
+
+func TestBundlesEnableRespectsTheVaultLock(t *testing.T) {
+	Convey("Given a cancelled context", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		_, err := f.engine.BundlesEnable(ctx, "claude")
+
+		Convey("Then it refuses to touch the vault", func() {
+			So(err, ShouldBeError)
+
+			st, loadErr := state.Load(f.vault.StatePath())
+			So(loadErr, ShouldBeNil)
+			So(st.Bundles, ShouldBeEmpty)
 		})
 	})
 }

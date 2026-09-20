@@ -112,6 +112,21 @@ func TestCheckStates(t *testing.T) {
 				})
 			})
 		})
+
+		Convey("Given a sh.brew-managed unit", t, func() {
+			home := t.TempDir()
+			writeUnit(t, daemon.UnitPath(home, "sh.brew.beadle"))
+
+			status, err := daemon.Check(home, daemon.DefaultLabel, loaded)
+
+			Convey("When it is checked", func() {
+				Convey("Then it counts as installed and loaded", func() {
+					So(err, ShouldBeNil)
+					So(status.Installed, ShouldBeTrue)
+					So(status.Loaded, ShouldBeTrue)
+				})
+			})
+		})
 	}
 }
 

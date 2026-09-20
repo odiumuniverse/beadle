@@ -54,7 +54,7 @@ func Check(home, label string, run secret.Runner) (Status, error) {
 
 func brewCandidates() []string {
 	if runtime.GOOS == osDarwin {
-		return []string{brewLabel}
+		return []string{brewLabel, brewShLabel}
 	}
 
 	return nil
