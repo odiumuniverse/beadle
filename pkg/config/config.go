@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
@@ -84,12 +85,13 @@ const (
 )
 
 type Config struct {
-	Version     int              `json:"version"`
-	Agents      map[string]Agent `json:"agents,omitempty"`
-	Kinds       map[kind.ID]Mode `json:"kinds,omitempty"`
-	Permissions string           `json:"permissions,omitempty"`
-	History     string           `json:"history,omitempty"`
-	Secrets     string           `json:"secrets,omitempty"`
+	Version       int              `json:"version"`
+	Agents        map[string]Agent `json:"agents,omitempty"`
+	Kinds         map[kind.ID]Mode `json:"kinds,omitempty"`
+	Permissions   string           `json:"permissions,omitempty"`
+	History       string           `json:"history,omitempty"`
+	Secrets       string           `json:"secrets,omitempty"`
+	ApprovedHooks []string         `json:"approved_hooks,omitempty"`
 }
 
 func (c *Config) KindEnabled(k kind.ID) bool {
@@ -300,4 +302,25 @@ func (c *Config) UnsetPluginPin(agentID, key string) {
 	}
 
 	c.Agents[agentID] = agent
+}
+
+func (c *Config) HookApproved(name string) bool {
+	return slices.Contains(c.ApprovedHooks, name)
+}
+
+func (c *Config) ApproveHook(name string) {
+	if c.HookApproved(name) {
+		return
+	}
+
+	c.ApprovedHooks = append(c.ApprovedHooks, name)
+	slices.Sort(c.ApprovedHooks)
+}
+
+func (c *Config) RevokeHook(name string) {
+	c.ApprovedHooks = slices.DeleteFunc(c.ApprovedHooks, func(entry string) bool { return entry == name })
+
+	if len(c.ApprovedHooks) == 0 {
+		c.ApprovedHooks = nil
+	}
 }

@@ -63,6 +63,12 @@ manage alone.
   paths and `heal` follow it, and a version missing from the cache is reported
   instead of silently upgraded. *Why:* an upgrade can break a plugin's skills
   or MCP servers mid-task.
+- **Native bundles and hooks** — approved lifecycle hooks and the vault canon
+  are rendered into native host bundles (a Claude marketplace plugin, a Gemini
+  extension, an Antigravity plugin) with content-hash versions; registration
+  goes through the host CLIs when they exist, otherwise you get exact
+  instructions. beadle writes hook files but never runs them. *Why:* native
+  plugins survive upgrades and keep hooks in one audited place.
 - **Project scope** — opt-in per repository: `.mcp.json`, `.cursor/mcp.json`,
   `.cursor/rules/*.mdc`, `.agents/mcp_config.json`, `AGENTS.md`, `GEMINI.md`.
   The project identity comes from the git origin, so clones and worktrees
@@ -150,6 +156,8 @@ beadle daemon install                         # launchd (macOS) / systemd user u
 | `watch` / `daemon` | background sync, autostart service |
 | `secrets list\|set\|rm\|prune\|migrate` | credential values; never printed |
 | `plugins pins\|pin\|unpin` | per-agent plugin version pins |
+| `hooks list\|add\|rm\|approve\|revoke` | lifecycle hooks canon (never executed by beadle) |
+| `bundles status\|enable\|disable` | native host bundles and their registration |
 | `project status\|enable <file>\|disable <file>\|forget <file>` | per-repository project scope; nothing happens without an enabled policy |
 
 Global flags: `--vault` (default `~/.beadle`, or `$BEADLE_HOME`), `--verbose`,

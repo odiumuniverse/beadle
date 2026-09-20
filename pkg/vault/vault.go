@@ -26,6 +26,7 @@ state.json
 objects/
 conflicts/
 plugins/
+bundles/
 # project rules stay out of git until the U-12 secret gate lands
 projects/
 `
@@ -36,7 +37,9 @@ const (
 )
 
 var dirs = []string{
+	"bundles",
 	"conflicts",
+	"hooks",
 	"mcp",
 	"memory",
 	"objects",
@@ -132,6 +135,14 @@ func (v *Vault) PluginsDir() string {
 
 func (v *Vault) PluginsLedgerPath() string {
 	return filepath.Join(v.PluginsDir(), "ledger.json")
+}
+
+func (v *Vault) HooksPath() string {
+	return filepath.Join(v.root, "hooks", "hooks.json")
+}
+
+func (v *Vault) BundlesDir() string {
+	return filepath.Join(v.root, "bundles")
 }
 
 func (v *Vault) Initialized() bool {

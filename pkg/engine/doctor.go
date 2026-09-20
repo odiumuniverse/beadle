@@ -87,6 +87,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.pluginPinIssues(active)...)
 	issues = append(issues, e.pluginMigrationIssues(ctx, ledger)...)
 	issues = append(issues, e.farmPresentationIssues(active, ledger)...)
+	issues = append(issues, e.bundleIssues()...)
 	issues = append(issues, e.digestIssues(active, st)...)
 	issues = append(issues, e.memorySecretIssues()...)
 

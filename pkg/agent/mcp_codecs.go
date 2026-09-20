@@ -2,9 +2,13 @@ package agent
 
 import (
 	"cmp"
+	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 
+	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/mcp"
 )
 
@@ -300,4 +304,31 @@ var antigravityMCP = mcpCodec{
 
 		return entry
 	},
+}
+
+var bundleMCPCodecs = map[string]mcpCodec{
+	ClaudeCodeID:     claudeMCP,
+	GeminiCLIID:      geminiMCP,
+	AntigravityCLIID: antigravityMCP,
+}
+
+// EncodeMCPServers renders canonical server items in the agent's MCP dialect.
+func EncodeMCPServers(agentID string, servers kind.Items) (map[string]any, error) {
+	codec, ok := bundleMCPCodecs[agentID]
+	if !ok {
+		return nil, fmt.Errorf("agent %q has no MCP dialect for bundles", agentID)
+	}
+
+	out := make(map[string]any, len(servers))
+
+	for _, name := range slices.Sorted(maps.Keys(servers)) {
+		server, err := mcp.Decode(servers[name])
+		if err != nil {
+			return nil, fmt.Errorf("server %s: %w", name, err)
+		}
+
+		out[name] = codec.encode(server)
+	}
+
+	return out, nil
 }

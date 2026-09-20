@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/odiumuniverse/beadle/pkg/cas"
+	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 )
@@ -77,6 +78,14 @@ type Drift struct {
 	Last  time.Time `json:"last"`
 }
 
+// BundleState records one host's native bundle registration.
+type BundleState struct {
+	Enabled    bool                    `json:"enabled"`
+	Version    string                  `json:"version,omitempty"`
+	Registered bool                    `json:"registered,omitempty"`
+	SavedModes map[kind.ID]config.Mode `json:"saved_modes,omitempty"`
+}
+
 type State struct {
 	Version   int                         `json:"version"`
 	Bases     map[kind.ID]map[string]Base `json:"bases,omitempty"`
@@ -84,6 +93,7 @@ type State struct {
 	Snapshots map[kind.ID][]Snapshot      `json:"snapshots,omitempty"`
 	Renders   map[string]Render           `json:"renders,omitempty"`
 	Drift     map[string]Drift            `json:"drift,omitempty"`
+	Bundles   map[string]BundleState      `json:"bundles,omitempty"`
 }
 
 func New() *State {
@@ -93,6 +103,7 @@ func New() *State {
 		Snapshots: map[kind.ID][]Snapshot{},
 		Renders:   map[string]Render{},
 		Drift:     map[string]Drift{},
+		Bundles:   map[string]BundleState{},
 	}
 }
 
@@ -117,6 +128,10 @@ func Load(path string) (*State, error) {
 
 	if st.Bases == nil {
 		st.Bases = map[kind.ID]map[string]Base{}
+	}
+
+	if st.Bundles == nil {
+		st.Bundles = map[string]BundleState{}
 	}
 
 	if st.Snapshots == nil {

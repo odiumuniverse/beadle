@@ -79,6 +79,7 @@ type Report struct {
 	Plugins   []PluginResult   `json:"plugins,omitempty"`
 	Farm      []FarmResult     `json:"farm,omitempty"`
 	Digest    []DigestResult   `json:"digest,omitempty"`
+	Bundles   []BundleResult   `json:"bundles,omitempty"`
 	Warnings  []string         `json:"warnings,omitempty"`
 }
 

@@ -150,6 +150,8 @@ func (e *Engine) sync(ctx context.Context, opts SyncOptions) (*Report, error) {
 		report.Kinds = append(report.Kinds, e.syncKind(ctx, spec, active, st, opts))
 	}
 
+	e.refreshBundles(st, report, opts)
+
 	e.syncDigest(ctx, report, active, st, opts)
 
 	report.Conflicts = st.OpenConflicts()
