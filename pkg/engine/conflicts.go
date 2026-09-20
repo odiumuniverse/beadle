@@ -26,6 +26,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/mcp"
 	"github.com/odiumuniverse/beadle/pkg/permission"
+	"github.com/odiumuniverse/beadle/pkg/rulings"
 	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
@@ -263,34 +264,17 @@ func (e *Engine) Resolve(ctx context.Context, ids []string, res Resolution) (*Re
 
 	now := e.now().UTC()
 
-	var resolved []string
+	ledger := e.loadRulings()
 
-	var refusals []state.Refusal
+	out, err := e.resolveAll(st, ledger, ids, res, now)
+	if err != nil {
+		return nil, err
+	}
 
-	for _, id := range ids {
-		c, err := st.Conflict(id)
-		if err != nil {
-			refusals = append(refusals, e.recordUnknownRefusal(st, now, id, refusalCode(err.Error()), err.Error()))
-
-			continue
+	if out.dirty {
+		if err := e.saveLedger(ledger); err != nil {
+			return nil, err
 		}
-
-		err = e.resolveConflict(st, c, res)
-		if err != nil {
-			if refused, ok := errors.AsType[refusalError](err); ok {
-				refusals = append(refusals, e.recordRefusal(st, now, c, refused.code, refused.message))
-
-				continue
-			}
-
-			if saveErr := st.Save(e.vault.StatePath()); saveErr != nil {
-				return nil, saveErr
-			}
-
-			return nil, fmt.Errorf("resolve %s: %w", c.ID(), err)
-		}
-
-		resolved = append(resolved, c.ID())
 	}
 
 	if err := st.Save(e.vault.StatePath()); err != nil {
@@ -302,10 +286,58 @@ func (e *Engine) Resolve(ctx context.Context, ids []string, res Resolution) (*Re
 		return nil, err
 	}
 
-	report.Resolved = resolved
-	report.Refusals = refusals
+	report.Resolved = out.resolved
+	report.Refusals = out.refusals
+	report.RulingsDemoted = append(report.RulingsDemoted, out.demotions...)
 
 	return report, nil
+}
+
+type resolveOutcome struct {
+	resolved  []string
+	refusals  []state.Refusal
+	demotions []RulingEvent
+	dirty     bool
+}
+
+func (e *Engine) resolveAll(st *state.State, ledger *rulings.Ledger, ids []string, res Resolution, now time.Time) (resolveOutcome, error) {
+	var out resolveOutcome
+
+	for _, id := range ids {
+		c, err := st.Conflict(id)
+		if err != nil {
+			out.refusals = append(out.refusals, e.recordUnknownRefusal(st, now, id, refusalCode(err.Error()), err.Error()))
+
+			continue
+		}
+
+		if err := e.resolveConflict(st, c, res); err != nil {
+			if refused, ok := errors.AsType[refusalError](err); ok {
+				out.refusals = append(out.refusals, e.recordRefusal(st, now, c, refused.code, refused.message))
+
+				continue
+			}
+
+			if saveErr := st.Save(e.vault.StatePath()); saveErr != nil {
+				return out, saveErr
+			}
+
+			return out, fmt.Errorf("resolve %s: %w", c.ID(), err)
+		}
+
+		updated, demoted := e.updateRulingAfterResolve(ledger, c, res, now)
+		if updated {
+			out.dirty = true
+		}
+
+		if demoted != nil {
+			out.demotions = append(out.demotions, *demoted)
+		}
+
+		out.resolved = append(out.resolved, c.ID())
+	}
+
+	return out, nil
 }
 
 func (e *Engine) recordRefusal(st *state.State, at time.Time, c state.Conflict, code, message string) state.Refusal {

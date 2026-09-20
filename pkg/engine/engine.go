@@ -21,6 +21,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/lock"
 	"github.com/odiumuniverse/beadle/pkg/memory"
 	proj "github.com/odiumuniverse/beadle/pkg/project"
+	"github.com/odiumuniverse/beadle/pkg/rulings"
 	"github.com/odiumuniverse/beadle/pkg/secret"
 	"github.com/odiumuniverse/beadle/pkg/state"
 	"github.com/odiumuniverse/beadle/pkg/vault"
@@ -41,6 +42,8 @@ type Engine struct {
 	cwd          string
 	policy       proj.Policy
 	policyLoaded bool
+	rulings      *rulings.Ledger
+	rulingsDirty bool
 }
 
 type Option func(*Engine)
@@ -137,6 +140,7 @@ func (e *Engine) sync(ctx context.Context, opts SyncOptions) (*Report, error) {
 
 	report := &Report{DryRun: opts.DryRun}
 	e.warnKeyring(report)
+	e.beginRulings(opts)
 
 	if !opts.DryRun {
 		e.syncPluginSurfaces(ctx, report, active, opts)
@@ -150,6 +154,8 @@ func (e *Engine) sync(ctx context.Context, opts SyncOptions) (*Report, error) {
 		report.Kinds = append(report.Kinds, e.syncKind(ctx, spec, active, st, opts))
 	}
 
+	e.liftRulings(report)
+
 	e.refreshBundles(st, report, opts)
 
 	e.syncDigest(ctx, report, active, st, opts)
@@ -160,12 +166,20 @@ func (e *Engine) sync(ctx context.Context, opts SyncOptions) (*Report, error) {
 		return report, nil
 	}
 
+	return e.commitSync(ctx, st, report, opts)
+}
+
+func (e *Engine) commitSync(ctx context.Context, st *state.State, report *Report, opts SyncOptions) (*Report, error) {
 	if err := e.secrets.Save(); err != nil {
 		return report, err
 	}
 
 	if err := st.Save(e.vault.StatePath()); err != nil {
 		return report, err
+	}
+
+	if err := e.finishRulings(report); err != nil {
+		report.Warnings = append(report.Warnings, "rulings: "+err.Error())
 	}
 
 	if err := e.writeConflictFiles(st); err != nil {

@@ -13,6 +13,8 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/cas"
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/mcp"
+	"github.com/odiumuniverse/beadle/pkg/rulings"
 	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
@@ -45,6 +47,8 @@ func (e *Engine) syncKind(ctx context.Context, spec kind.Spec, agents []*agent.A
 
 		return report
 	}
+
+	e.noteMCPCanonIssues(spec, opts, vaultItems, &report)
 
 	if !e.prepareProjects(spec, &report) {
 		return report
@@ -251,6 +255,11 @@ func (e *Engine) readViews(
 				continue
 			}
 
+			for _, path := range slices.Sorted(maps.Values(v.snap.Unreadable)) {
+				report.Warnings = append(report.Warnings, fmt.Sprintf(
+					"%s/%s: broken symlink %s; the item is left untouched", a.ID, spec.ID, path))
+			}
+
 			if v.snap.Present {
 				realPath := agent.RealPath(surface.Path())
 				if owner, taken := owners[realPath]; taken {
@@ -339,6 +348,10 @@ func (e *Engine) pull(spec kind.Spec, v *view, vaultItems kind.Items, owned map[
 			continue
 		}
 
+		if _, skip := v.snap.Unreadable[spec.Group(key)]; skip {
+			continue
+		}
+
 		if e.pullKey(spec, v, proj, vaultItems, key, report) {
 			deleted = append(deleted, key)
 		}
@@ -364,7 +377,7 @@ func (e *Engine) pullKey(spec kind.Spec, v *view, proj projection, vaultItems ki
 		case local == nil:
 			return !spec.Singleton
 		case base == nil && proj.hides(key):
-			e.addConflict(spec, v, proj, key, state.ReasonHidden, base, vaultItems[key], local)
+			e.addConflict(spec, v, proj, vaultItems, key, state.ReasonHidden, base, vaultItems[key], local, report)
 		default:
 			adopt(spec, proj, vaultItems, v.agent.ID, key, local, report)
 		}
@@ -372,7 +385,7 @@ func (e *Engine) pullKey(spec kind.Spec, v *view, proj projection, vaultItems ki
 		if merged, ok := spec.Merge(base, current, local); ok {
 			adopt(spec, proj, vaultItems, v.agent.ID, key, merged, report)
 		} else {
-			e.addConflict(spec, v, proj, key, reasonOf(base, current, local), base, current, local)
+			e.addConflict(spec, v, proj, vaultItems, key, reasonOf(base, current, local), base, current, local, report)
 		}
 	}
 
@@ -386,7 +399,7 @@ func (e *Engine) pullDeletions(spec kind.Spec, v *view, proj projection, vaultIt
 
 	if massDeletion(spec, v.base, deleted) {
 		for _, key := range deleted {
-			e.addConflict(spec, v, proj, key, state.ReasonMassDelete, v.base[key], proj.items[key], nil)
+			e.addConflict(spec, v, proj, vaultItems, key, state.ReasonMassDelete, v.base[key], proj.items[key], nil, report)
 		}
 
 		return
@@ -420,7 +433,7 @@ func adopt(spec kind.Spec, proj projection, vaultItems kind.Items, agentID, key 
 	}
 }
 
-func (e *Engine) addConflict(spec kind.Spec, v *view, proj projection, key, reason string, base, current, local []byte) {
+func (e *Engine) addConflict(spec kind.Spec, v *view, proj projection, vaultItems kind.Items, key, reason string, base, current, local []byte, report *KindReport) {
 	c := state.Conflict{
 		Kind:   spec.ID,
 		Agent:  v.agent.ID,
@@ -436,6 +449,12 @@ func (e *Engine) addConflict(spec kind.Spec, v *view, proj projection, key, reas
 		c.VaultKey = targets[0]
 	}
 
+	if e.applyRuling(spec, v, proj, vaultItems, c, base, current, local, report) {
+		return
+	}
+
+	e.observeRuling(c, base, current, local, report)
+
 	v.conflicts = append(v.conflicts, c)
 	v.holds[spec.Group(key)] = true
 
@@ -444,6 +463,62 @@ func (e *Engine) addConflict(spec kind.Spec, v *view, proj projection, key, reas
 			v.blobs = append(v.blobs, blob)
 		}
 	}
+}
+
+func (e *Engine) applyRuling(
+	spec kind.Spec, v *view, proj projection, vaultItems kind.Items, c state.Conflict, base, current, local []byte, report *KindReport,
+) bool {
+	if e.rulings == nil {
+		return false
+	}
+
+	sig, err := e.signatureFor(c, base, current, local)
+	if err != nil {
+		return false
+	}
+
+	match := e.rulings.Match(sig)
+	if !match.Found || !match.Exact || match.Ruling.State != rulings.StateTrusted || sig.BlastRadius() {
+		return false
+	}
+
+	switch match.Ruling.Ruling {
+	case rulings.RulingTakeAgent:
+		adopt(spec, proj, vaultItems, v.agent.ID, c.Key, local, report)
+	case rulings.RulingTakeVault:
+	default:
+		return false
+	}
+
+	e.rulings.Applied(sig, e.now().UTC())
+
+	e.rulingsDirty = true
+
+	report.RulingsApplied = append(report.RulingsApplied, RulingEvent{Signature: sig, Ruling: match.Ruling.Ruling, Kind: c.Kind, Agent: c.Agent, Key: c.Key})
+
+	return true
+}
+
+func (e *Engine) observeRuling(c state.Conflict, base, current, local []byte, report *KindReport) {
+	if e.rulings == nil {
+		return
+	}
+
+	sig, err := e.signatureFor(c, base, current, local)
+	if err != nil {
+		return
+	}
+
+	if existing, ok := e.rulings.Get(sig); ok {
+		if existing.State == rulings.StateSuggested {
+			report.RulingSuggestions = append(report.RulingSuggestions, RulingEvent{Signature: sig, Ruling: existing.Ruling, Kind: c.Kind, Agent: c.Agent, Key: c.Key})
+		}
+
+		return
+	}
+
+	e.rulings.Observe(sig, "", e.now().UTC())
+	e.rulingsDirty = true
 }
 
 func (e *Engine) pushView(
@@ -459,6 +534,7 @@ func (e *Engine) pushView(
 
 	desired := e.desired(spec, v, vaultItems)
 
+	desired = dropInvalidMCP(spec, desired)
 	desired = e.suppressKept(spec, v, desired, report)
 
 	// The ref-form comparison alone cannot see the secrets mode: both the
@@ -485,7 +561,8 @@ func (e *Engine) pushView(
 	}
 
 	if !v.snap.Present && !v.surface.Traits().Creatable {
-		single.Action, single.Note = ActionSkipped, "no config file to write into"
+		single.Action = ActionSkipped
+		single.Note = "no config file to write into; create " + v.surface.Path() + " first"
 
 		return v.snap.Items, single
 	}
@@ -504,6 +581,44 @@ func (e *Engine) pushView(
 	}
 
 	return actual, single
+}
+
+func (e *Engine) noteMCPCanonIssues(spec kind.Spec, opts SyncOptions, items kind.Items, report *KindReport) {
+	if spec.ID != kind.MCP || opts.Direction == config.ModePull {
+		return
+	}
+
+	if issues := mcpCanonIssues(items); len(issues) > 0 {
+		report.Err = e.vault.ServersPath() + ": " + strings.Join(issues, "; ")
+	}
+}
+
+func mcpCanonIssues(items kind.Items) []string {
+	var issues []string
+
+	for _, name := range slices.Sorted(maps.Keys(items)) {
+		if _, err := mcp.Decode(items[name]); err != nil {
+			issues = append(issues, fmt.Sprintf("server %s: %v", name, err))
+		}
+	}
+
+	return issues
+}
+
+func dropInvalidMCP(spec kind.Spec, items kind.Items) kind.Items {
+	if spec.ID != kind.MCP {
+		return items
+	}
+
+	out := make(kind.Items, len(items))
+
+	for name, data := range items {
+		if _, err := mcp.Decode(data); err == nil {
+			out[name] = data
+		}
+	}
+
+	return out
 }
 
 func rememberedCurrent(spec kind.Spec, proj projection, vaultItems kind.Items, key string, base, local, current []byte) []byte {
@@ -609,7 +724,7 @@ func (e *Engine) write(ctx context.Context, spec kind.Spec, v *view, desired kin
 
 	if err := v.surface.Write(ctx, out); err != nil {
 		if errors.Is(err, agent.ErrNotConfigured) {
-			return v.snap.Items, ActionSkipped, "no config file to write into"
+			return v.snap.Items, ActionSkipped, "no config file to write into; create " + v.surface.Path() + " first"
 		}
 
 		return v.snap.Items, ActionError, err.Error()

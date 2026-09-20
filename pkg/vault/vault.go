@@ -47,6 +47,7 @@ var dirs = []string{
 	"plugins",
 	"projects",
 	"rules",
+	"rulings",
 	"skills",
 	"state",
 }
@@ -144,6 +145,16 @@ func (v *Vault) HooksPath() string {
 func (v *Vault) BundlesDir() string {
 	return filepath.Join(v.root, "bundles")
 }
+
+func (v *Vault) RulingsDir() string {
+	return filepath.Join(v.root, "rulings")
+}
+
+func (v *Vault) RulingsPath() string {
+	return filepath.Join(v.RulingsDir(), rulesFilename)
+}
+
+const rulesFilename = "rulings.json"
 
 func (v *Vault) Initialized() bool {
 	_, err := os.Stat(v.ConfigPath())

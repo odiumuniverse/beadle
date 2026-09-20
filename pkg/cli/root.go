@@ -58,6 +58,7 @@ func newRootCmd(opts Options) *cobra.Command {
 		a.newDiffCmd(),
 		a.newConflictsCmd(),
 		a.newResolveCmd(),
+		a.newRulingsCmd(),
 		a.newDoctorCmd(),
 		a.newHistoryCmd(),
 		a.newRestoreCmd(),

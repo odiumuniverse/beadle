@@ -56,6 +56,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.checkObjects(st)...)
 	issues = append(issues, conflictIssues(st)...)
 	issues = append(issues, refusalIssues(st, e.now())...)
+	issues = append(issues, e.rulingIssues()...)
 
 	active, err := e.activeAgents(ctx)
 	if err != nil {
@@ -91,8 +92,28 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.bundleIssues()...)
 	issues = append(issues, e.digestIssues(active, st)...)
 	issues = append(issues, e.memorySecretIssues()...)
+	issues = append(issues, e.rulesSecretIssues()...)
 
 	return issues, nil
+}
+
+func (e *Engine) rulesSecretIssues() []Issue {
+	data, present, err := readOptional(e.vault.RulesPath())
+	if err != nil || !present {
+		return nil
+	}
+
+	hits := secret.ScanText(data)
+	if len(hits) == 0 {
+		return nil
+	}
+
+	return []Issue{{
+		Severity: SeverityWarn, Kind: kind.Rules,
+		Message: fmt.Sprintf(
+			"rules canon %s holds %d secret-like line(s); the secret gate covers mcp, memory and project files only — keep tokens out of rules",
+			e.vault.RulesPath(), len(hits)),
+	}}
 }
 
 func (e *Engine) memorySecretIssues() []Issue {
@@ -177,7 +198,7 @@ func (e *Engine) digestTargetIssues(st *state.State, target projectTarget, vault
 	notes := digestNotesFor(vaultItems, target.notesSlug)
 
 	if !present {
-		return missingDigestIssue(target, path, len(notes) > 0)
+		return e.missingDigestIssue(target, path, len(notes) > 0)
 	}
 
 	_, fence, found, err := digest.Strip(data)
@@ -186,7 +207,7 @@ func (e *Engine) digestTargetIssues(st *state.State, target projectTarget, vault
 	}
 
 	if !found {
-		return missingDigestIssue(target, path, len(notes) > 0)
+		return e.missingDigestIssue(target, path, len(notes) > 0)
 	}
 
 	stored, hasStored := st.Renders[path]
@@ -217,15 +238,38 @@ func (e *Engine) digestTargetIssues(st *state.State, target projectTarget, vault
 	return nil
 }
 
-func missingDigestIssue(target projectTarget, path string, hasNotes bool) []Issue {
+func (e *Engine) missingDigestIssue(target projectTarget, path string, hasNotes bool) []Issue {
 	if !hasNotes {
 		return nil
 	}
 
+	message := fmt.Sprintf("no memory digest in %s; run beadle sync", path)
+
+	if !e.digestPublishable(target) {
+		message = fmt.Sprintf(
+			"no memory digest in %s; the file is not publishable (not gitignored), so beadle sync will not write it (override with beadle project enable --allow-secrets)",
+			path)
+	}
+
 	return []Issue{{
 		Severity: SeverityInfo, Kind: kind.Projects, Agent: target.agent.ID,
-		Message: fmt.Sprintf("no memory digest in %s; run beadle sync", path),
+		Message: message,
 	}}
+}
+
+func (e *Engine) digestPublishable(target projectTarget) bool {
+	policy, err := e.projectPolicy()
+	if err != nil {
+		return false
+	}
+
+	if policy.AllowsSecrets(target.rel) {
+		return true
+	}
+
+	publishable, err := e.projectPublishable(target.rel)
+
+	return err == nil && publishable
 }
 
 func (e *Engine) checkVault() []Issue {

@@ -51,6 +51,8 @@ func printReport(w io.Writer, report *engine.Report) {
 		fmt.Fprintf(w, "\n%d open conflict(s): review with `beadle conflicts`, settle with `beadle resolve <id> --take vault|agent`\n", n)
 	}
 
+	printRulingEvents(w, report)
+
 	for _, warning := range report.Warnings {
 		fmt.Fprintf(w, "warning: %s\n", warning)
 	}
@@ -223,5 +225,19 @@ func opSymbol(op string) string {
 		return "-"
 	default:
 		return "~"
+	}
+}
+
+func printRulingEvents(w io.Writer, report *engine.Report) {
+	for _, event := range report.RulingsApplied {
+		fmt.Fprintf(w, "ruling applied: %s %s on %s (%s)\n", event.Ruling, event.Signature.Hash(), event.Key, event.Signature.Scope)
+	}
+
+	for _, event := range report.RulingSuggestions {
+		fmt.Fprintf(w, "ruling suggests %s for %s (run `beadle rulings show %s`)\n", event.Ruling, event.Signature.Target, event.Signature.Hash())
+	}
+
+	for _, event := range report.RulingsDemoted {
+		fmt.Fprintf(w, "ruling demoted: %s for %s was resolved against (run `beadle rulings show %s`)\n", event.Ruling, event.Signature.Target, event.Signature.Hash())
 	}
 }

@@ -97,6 +97,31 @@ func TestMemorySyncRoundTrip(t *testing.T) {
 	})
 }
 
+func TestMemorySecretGateKeepsOrdinaryText(t *testing.T) {
+	Convey("Given a memory note with dates, a commit trailer and a session id", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		note := "---\nname: db-notes\ndescription: schema notes\n---\n" +
+			"Audit columns: authorizedBy = \"user-42\", authorizedAt = \"2026-01-01\".\n" +
+			"Commit trailer: Co-Authored-By: Someone <x@example.com>\n" +
+			"Session field: originSessionId = \"9f1c2d3e-aaaa-bbbb-cccc-ddddeeeeffff\"\n"
+
+		write(t, claudeMemory(f, "-Users-a", "note.md"), note)
+
+		Convey("When sync runs", func() {
+			f.sync(t)
+
+			Convey("Then the canon keeps the text verbatim and no secret is stored", func() {
+				So(read(t, vaultMemory(f, "-Users-a", "note.md")), ShouldEqual, note)
+				So(f.engine.Secrets().Names(), ShouldBeEmpty)
+			})
+		})
+	})
+}
+
 func TestMemoryCanonForeignEntriesSurvive(t *testing.T) {
 	Convey("Given foreign canon entries and a symlinked slug", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")

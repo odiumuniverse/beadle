@@ -494,6 +494,42 @@ func TestProjectForgetRemovesFenceOnlyFile(t *testing.T) {
 	})
 }
 
+func TestDoctorDigestAdviceRespectsPublishability(t *testing.T) {
+	Convey("Given project notes and a git-tracked project file", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		repo := newRepo(t)
+		f.useRepo(t, repo)
+		f.enableProject(t, "AGENTS.md")
+		write(t, repoFile(repo), "# rules\n")
+		writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
+
+		Convey("When the file is not publishable", func() {
+			issues, err := f.engine.Doctor(t.Context())
+			So(err, ShouldBeNil)
+
+			Convey("Then the advice explains why sync will not write it", func() {
+				So(hasIssue(issues, engine.SeverityInfo, "not publishable"), ShouldBeTrue)
+				So(hasIssue(issues, engine.SeverityInfo, "will not write it"), ShouldBeTrue)
+			})
+		})
+
+		Convey("When the file is gitignored", func() {
+			ignoreInRepo(t, repo, "AGENTS.md")
+
+			issues, err := f.engine.Doctor(t.Context())
+			So(err, ShouldBeNil)
+
+			Convey("Then the advice is a plain sync", func() {
+				So(hasIssue(issues, engine.SeverityInfo, "run beadle sync"), ShouldBeTrue)
+				So(hasIssue(issues, engine.SeverityInfo, "not publishable"), ShouldBeFalse)
+			})
+		})
+	})
+}
+
 func TestProjectHardeningRefusesLinks(t *testing.T) {
 	Convey("Given a project file replaced by a symlink or hard link", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")

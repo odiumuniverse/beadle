@@ -56,6 +56,9 @@ type KindReport struct {
 	Inbox        []InboxResult `json:"inbox,omitempty"`
 	Warnings     []string      `json:"warnings,omitempty"`
 	Err          string        `json:"error,omitempty"`
+
+	RulingsApplied    []RulingEvent `json:"rulings_applied,omitempty"`
+	RulingSuggestions []RulingEvent `json:"ruling_suggestions,omitempty"`
 }
 
 func (r *KindReport) add(result AgentResult) {
@@ -83,6 +86,10 @@ type Report struct {
 	Warnings  []string         `json:"warnings,omitempty"`
 	Resolved  []string         `json:"resolved,omitempty"`
 	Refusals  []state.Refusal  `json:"refusals,omitempty"`
+
+	RulingsApplied    []RulingEvent `json:"rulings_applied,omitempty"`
+	RulingSuggestions []RulingEvent `json:"ruling_suggestions,omitempty"`
+	RulingsDemoted    []RulingEvent `json:"rulings_demoted,omitempty"`
 }
 
 func (r *Report) Kind(k kind.ID) *KindReport {

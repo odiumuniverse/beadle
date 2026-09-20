@@ -116,14 +116,17 @@ func (f *fixture) conflict(t *testing.T, k kind.ID, agentID string) state.Confli
 	return conflicts[0]
 }
 
-func (f *fixture) resolve(t *testing.T, k kind.ID, agentID string, take engine.Take) {
+func (f *fixture) resolve(t *testing.T, k kind.ID, agentID string, take engine.Take) *engine.Report {
 	t.Helper()
 
 	c := f.conflict(t, k, agentID)
 
-	if _, err := f.engine.Resolve(t.Context(), []string{c.ID()}, engine.Resolution{Take: take}); err != nil {
+	report, err := f.engine.Resolve(t.Context(), []string{c.ID()}, engine.Resolution{Take: take})
+	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
+
+	return report
 }
 
 func (f *fixture) servers(t *testing.T) mcp.Servers {
@@ -624,6 +627,42 @@ func TestDeletedSkillStaysDeleted(t *testing.T) {
 			Convey("Then it does not come back", func() {
 				So(errors.Is(claudeErr, fs.ErrNotExist), ShouldBeTrue)
 				So(errors.Is(vaultErr, fs.ErrNotExist), ShouldBeTrue)
+			})
+		})
+	})
+}
+
+func TestSkillsBrokenSymlinkNeverDeletesCanon(t *testing.T) {
+	Convey("Given a canonical skill and a broken symlink in its agent dir", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		write(t, f.claudeSkill("beta"), "# beta\n")
+		write(t, f.openCodeSkill("beta"), "# beta\n")
+		f.sync(t)
+
+		So(read(t, f.vaultSkill("beta")), ShouldEqual, "# beta\n")
+
+		So(os.RemoveAll(filepath.Dir(f.claudeSkill("beta"))), ShouldBeNil)
+		So(os.Symlink(filepath.Join(f.home, "missing-beta"), filepath.Dir(f.claudeSkill("beta"))), ShouldBeNil)
+
+		Convey("When sync runs", func() {
+			report, err := f.engine.Sync(t.Context(), engine.SyncOptions{})
+			So(err, ShouldBeNil)
+
+			Convey("Then it skips the unreadable skill with a warning and keeps the canon", func() {
+				So(report.Errors(), ShouldBeEmpty)
+				So(strings.Join(report.Kind(kind.Skills).Warnings, "\n"), ShouldContainSubstring, "broken symlink")
+				So(report.ConflictsOf(kind.Skills), ShouldBeEmpty)
+
+				So(read(t, f.vaultSkill("beta")), ShouldEqual, "# beta\n")
+				So(read(t, f.openCodeSkill("beta")), ShouldEqual, "# beta\n")
+
+				info, statErr := os.Lstat(filepath.Dir(f.claudeSkill("beta")))
+				So(statErr, ShouldBeNil)
+				So(info.Mode()&os.ModeSymlink, ShouldNotBeZeroValue)
 			})
 		})
 	})
@@ -1189,6 +1228,27 @@ func TestLockSerializesProcesses(t *testing.T) {
 	})
 }
 
+func TestDoctorFlagsSecretLikeRules(t *testing.T) {
+	Convey("Given a rules canon holding a token literal", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		write(t, f.vault.RulesPath(), "deploy token: ghp_abcdefghijklmnopqrstuvwxyz012345\n")
+
+		Convey("When doctor runs", func() {
+			issues, err := f.engine.Doctor(t.Context())
+			So(err, ShouldBeNil)
+
+			Convey("Then the rules gap is reported", func() {
+				So(hasIssue(issues, engine.SeverityWarn, "gate covers mcp, memory and project files only"), ShouldBeTrue)
+				So(hasIssue(issues, engine.SeverityWarn, f.vault.RulesPath()), ShouldBeTrue)
+			})
+		})
+	})
+}
+
 func TestDoctor(t *testing.T) {
 	Convey("Given a synced fixture", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")
@@ -1328,6 +1388,135 @@ func TestSecretsExtractedFromLiteralAndPushedBack(t *testing.T) {
 				So(report.VaultChanged(), ShouldBeFalse)
 				So(report.Action(kind.MCP, agent.ClaudeCodeID), ShouldEqual, engine.ActionNoop)
 				So(report.Action(kind.MCP, agent.OpenCodeID), ShouldEqual, engine.ActionNoop)
+			})
+		})
+	})
+}
+
+func TestMCPBrokenCanonServerIsIsolated(t *testing.T) {
+	Convey("Given a canon with one undecodable and one good server", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.config.Enable(agent.CodexID)
+		f.emptyConfigs(t)
+
+		codexConfig := filepath.Join(f.home, ".codex", "config.toml")
+		write(t, codexConfig, "model = \"gpt\"\n")
+		write(t, f.vault.ServersPath(), `{"gh":{"type":"stdio","command":"gh-mcp"},"ok":{"transport":"stdio","command":["ok-mcp"]}}`)
+
+		Convey("When sync runs", func() {
+			report, err := f.engine.Sync(t.Context(), engine.SyncOptions{})
+			So(err, ShouldBeNil)
+
+			Convey("Then the good server is written and the broken one is reported once", func() {
+				errs := report.Errors()
+				So(errs, ShouldHaveLength, 1)
+				So(errs[0], ShouldContainSubstring, "server gh")
+				So(errs[0], ShouldContainSubstring, f.vault.ServersPath())
+				So(errs[0], ShouldNotContainSubstring, codexConfig)
+
+				result, ok := report.Kind(kind.MCP).Agent(agent.ClaudeCodeID)
+				So(ok, ShouldBeTrue)
+				So(result.Action, ShouldEqual, engine.ActionPushed)
+
+				So(read(t, f.claudeConfig()), ShouldContainSubstring, "ok-mcp")
+				So(read(t, f.claudeConfig()), ShouldNotContainSubstring, "gh-mcp")
+				So(read(t, codexConfig), ShouldContainSubstring, "ok-mcp")
+				So(read(t, f.vault.ServersPath()), ShouldContainSubstring, `"command":"gh-mcp"`)
+
+				again, err := f.engine.Sync(t.Context(), engine.SyncOptions{DryRun: true})
+				So(err, ShouldBeNil)
+				So(again.Errors(), ShouldHaveLength, 1)
+				So(again.Action(kind.MCP, agent.ClaudeCodeID), ShouldEqual, engine.ActionNoop)
+			})
+		})
+
+		Convey("When doctor runs", func() {
+			issues, err := f.engine.Doctor(t.Context())
+			So(err, ShouldBeNil)
+
+			Convey("Then the canon server is an error naming the canon path", func() {
+				So(hasIssue(issues, engine.SeverityError, "server gh"), ShouldBeTrue)
+				So(hasIssue(issues, engine.SeverityError, f.vault.ServersPath()), ShouldBeTrue)
+			})
+		})
+	})
+}
+
+func TestNonCreatableSurfaceSkipNamesTheFile(t *testing.T) {
+	Convey("Given a detected OpenCode without its config file", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		So(os.Remove(f.openCodeConfig()), ShouldBeNil)
+
+		write(t, f.vault.ServersPath(), `{"demo":{"transport":"stdio","command":["demo-mcp"]}}`)
+
+		Convey("When sync runs", func() {
+			report := f.sync(t)
+
+			result, ok := report.Kind(kind.MCP).Agent(agent.OpenCodeID)
+			So(ok, ShouldBeTrue)
+
+			Convey("Then the skip note names the missing file", func() {
+				So(result.Action, ShouldEqual, engine.ActionSkipped)
+				So(result.Note, ShouldContainSubstring, filepath.Join(f.home, ".config", "opencode", "opencode.json"))
+			})
+		})
+	})
+}
+
+func TestMCPSecretEnvKeyMismatchConvergesToNoop(t *testing.T) {
+	Convey("Given a canon ref whose name differs from the agent env key", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		f.engine.Secrets().Set("GH_TOKEN", "ghp_abcdefghijklmnopqrstuvwxyz012345")
+		So(f.engine.Secrets().Save(), ShouldBeNil)
+
+		write(t, f.vault.ServersPath(), `{"gh":{"transport":"stdio","command":["gh-mcp"],"env":{"GITHUB_TOKEN":"{secret:GH_TOKEN}"}}}`)
+
+		f.sync(t)
+
+		Convey("When it syncs again", func() {
+			report := f.sync(t)
+
+			Convey("Then it is a noop and the value keeps one name", func() {
+				So(report.Kind(kind.MCP).VaultChanged, ShouldBeFalse)
+				So(report.Action(kind.MCP, agent.ClaudeCodeID), ShouldEqual, engine.ActionNoop)
+				So(report.Action(kind.MCP, agent.OpenCodeID), ShouldEqual, engine.ActionNoop)
+				So(f.engine.Secrets().Names(), ShouldResemble, []string{"GH_TOKEN"})
+			})
+		})
+	})
+}
+
+func TestMCPSecretHeaderConvergesToNoop(t *testing.T) {
+	Convey("Given a remote canon server with a secret in headers", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		f.engine.Secrets().Set("X_API_KEY", "plain-secret-value-1234")
+		So(f.engine.Secrets().Save(), ShouldBeNil)
+
+		write(t, f.vault.ServersPath(), `{"docs":{"transport":"http","url":"https://d.example/mcp","headers":{"X-Api-Key":"{secret:X_API_KEY}"}}}`)
+
+		f.sync(t)
+
+		Convey("When it syncs again", func() {
+			report := f.sync(t)
+
+			Convey("Then it is a noop and the store is unchanged", func() {
+				So(report.Kind(kind.MCP).VaultChanged, ShouldBeFalse)
+				So(report.Action(kind.MCP, agent.ClaudeCodeID), ShouldEqual, engine.ActionNoop)
+				So(f.engine.Secrets().Names(), ShouldResemble, []string{"X_API_KEY"})
 			})
 		})
 	})
