@@ -419,11 +419,7 @@ func startsWithValueHint(value string) bool {
 }
 
 func keyHint(key string) bool {
-	normalized := strings.ToLower(strings.ReplaceAll(key, "-", "_"))
-
-	return slices.ContainsFunc(keyHints, func(hint string) bool {
-		return strings.Contains(normalized, hint)
-	})
+	return matchKeyHint(key)
 }
 
 func boundaryBefore(data []byte, at int) bool {

@@ -236,8 +236,9 @@ func TestResolveBinding(t *testing.T) {
 			out, err := gwsRun(t, "resolve", c.ID, "--from", resolved,
 				"--expect-base", "deadbeef", "--expect-vault", vault, "--expect-agent", agentHash)
 
-			Convey("Then the resolution is refused as stale and nothing is applied", func() {
-				So(err, ShouldBeNil)
+			Convey("Then the resolution is refused with a non-zero exit and nothing is applied", func() {
+				So(err, ShouldBeError)
+				So(err.Error(), ShouldContainSubstring, "refused")
 				So(out, ShouldContainSubstring, "refused "+c.ID+": stale-conflict")
 				So(gwsRead(t, filepath.Join(home, ".claude", "CLAUDE.md")), ShouldEqual, "# claude v2\n")
 				So(gwsConflictViews(t, "conflicts", "--json").Conflicts, ShouldHaveLength, 1)
@@ -245,8 +246,9 @@ func TestResolveBinding(t *testing.T) {
 				Convey("And the json report carries the refusal", func() {
 					jout, err := gwsRun(t, "resolve", c.ID, "--from", resolved,
 						"--expect-base", "deadbeef", "--expect-vault", vault, "--expect-agent", agentHash, "--json")
-					So(err, ShouldBeNil)
+					So(err, ShouldBeError)
 					So(jout, ShouldContainSubstring, `"code": "stale-conflict"`)
+					So(jout, ShouldContainSubstring, `"refusals": [`)
 				})
 
 				Convey("And doctor reports the recent refusal", func() {
@@ -268,7 +270,7 @@ func TestResolveBinding(t *testing.T) {
 				"--expect-base", base, "--expect-vault", vault, "--expect-agent", agentHash)
 
 			Convey("Then the stale agent hash is refused too", func() {
-				So(err, ShouldBeNil)
+				So(err, ShouldBeError)
 				So(out, ShouldContainSubstring, "stale-conflict")
 			})
 		})
@@ -308,7 +310,7 @@ func TestResolveStdinAndInvalidContent(t *testing.T) {
 			out, err := gwsRunIn(t, strings.NewReader("<<<<<<< vault\n# a\n"), args...)
 
 			Convey("Then it is refused as invalid-content", func() {
-				So(err, ShouldBeNil)
+				So(err, ShouldBeError)
 				So(out, ShouldContainSubstring, "invalid-content")
 				So(gwsConflictViews(t, "conflicts", "--json").Conflicts, ShouldHaveLength, 1)
 			})
@@ -345,7 +347,7 @@ func TestResolveStdinAndInvalidContent(t *testing.T) {
 			out, err := gwsRun(t, "resolve", "", "--take", "vault")
 
 			Convey("Then it is refused as ambiguous", func() {
-				So(err, ShouldBeNil)
+				So(err, ShouldBeError)
 				So(out, ShouldContainSubstring, "ambiguous")
 			})
 		})
@@ -354,7 +356,7 @@ func TestResolveStdinAndInvalidContent(t *testing.T) {
 			out, err := gwsRun(t, "resolve", "ffffffff", "--take", "vault")
 
 			Convey("Then it is refused as unknown-conflict", func() {
-				So(err, ShouldBeNil)
+				So(err, ShouldBeError)
 				So(out, ShouldContainSubstring, "unknown-conflict")
 			})
 		})
@@ -384,7 +386,7 @@ func TestResolveRiskyMCPCommand(t *testing.T) {
 			out, err := gwsRun(t, args...)
 
 			Convey("Then it is refused as risky-change", func() {
-				So(err, ShouldBeNil)
+				So(err, ShouldBeError)
 				So(out, ShouldContainSubstring, "risky-change")
 				So(gwsConflictViews(t, "conflicts", "--json").Conflicts, ShouldHaveLength, 1)
 			})
@@ -398,7 +400,7 @@ func TestResolveRiskyMCPCommand(t *testing.T) {
 			out, err := gwsRun(t, args...)
 
 			Convey("Then it is refused as invalid-content", func() {
-				So(err, ShouldBeNil)
+				So(err, ShouldBeError)
 				So(out, ShouldContainSubstring, "invalid-content")
 			})
 		})
@@ -480,7 +482,7 @@ func TestConflictsRefusalRedaction(t *testing.T) {
 				"--expect-base", string(c.Base), "--expect-vault", string(c.Vault), "--expect-agent", string(c.AgentHash))
 
 			Convey("Then the refusal is redacted", func() {
-				So(err, ShouldBeNil)
+				So(err, ShouldBeError)
 				So(out, ShouldContainSubstring, "invalid-content")
 				So(out, ShouldContainSubstring, "⟨secret:API_TOKEN⟩")
 				So(out, ShouldNotContainSubstring, "s3cr3t-value")
@@ -580,7 +582,7 @@ func TestResolveAllSkipsPermissions(t *testing.T) {
 				"--expect-base", string(permissions.Base), "--expect-vault", string(permissions.Vault), "--expect-agent", string(permissions.AgentHash))
 
 			Convey("Then it is refused as risky-change", func() {
-				So(err, ShouldBeNil)
+				So(err, ShouldBeError)
 				So(out, ShouldContainSubstring, "risky-change")
 			})
 		})

@@ -82,12 +82,23 @@ func (s *skillsSurface) Read(context.Context) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("read skills directory %s: %w", s.dir, err)
 	}
 
-	snap := Snapshot{Items: kind.Items{}, Present: true, ReadOnly: map[string]string{}}
+	snap := Snapshot{Items: kind.Items{}, Present: true, ReadOnly: map[string]string{}, Unreadable: map[string]string{}}
 
 	for _, entry := range entries {
 		name := entry.Name()
 		if !skill.ValidName(name) {
 			continue
+		}
+
+		if entry.Type()&fs.ModeSymlink != 0 {
+			path := filepath.Join(s.dir, name)
+
+			if _, err := filepath.EvalSymlinks(path); err != nil {
+				snap.ReadOnly[name] = "broken symlink: " + path
+				snap.Unreadable[name] = path
+
+				continue
+			}
 		}
 
 		root, reason, ok := s.skillRoot(entry)

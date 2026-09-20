@@ -86,13 +86,12 @@ func (a *app) daemonSpec() (daemon.Spec, error) {
 		binary = resolved
 	}
 
-	args := []string{"watch"}
-
-	if a.vaultPath != "" {
-		args = append(args, "--vault", a.vaultPath)
+	v, err := a.resolveVault()
+	if err != nil {
+		return daemon.Spec{}, err
 	}
 
-	spec := daemon.Spec{Binary: binary, Args: args, Home: home}
+	spec := daemon.Spec{Binary: binary, Args: []string{"watch", "--vault", v.Root()}, Home: home}
 
 	if runtime.GOOS == "darwin" {
 		spec.LogPath = filepath.Join(home, "Library", "Logs", "beadle.log")

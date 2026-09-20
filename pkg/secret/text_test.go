@@ -98,6 +98,25 @@ func TestScanTextKeyHints(t *testing.T) {
 	})
 }
 
+func TestScanTextOrdinaryText(t *testing.T) {
+	Convey("Given a note with dates, a commit trailer and a session id", t, func() {
+		text := []byte(`---
+name: db-notes
+description: schema notes
+---
+Audit columns: authorizedBy = "user-42", authorizedAt = "2026-01-01".
+Commit trailer: Co-Authored-By: Someone <x@example.com>
+Session field: originSessionId = "9f1c2d3e-aaaa-bbbb-cccc-ddddeeeeffff"
+`)
+
+		Convey("When it is scanned", func() {
+			Convey("Then nothing is treated as a secret", func() {
+				So(secret.ScanText(text), ShouldBeEmpty)
+			})
+		})
+	})
+}
+
 func TestScanTextNegatives(t *testing.T) {
 	Convey("Given a table of texts that must not yield hits", t, func() {
 		tests := []struct {

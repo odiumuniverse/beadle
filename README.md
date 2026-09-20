@@ -53,7 +53,9 @@ manage alone.
 - **Secrets** — values are extracted into `mcp/secrets.json` (0600, never
   committed) or the OS keychain (`secrets migrate keyring`); files carry
   `{secret:NAME}` references, and shareable files render `${NAME}` instead of a
-  value. *Why:* configs get copied and committed; credentials shouldn't.
+  value. The gate covers MCP, memory and project files; rules, skills and
+  permissions are not scanned (`doctor` warns about secret-like lines in
+  rules). *Why:* configs get copied and committed; credentials shouldn't.
 - **Skills** — whole directory trees, merged file by file. Plugin caches are
   skipped, symlinked skills are read but never overwritten, and plugin skills
   are farmed through a stable pivot so upgrades don't break links. *Why:*
@@ -115,6 +117,13 @@ manage alone.
 
 Codex, Pi and Kilo (like OpenCode and Cursor) can also drop free-form lines into
 their own `inbox.md`; a sync turns them into project memory notes.
+
+beadle creates only the surfaces marked creatable: the rules files of Claude
+Code and Gemini CLI, their skills directories, the Codex `config.toml` and the
+shared `~/.agents/skills` directory. Every other surface is written only when
+its config file already exists — an agent discovered by its directory alone is
+skipped with `no config file to write into; create <path> first` until the file
+appears (an empty file is enough).
 
 Project scope is opt-in per repository: `beadle project enable <file>` records
 the file in the vault-side policy of the current project, and

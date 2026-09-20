@@ -145,6 +145,12 @@ func TestIsSecret(t *testing.T) {
 			{"env ref is never a secret", "token", "{env:TOKEN}", false},
 			{"plain url", "url", "https://example.com/path", false},
 			{"embedded env ref under a secret-hinted key", "Authorization", "Bearer {env:TOKEN}", false},
+			{"audit timestamp", "authorizedAt", "2026-01-01", false},
+			{"audit user", "authorizedBy", "user-42", false},
+			{"commit trailer", "Co-Authored-By", "Someone <x@example.com>", false},
+			{"session id", "originSessionId", "9f1c2d3e-aaaa-bbbb-cccc-ddddeeeeffff", false},
+			{"plural credentials", "credentials", "abcdefgh12345678", true},
+			{"django secret key", "DJANGO_SECRET_KEY", "abcdefgh12345678", true},
 		}
 
 		for _, tc := range cases {
@@ -277,6 +283,12 @@ func TestStoreNameFor(t *testing.T) {
 				So(name2, ShouldNotEqual, "TOKEN")
 				So(name2, ShouldEqual, "TOKEN_"+secret.Fingerprint("v2"))
 				So(store.NameFor("token", "v2"), ShouldEqual, name2)
+			})
+		})
+
+		Convey("When another key holds the same value under a known name", func() {
+			Convey("Then the known name is reused", func() {
+				So(store.NameFor("GITHUB_TOKEN", "v1"), ShouldEqual, "TOKEN")
 			})
 		})
 	})

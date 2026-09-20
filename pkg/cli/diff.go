@@ -52,7 +52,7 @@ func (a *app) newDiffCmd() *cobra.Command {
 }
 
 func printDiff(w io.Writer, report *engine.Report, agentID string) {
-	empty := true
+	empty := printReportErrors(w, report)
 
 	for _, kr := range report.Kinds {
 		for _, change := range kr.Pulled {
@@ -91,6 +91,22 @@ func printDiff(w io.Writer, report *engine.Report, agentID string) {
 	if empty {
 		fmt.Fprintln(w, "no differences")
 	}
+}
+
+func printReportErrors(w io.Writer, report *engine.Report) bool {
+	printed := false
+
+	for _, kr := range report.Kinds {
+		if kr.Err == "" {
+			continue
+		}
+
+		printed = true
+
+		fmt.Fprintf(w, "%s: error: %s\n", kr.Kind, kr.Err)
+	}
+
+	return printed
 }
 
 func printItemDiff(w io.Writer, k kind.ID, agentID string, change engine.ItemChange) {

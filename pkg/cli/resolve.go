@@ -67,7 +67,11 @@ func (a *app) newResolveCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 
 			if jsonOut {
-				return printResolveJSON(out, report)
+				if err := printResolveJSON(out, report); err != nil {
+					return err
+				}
+
+				return refusalError(report)
 			}
 
 			for _, refused := range report.Refusals {
@@ -77,7 +81,7 @@ func (a *app) newResolveCmd() *cobra.Command {
 			fmt.Fprintf(out, "resolved %d conflict(s)\n\n", len(report.Resolved))
 			printReport(out, report)
 
-			return nil
+			return refusalError(report)
 		},
 	}
 
@@ -99,6 +103,14 @@ func (a *app) newResolveCmd() *cobra.Command {
 type resolveJSON struct {
 	Resolved []string        `json:"resolved"`
 	Refusals []state.Refusal `json:"refusals"`
+}
+
+func refusalError(report *engine.Report) error {
+	if len(report.Refusals) == 0 {
+		return nil
+	}
+
+	return fmt.Errorf("%d conflict resolution(s) were refused", len(report.Refusals))
 }
 
 func printResolveJSON(w io.Writer, report *engine.Report) error {

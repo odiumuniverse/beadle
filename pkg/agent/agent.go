@@ -41,9 +41,10 @@ func (a *Agent) SurfacesOf(k kind.ID) []Surface {
 }
 
 type Snapshot struct {
-	Items    kind.Items
-	Present  bool
-	ReadOnly map[string]string
+	Items      kind.Items
+	Present    bool
+	ReadOnly   map[string]string
+	Unreadable map[string]string
 }
 
 type Surface interface {

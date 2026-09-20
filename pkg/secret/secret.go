@@ -44,10 +44,14 @@ var namePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 var embeddedEnvRef = regexp.MustCompile(`\{env:[A-Za-z_][A-Za-z0-9_]*\}`)
 
-var keyHints = []string{
+var compoundKeyHints = []string{
 	"api_key",
-	"apikey",
 	"access_key",
+	"private_key",
+}
+
+var wordKeyHints = []string{
+	"apikey",
 	"secret",
 	"token",
 	"password",
@@ -57,9 +61,15 @@ var keyHints = []string{
 	"auth",
 	"cookie",
 	"session",
-	"private_key",
 	"bearer",
 	"signature",
+}
+
+var keyTailHints = []string{
+	"key",
+	"keys",
+	"value",
+	"values",
 }
 
 var valueHints = []string{
@@ -399,17 +409,25 @@ func (s *Store) NameFor(key, value string) string {
 }
 
 func (s *Store) nameOfValue(base, value string) (string, bool) {
+	var fallback string
+
+	var found bool
+
 	for _, name := range s.Names() {
-		if name != base && !strings.HasPrefix(name, base+"_") {
+		if s.values[name] != value {
 			continue
 		}
 
-		if s.values[name] == value {
+		if name == base || strings.HasPrefix(name, base+"_") {
 			return name, true
+		}
+
+		if !found {
+			fallback, found = name, true
 		}
 	}
 
-	return "", false
+	return fallback, found
 }
 
 func NormalizeName(key string) string {
@@ -500,11 +518,93 @@ func IsSecret(key, value string) bool {
 		return true
 	}
 
-	if slices.ContainsFunc(keyHints, func(hint string) bool { return strings.Contains(lower, hint) }) {
+	if matchKeyHint(key) {
 		return true
 	}
 
 	trimmed := strings.ToLower(strings.TrimSpace(value))
 
 	return slices.ContainsFunc(valueHints, func(hint string) bool { return strings.HasPrefix(trimmed, hint) })
+}
+
+func matchKeyHint(key string) bool {
+	tokens := keyTokens(key)
+	if len(tokens) == 0 {
+		return false
+	}
+
+	joined := strings.Join(tokens, "_")
+
+	if slices.ContainsFunc(compoundKeyHints, func(hint string) bool { return strings.Contains(joined, hint) }) {
+		return true
+	}
+
+	last := tokens[len(tokens)-1]
+
+	if slices.ContainsFunc(wordKeyHints, func(hint string) bool { return hintWord(last, hint) }) {
+		return true
+	}
+
+	if !slices.Contains(keyTailHints, last) {
+		return false
+	}
+
+	return slices.ContainsFunc(tokens[:len(tokens)-1], func(token string) bool {
+		return slices.ContainsFunc(wordKeyHints, func(hint string) bool { return hintWord(token, hint) })
+	})
+}
+
+func hintWord(token, hint string) bool {
+	return token == hint || token == hint+"s"
+}
+
+func keyTokens(key string) []string {
+	var (
+		tokens  []string
+		current strings.Builder
+	)
+
+	flush := func() {
+		if current.Len() > 0 {
+			tokens = append(tokens, strings.ToLower(current.String()))
+			current.Reset()
+		}
+	}
+
+	var prev rune
+
+	for _, r := range key {
+		switch {
+		case isKeyRune(r):
+			if isUpperRune(r) && (isLowerRune(prev) || isDigitRune(prev)) {
+				flush()
+			}
+
+			current.WriteRune(r)
+		default:
+			flush()
+		}
+
+		prev = r
+	}
+
+	flush()
+
+	return tokens
+}
+
+func isKeyRune(r rune) bool {
+	return isLowerRune(r) || isUpperRune(r) || isDigitRune(r)
+}
+
+func isLowerRune(r rune) bool {
+	return r >= 'a' && r <= 'z'
+}
+
+func isUpperRune(r rune) bool {
+	return r >= 'A' && r <= 'Z'
+}
+
+func isDigitRune(r rune) bool {
+	return r >= '0' && r <= '9'
 }
