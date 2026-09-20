@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -15,7 +16,9 @@ import (
 )
 
 func (a *app) newConflictsCmd() *cobra.Command {
-	return &cobra.Command{
+	var jsonOut bool
+
+	cmd := &cobra.Command{
 		Use:   "conflicts [id]",
 		Short: "List open conflicts, or show one in detail",
 		Args:  cobra.MaximumNArgs(1),
@@ -23,6 +26,10 @@ func (a *app) newConflictsCmd() *cobra.Command {
 			e, err := a.engine()
 			if err != nil {
 				return err
+			}
+
+			if jsonOut {
+				return showConflictsJSON(cmd.OutOrStdout(), e, args)
 			}
 
 			conflicts, err := e.Conflicts()
@@ -46,6 +53,56 @@ func (a *app) newConflictsCmd() *cobra.Command {
 			return showConflict(out, e, c)
 		},
 	}
+
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "machine-readable output with redacted values and a unified patch")
+
+	return cmd
+}
+
+type conflictsJSON struct {
+	Conflicts []engine.ConflictView `json:"conflicts"`
+}
+
+func showConflictsJSON(w io.Writer, e *engine.Engine, args []string) error {
+	views, err := e.ConflictViews()
+	if err != nil {
+		return err
+	}
+
+	if len(args) > 0 {
+		conflicts, err := e.Conflicts()
+		if err != nil {
+			return err
+		}
+
+		c, err := findConflict(conflicts, args[0])
+		if err != nil {
+			return err
+		}
+
+		filtered := make([]engine.ConflictView, 0, 1)
+
+		for _, view := range views {
+			if view.ID == c.ID() {
+				filtered = append(filtered, view)
+			}
+		}
+
+		views = filtered
+	}
+
+	if views == nil {
+		views = []engine.ConflictView{}
+	}
+
+	data, err := json.MarshalIndent(conflictsJSON{Conflicts: views}, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	_, err = fmt.Fprintln(w, string(data))
+
+	return err
 }
 
 func listConflicts(w io.Writer, conflicts []state.Conflict) {

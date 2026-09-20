@@ -25,6 +25,17 @@ const CurrentVersion = 2
 
 const MaxSnapshots = 30
 
+// MaxRefusals bounds the refusal journal kept in state.json.
+const MaxRefusals = 50
+
+const (
+	RefusalStaleConflict   = "stale-conflict"
+	RefusalUnknownConflict = "unknown-conflict"
+	RefusalRiskyChange     = "risky-change"
+	RefusalInvalidContent  = "invalid-content"
+	RefusalAmbiguous       = "ambiguous"
+)
+
 const (
 	ReasonModified   = "modified"
 	ReasonDeleted    = "deleted"
@@ -86,6 +97,17 @@ type BundleState struct {
 	SavedModes map[kind.ID]config.Mode `json:"saved_modes,omitempty"`
 }
 
+// Refusal records one conflict resolution the engine declined to apply.
+type Refusal struct {
+	At      time.Time `json:"at"`
+	ID      string    `json:"id"`
+	Kind    kind.ID   `json:"kind"`
+	Agent   string    `json:"agent"`
+	Key     string    `json:"key"`
+	Code    string    `json:"code"`
+	Message string    `json:"message"`
+}
+
 type State struct {
 	Version   int                         `json:"version"`
 	Bases     map[kind.ID]map[string]Base `json:"bases,omitempty"`
@@ -94,6 +116,7 @@ type State struct {
 	Renders   map[string]Render           `json:"renders,omitempty"`
 	Drift     map[string]Drift            `json:"drift,omitempty"`
 	Bundles   map[string]BundleState      `json:"bundles,omitempty"`
+	Refusals  []Refusal                   `json:"refusals,omitempty"`
 }
 
 func New() *State {
@@ -309,4 +332,22 @@ func (s *State) AddSnapshot(k kind.ID, snap Snapshot) {
 
 func (s *State) History(k kind.ID) []Snapshot {
 	return slices.Clone(s.Snapshots[k])
+}
+
+// AddRefusal appends one refusal and keeps only the last MaxRefusals records.
+func (s *State) AddRefusal(r Refusal) {
+	s.Refusals = append(s.Refusals, r)
+
+	if len(s.Refusals) > MaxRefusals {
+		s.Refusals = s.Refusals[len(s.Refusals)-MaxRefusals:]
+	}
+}
+
+// LastRefusal returns the most recent refusal, if any.
+func (s *State) LastRefusal() (Refusal, bool) {
+	if len(s.Refusals) == 0 {
+		return Refusal{}, false
+	}
+
+	return s.Refusals[len(s.Refusals)-1], true
 }

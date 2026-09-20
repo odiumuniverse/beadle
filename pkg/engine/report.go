@@ -81,6 +81,8 @@ type Report struct {
 	Digest    []DigestResult   `json:"digest,omitempty"`
 	Bundles   []BundleResult   `json:"bundles,omitempty"`
 	Warnings  []string         `json:"warnings,omitempty"`
+	Resolved  []string         `json:"resolved,omitempty"`
+	Refusals  []state.Refusal  `json:"refusals,omitempty"`
 }
 
 func (r *Report) Kind(k kind.ID) *KindReport {

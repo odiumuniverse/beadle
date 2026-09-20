@@ -10,6 +10,7 @@ import (
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/skills"
 	"github.com/odiumuniverse/beadle/pkg/vault"
 )
 
@@ -58,6 +59,10 @@ func (a *app) newInitCmd() *cobra.Command {
 			}
 
 			if err := cfg.Save(v.ConfigPath()); err != nil {
+				return err
+			}
+
+			if _, err := skills.Seed(v.SkillsDir(), false); err != nil {
 				return err
 			}
 

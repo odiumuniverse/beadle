@@ -55,6 +55,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 
 	issues = append(issues, e.checkObjects(st)...)
 	issues = append(issues, conflictIssues(st)...)
+	issues = append(issues, refusalIssues(st, e.now())...)
 
 	active, err := e.activeAgents(ctx)
 	if err != nil {
@@ -300,6 +301,20 @@ func conflictIssues(st *state.State) []Issue {
 	}
 
 	return issues
+}
+
+func refusalIssues(st *state.State, now time.Time) []Issue {
+	last, ok := st.LastRefusal()
+	if !ok || now.Sub(last.At) > 24*time.Hour {
+		return nil
+	}
+
+	return []Issue{{
+		Severity: SeverityInfo,
+		Kind:     last.Kind,
+		Agent:    last.Agent,
+		Message:  fmt.Sprintf("%d conflict resolution(s) were refused recently (last: %s)", len(st.Refusals), last.Code),
+	}}
 }
 
 func planIssues(plan *Report) []Issue {

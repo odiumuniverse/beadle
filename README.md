@@ -25,7 +25,7 @@ manage alone.
         │  pull changes               │  push changes
    ┌────┴─────┬───────────┬───────────┴────┐
  Claude Code  OpenCode   Gemini CLI     Cursor
-  + Antigravity CLI
+  + Antigravity CLI + Codex CLI + Pi + Kilo Code
 ```
 
 ## Why use it
@@ -87,6 +87,18 @@ manage alone.
   disagreements; `history`/`restore` roll kinds back; `heal` clears quarantined
   plugins. *Why:* sync tools are only trusted if you can see and undo what they
   did.
+- **Conflict contract and the `beadle-conflicts` skill** — `beadle conflicts
+  --json` is a stable, secret-redacted view (the three sides plus a unified
+  patch); `beadle resolve --from/--stdin` requires `--expect-base`/`--expect-vault`/`--expect-agent`,
+  so a
+  decision read before the conflict changed is refused as `stale-conflict`
+  instead of applied; risky changes (an MCP `command`/`url`, a new server, any permission
+  rule) need `--allow-risky`, and `resolve --all` never touches permissions.
+  `beadle init` seeds the `beadle-conflicts` skill into `<vault>/skills/` (an
+  existing vault: `beadle skills seed [--force]`), so an agent can walk the loop
+  — status → diff → conflicts --json → resolve → sync → doctor — through the
+  same audited path a human uses. *Why:* resolving disagreements is exactly
+  where an agent should not improvise.
 
 ## Supported agents
 
@@ -97,6 +109,12 @@ manage alone.
 | Gemini CLI | ✅ `~/.gemini/GEMINI.md` | ✅ `settings.json` (`httpUrl`) | ✅ `~/.gemini/skills` | ✅ opt-in (shell rules) |
 | Cursor | — (user rules live in the account) | ✅ `~/.cursor/mcp.json` | reads Claude/shared dirs natively | ✅ opt-in (shell, MCP) |
 | Antigravity CLI | — (reads `~/.gemini/GEMINI.md` via the Gemini CLI adapter) | ✅ `~/.gemini/config/mcp_config.json` (`serverUrl`) | — (v1 not managed) | — (not managed: `action(target)` dialect) |
+| Codex CLI | ✅ `~/.codex/AGENTS.md` | ✅ `~/.codex/config.toml` (`mcp_servers`, comments preserved) | reads `~/.agents/skills` natively (**pull**) | — (scalar `approval_policy`/`sandbox_mode`) |
+| Pi | ✅ `~/.pi/agent/AGENTS.md` | ✅ `~/.pi/agent/mcp.json` | reads `~/.agents/skills` natively (**pull**) | — (not documented) |
+| Kilo Code | ✅ `~/.config/kilo/AGENTS.md` | ✅ `kilo.jsonc` (comments preserved) | reads `~/.agents/skills` natively (**pull**) | ✅ opt-in (tools, shell, MCP) |
+
+Codex, Pi and Kilo (like OpenCode and Cursor) can also drop free-form lines into
+their own `inbox.md`; a sync turns them into project memory notes.
 
 Project scope is opt-in per repository: `beadle project enable <file>` records
 the file in the vault-side policy of the current project, and
