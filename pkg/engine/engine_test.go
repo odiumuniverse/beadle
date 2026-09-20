@@ -38,6 +38,8 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 
+	t.Setenv("XDG_CONFIG_HOME", "")
+
 	home := t.TempDir()
 	v := vault.New(filepath.Join(t.TempDir(), "vault"))
 
