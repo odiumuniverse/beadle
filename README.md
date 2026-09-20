@@ -28,6 +28,10 @@ manage alone.
   + Antigravity CLI + Codex CLI + Pi + Kilo Code
 ```
 
+[Why use it](#why-use-it) · [What it does](#what-it-does) ·
+[Supported agents](#supported-agents) · [Install](#install) ·
+[Quick start](#quick-start) · [Commands](#commands) · [Principles](#principles)
+
 ## Why use it
 
 - **One config, several agents.** Edit rules, servers or skills in whichever
@@ -49,7 +53,9 @@ manage alone.
   read first is usually the thing most out of date.
 - **MCP servers** — one portable canonical form; agent-only fields (`timeout`,
   `oauth`, `enabled`, `trust`, …) stay in the agent's own file and survive every
-  rewrite. *Why:* server lists drift across agents and machines fastest.
+  rewrite. New entries are rendered with the file's own indentation (a minified
+  file stays minified). *Why:* server lists drift across agents and machines
+  fastest.
 - **Secrets** — values are extracted into `mcp/secrets.json` (0600, never
   committed) or the OS keychain (`secrets migrate keyring`); files carry
   `{secret:NAME}` references, and shareable files render `${NAME}` instead of a
@@ -82,13 +88,26 @@ manage alone.
   become notes; a secret gate runs before anything is adopted. *Why:* only one
   agent remembers your project, and everyone else should benefit.
 - **Permissions** (opt-in) — tool/shell/MCP rules as a set, merged with
-  `deny > ask > allow`; agent-local defaults and path globs stay local.
-  *Why:* permission policy is currently retyped in every agent.
+  `deny > ask > allow`; agent-local defaults and path globs stay local. Keys
+  must be canonical (`tool:` names lowercase); `doctor` warns about keys no
+  codec can apply. *Why:* permission policy is currently retyped in every
+  agent.
 - **Diagnostics and recovery** — `doctor` reports broken links, drift,
   collisions and half-finished states; `conflicts`/`resolve` settle
   disagreements; `history`/`restore` roll kinds back; `heal` clears quarantined
   plugins. *Why:* sync tools are only trusted if you can see and undo what they
   did.
+- **Git mergetool audit mode** (opt-in) — `beadle resolve <id> --mergetool`
+  materializes a text conflict as a real git merge state inside the vault: the
+  three sides become git objects under `refs/beadle/mergetool/<id>/{base,vault,local}`
+  (kept forever), the target path gets index stages 1/2/3, `MERGE_HEAD` and
+  conflict markers, so you can settle it with `git mergetool` or by hand.
+  `beadle resolve <id> --mergetool-abort` removes the merge state (the audit
+  refs stay). While the merge is active, `sync`/`diff`/`status`/`doctor` refuse
+  with `mergetool-active` so the marker file is never read as canon. Only
+  file-backed kinds are supported; JSON kinds are refused with
+  `mergetool-unsupported`, and applying the result still goes through the normal
+  `--from`/`--take file` path. *Why:* the commit graph becomes the audit trail.
 - **Conflict contract and the `beadle-conflicts` skill** — `beadle conflicts
   --json` is a stable, secret-redacted view (the three sides plus a unified
   patch); `beadle resolve --from/--stdin` requires `--expect-base`/`--expect-vault`/`--expect-agent`,
@@ -125,12 +144,6 @@ its config file already exists — an agent discovered by its directory alone is
 skipped with `no config file to write into; create <path> first` until the file
 appears (an empty file is enough).
 
-Project scope is opt-in per repository: `beadle project enable <file>` records
-the file in the vault-side policy of the current project, and
-`beadle project status|disable|forget` manages it. Without a policy nothing in
-a repository is touched; `doctor` keeps reporting foreign `.mcp.json` /
-`projects.*` collisions.
-
 ## Install
 
 ```bash
@@ -165,7 +178,26 @@ beadle watch                                  # foreground watcher
 beadle daemon install                         # launchd (macOS) / systemd user unit (Linux)
 ```
 
+## How it works
+
+Each agent keeps its own files; beadle also remembers what each agent last saw
+— its *base*. A sync pulls each agent's files into the vault, merges them
+against the base with a three-way merge, and pushes the union back:
+
+```
+agent files ──pull──▶ vault canon ──3-way merge──▶ vault canon ──push──▶ agent files
+                                         ▲
+                                   per-agent base
+```
+
+When both sides changed the same item the merge stops: it becomes a conflict
+that waits for a human or an agent (`beadle conflicts`, `beadle resolve`)
+instead of overwriting either side; files beadle does not manage are untouched.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the picture.
+
 ## Commands
+
+### Core
 
 | Command | Purpose |
 |---|---|
@@ -173,22 +205,50 @@ beadle daemon install                         # launchd (macOS) / systemd user u
 | `sync [--dry-run] [--kind k]` | full cycle: pull, merge, push |
 | `pull` / `push` | one direction only (`push` overwrites local agent edits) |
 | `status [--check]` / `diff [--agent id]` | agents, modes and conflicts / what a sync would change |
+
+### Conflicts & recovery
+
+| Command | Purpose |
+|---|---|
 | `conflicts [id]` | open conflicts; with an id, the variants |
 | `resolve [id…] --take vault\|agent\|file` | settle conflicts and push the decision |
 | `history <kind>` / `restore <kind> --to N` | snapshots and rollbacks |
+| `doctor` | diagnostics; non-zero exit on errors |
 | `heal [--dry-run]` | clear quarantined plugins: stubs, artifacts, ledger tombstones |
+
+### Config & background
+
+| Command | Purpose |
+|---|---|
 | `agents` (`enable`/`disable`/`mode`) | agents and their per-kind modes |
 | `kinds` | switch kinds on or off for every agent |
-| `doctor` | diagnostics; non-zero exit on errors |
 | `watch` / `daemon` | background sync, autostart service |
 | `secrets list\|set\|rm\|prune\|migrate` | credential values; never printed |
 | `plugins pins\|pin\|unpin` | per-agent plugin version pins |
 | `hooks list\|add\|rm\|approve\|revoke` | lifecycle hooks canon (never executed by beadle) |
 | `bundles status\|enable\|disable` | native host bundles and their registration |
+| `rulings list\|show\|trust\|forget` | remembered conflict decisions applied only on an exact, non-blast-radius match |
 | `project status\|enable <file>\|disable <file>\|forget <file>` | per-repository project scope; nothing happens without an enabled policy |
 
 Global flags: `--vault` (default `~/.beadle`, or `$BEADLE_HOME`), `--verbose`,
 `--log-json`.
+
+## Project scope
+
+Project scope is opt-in per repository: `beadle project enable <file>` records
+the file in the vault-side policy of the current project, and
+`beadle project status|disable|forget` manages it. Without a policy nothing in
+a repository is touched; `doctor` keeps reporting foreign `.mcp.json` /
+`projects.*` collisions.
+
+## Secrets
+
+The gate extracts credential values out of the canon into `mcp/secrets.json`
+(0600, never committed) or the OS keychain, and files carry `{secret:NAME}`
+references — its scope (MCP, memory and project files; rules, skills and
+permissions are not scanned) is described under [What it does](#what-it-does).
+With `backend: keyring` the store is fail-closed: an unavailable keyring yields
+skips and warnings, never a plaintext fallback.
 
 ## Principles
 
