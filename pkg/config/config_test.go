@@ -8,6 +8,8 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/permission"
+	"github.com/odiumuniverse/beadle/pkg/secret"
 )
 
 func TestPluginPinRoundTrip(t *testing.T) {
@@ -102,6 +104,112 @@ func TestPluginPinValidation(t *testing.T) {
 				cfg := config.Default()
 				So(cfg.SetPluginPin("claude-code", "acme", "1.0.0"), ShouldBeError)
 				So(cfg.SetPluginPin("claude-code", "acme/tool", "../1.0.0"), ShouldBeError)
+			})
+		})
+	})
+}
+
+func TestDefaultMaterializesScalars(t *testing.T) {
+	Convey("Given the default config", t, func() {
+		cfg := config.Default()
+
+		Convey("When its scalars are read", func() {
+			Convey("Then every optional setting is explicit", func() {
+				So(cfg.Version, ShouldEqual, config.CurrentVersion)
+				So(cfg.Permissions, ShouldEqual, permission.ModeOff)
+				So(cfg.History, ShouldEqual, config.HistoryGit)
+				So(cfg.Secrets, ShouldEqual, secret.ModeLiteral)
+				So(cfg.Agents, ShouldNotBeNil)
+			})
+		})
+
+		Convey("When it is saved and loaded", func() {
+			path := filepath.Join(t.TempDir(), config.FileName)
+			So(cfg.Save(path), ShouldBeNil)
+
+			data, err := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+			So(err, ShouldBeNil)
+
+			loaded, err := config.Load(path)
+
+			Convey("Then the file shows the scalars and they round-trip", func() {
+				So(err, ShouldBeNil)
+
+				for _, want := range []string{`"permissions": "off"`, `"history": "git"`, `"secrets": "literal"`} {
+					So(string(data), ShouldContainSubstring, want)
+				}
+
+				So(loaded.Permissions, ShouldEqual, permission.ModeOff)
+				So(loaded.History, ShouldEqual, config.HistoryGit)
+				So(loaded.Secrets, ShouldEqual, secret.ModeLiteral)
+			})
+		})
+	})
+}
+
+func TestNormalizeFillsEmptyScalars(t *testing.T) {
+	Convey("Given a legacy config without scalar values", t, func() {
+		path := filepath.Join(t.TempDir(), config.FileName)
+		So(os.WriteFile(path, []byte(`{"version":1,"agents":{}}`), 0o600), ShouldBeNil)
+
+		Convey("When it is loaded", func() {
+			cfg, err := config.Load(path)
+			So(err, ShouldBeNil)
+
+			Convey("Then the defaults are materialized in memory", func() {
+				So(cfg.Version, ShouldEqual, 1)
+				So(cfg.Permissions, ShouldEqual, permission.ModeOff)
+				So(cfg.History, ShouldEqual, config.HistoryGit)
+				So(cfg.Secrets, ShouldEqual, secret.ModeLiteral)
+
+				Convey("And a save writes them out", func() {
+					So(cfg.Save(path), ShouldBeNil)
+
+					data, err := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
+					So(err, ShouldBeNil)
+					So(string(data), ShouldContainSubstring, `"history": "git"`)
+					So(string(data), ShouldContainSubstring, `"permissions": "off"`)
+					So(string(data), ShouldContainSubstring, `"secrets": "literal"`)
+				})
+			})
+		})
+
+		Convey("When explicit empty scalars are loaded", func() {
+			So(os.WriteFile(path, []byte(`{"version":2,"permissions":"","history":"","secrets":""}`), 0o600), ShouldBeNil)
+
+			cfg, err := config.Load(path)
+
+			Convey("Then they fall back to the defaults too", func() {
+				So(err, ShouldBeNil)
+				So(cfg.Permissions, ShouldEqual, permission.ModeOff)
+				So(cfg.History, ShouldEqual, config.HistoryGit)
+				So(cfg.Secrets, ShouldEqual, secret.ModeLiteral)
+			})
+		})
+
+		Convey("When non-default scalars are loaded", func() {
+			So(os.WriteFile(path, []byte(`{"version":2,"permissions":"sync","history":"off","secrets":"env"}`), 0o600), ShouldBeNil)
+
+			cfg, err := config.Load(path)
+
+			Convey("Then they are preserved exactly", func() {
+				So(err, ShouldBeNil)
+				So(cfg.Permissions, ShouldEqual, permission.ModeSync)
+				So(cfg.History, ShouldEqual, config.HistoryOff)
+				So(cfg.Secrets, ShouldEqual, secret.ModeEnv)
+			})
+		})
+
+		Convey("When Normalize runs on a zero config", func() {
+			cfg := &config.Config{}
+			cfg.Normalize()
+
+			Convey("Then every scalar gets its default", func() {
+				So(cfg.Version, ShouldEqual, config.CurrentVersion)
+				So(cfg.Permissions, ShouldEqual, permission.ModeOff)
+				So(cfg.History, ShouldEqual, config.HistoryGit)
+				So(cfg.Secrets, ShouldEqual, secret.ModeLiteral)
+				So(cfg.Agents, ShouldNotBeNil)
 			})
 		})
 	})

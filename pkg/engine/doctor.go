@@ -18,6 +18,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/cas"
 	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/daemon"
 	"github.com/odiumuniverse/beadle/pkg/digest"
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/kind"
@@ -95,8 +96,32 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.memorySecretIssues()...)
 	issues = append(issues, e.rulesSecretIssues()...)
 	issues = append(issues, e.permissionCanonIssues()...)
+	issues = append(issues, e.daemonIssues()...)
 
 	return issues, nil
+}
+
+var daemonStatusRunner secret.Runner = secret.ExecRunner{}
+
+func (e *Engine) daemonIssues() []Issue {
+	if e.home == "" {
+		return nil
+	}
+
+	status, err := daemon.Check(e.home, daemon.DefaultLabel, daemonStatusRunner)
+	if err != nil {
+		return []Issue{{Severity: SeverityWarn, Message: "cannot inspect the background watcher: " + err.Error()}}
+	}
+
+	switch {
+	case !status.Installed:
+		return []Issue{{Severity: SeverityWarn, Message: "daemon is not installed; run beadle daemon install"}}
+	case !status.Loaded:
+		return []Issue{{Severity: SeverityWarn, Message: fmt.Sprintf(
+			"daemon is installed but not loaded; load %s with launchctl/systemctl or reinstall it with beadle daemon install", status.Path)}}
+	default:
+		return nil
+	}
 }
 
 func (e *Engine) permissionCanonIssues() []Issue {

@@ -9,6 +9,7 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/engine"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/state"
@@ -18,6 +19,7 @@ func mergetoolRulesConflict(t *testing.T, gitInit bool) (*fixture, state.Conflic
 	t.Helper()
 
 	f := newFixture(t)
+	f.config.History = config.HistoryOff
 	f.emptyConfigs(t)
 
 	if gitInit {
@@ -239,6 +241,7 @@ func TestMergetoolAbortRestoresTrackedIndex(t *testing.T) {
 func TestMergetoolUnsupportedKind(t *testing.T) {
 	Convey("Given an open MCP conflict", t, func() {
 		f := newFixture(t)
+		f.config.History = config.HistoryOff
 		f.emptyConfigs(t)
 
 		gitIn(t, f.vault.Root(), "init", "-q")

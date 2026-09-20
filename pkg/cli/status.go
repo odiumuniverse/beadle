@@ -33,10 +33,14 @@ func (a *app) newStatusCmd() *cobra.Command {
 
 			fmt.Fprintf(out, "vault: %s\n", v.Root())
 
-			if !v.Initialized() {
+			if !vaultDirExists(v.Root()) {
 				fmt.Fprintln(out, "state: not initialized (run beadle init)")
 
 				return nil
+			}
+
+			if err := a.ensureConfig(v); err != nil {
+				return err
 			}
 
 			cfg, err := config.Load(v.ConfigPath())

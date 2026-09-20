@@ -1258,6 +1258,7 @@ func TestDoctor(t *testing.T) {
 		write(t, f.claudeSkill("alpha"), "a\n")
 		write(t, f.openCodeSkill("beta"), "b\n")
 		f.sync(t)
+		stubDaemonUnit(t, f)
 
 		issues, err := f.engine.Doctor(t.Context())
 		So(err, ShouldBeNil)
@@ -1298,6 +1299,7 @@ func TestDoctorNoFalseDriftForLimitedAgents(t *testing.T) {
 
 		write(t, f.claudeSettings(), `{"permissions": {"allow": ["WebFetch", "Bash(git status)"], "ask": [], "deny": []}}`)
 		write(t, f.geminiSettings(), `{"mcpServers": {}, "tools": {"allowed": ["run_shell_command(git status)"]}}`)
+		stubDaemonUnit(t, f)
 
 		Convey("When it syncs repeatedly", func() {
 			for range 2 {

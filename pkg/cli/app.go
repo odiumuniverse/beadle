@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/vmkteam/embedlog"
 
@@ -25,11 +27,44 @@ func (a *app) resolveVault() (*vault.Vault, error) {
 	}
 
 	v := vault.New(root)
-	if !v.Initialized() {
+	if !vaultDirExists(root) {
 		return nil, fmt.Errorf("vault %s is not initialized (run beadle init)", root)
 	}
 
+	if err := a.ensureConfig(v); err != nil {
+		return nil, err
+	}
+
 	return v, nil
+}
+
+func vaultDirExists(root string) bool {
+	info, err := os.Stat(root) //nolint:gosec // G703: root is the resolved vault path, not request taint
+	if err != nil || !info.IsDir() {
+		return false
+	}
+
+	for _, marker := range []string{".gitignore", "state", "objects"} {
+		if _, err := os.Stat(filepath.Join(root, marker)); err == nil { //nolint:gosec // G703: root is the resolved vault path, marker names are constants
+			return true
+		}
+	}
+
+	return false
+}
+
+func (a *app) ensureConfig(v *vault.Vault) error {
+	if v.Initialized() {
+		return nil
+	}
+
+	if err := config.Default().Save(v.ConfigPath()); err != nil {
+		return err
+	}
+
+	a.logger.Print(context.Background(), "config.json was missing; recreated with defaults", "vault", v.Root())
+
+	return nil
 }
 
 func (a *app) loadConfig() (*vault.Vault, *config.Config, error) {

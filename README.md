@@ -152,6 +152,10 @@ brew trust odiumuniverse/tap
 brew install beadle
 ```
 
+Homebrew does not start services on install. To keep the watcher running:
+`brew services start beadle` — it serves the default vault `~/.beadle`; for a
+custom vault use `beadle daemon install` instead.
+
 Or build from source:
 
 ```bash
@@ -170,6 +174,13 @@ beadle diff                 # what a sync would change, item by item
 beadle conflicts            # what waits for a decision
 beadle doctor               # broken symlinks, permissions, drift, collisions
 ```
+
+`beadle init --daemon` installs the background watcher right away (and
+`--no-daemon` opts out explicitly); `beadle daemon install` does the same
+later.
+
+`config.json` is created with explicit defaults; the optional settings
+(`permissions`, `history`, `secrets`) are always visible.
 
 Run it continuously:
 

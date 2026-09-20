@@ -15,3 +15,10 @@ func SetBundlesLookPathForTest(lookPath func(string) (string, error)) func() {
 
 	return func() { bundlesLookPath = previous }
 }
+
+func SetDaemonStatusRunnerForTest(runner secret.Runner) func() {
+	previous := daemonStatusRunner
+	daemonStatusRunner = runner
+
+	return func() { daemonStatusRunner = previous }
+}

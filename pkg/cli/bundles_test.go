@@ -44,7 +44,8 @@ func TestBundlesCLIStubEndToEnd(t *testing.T) {
 
 				So(string(calls), ShouldContainSubstring, "plugin marketplace add "+filepath.Join(home, ".beadle", "bundles", "claude"))
 				So(string(calls), ShouldContainSubstring, "plugin install beadle-canon@beadle")
-				So(string(config), ShouldContainSubstring, `"off"`)
+				So(string(config), ShouldContainSubstring, `"mcp": "off"`)
+				So(string(config), ShouldContainSubstring, `"skills": "off"`)
 
 				Convey("And disabling unregisters and restores modes", func() {
 					out, err := runCLI(t, "bundles", "disable", "--host", "claude")
@@ -59,7 +60,8 @@ func TestBundlesCLIStubEndToEnd(t *testing.T) {
 
 					config, err := os.ReadFile(filepath.Join(home, ".beadle", "config.json")) //nolint:gosec // G304: test reads its own temp file
 					So(err, ShouldBeNil)
-					So(string(config), ShouldNotContainSubstring, `"off"`)
+					So(string(config), ShouldNotContainSubstring, `"mcp": "off"`)
+					So(string(config), ShouldNotContainSubstring, `"skills": "off"`)
 				})
 			})
 		})

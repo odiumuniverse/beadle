@@ -12,6 +12,8 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/daemon"
 )
 
+var daemonInstallRunner daemon.Runner = execRunner
+
 func (a *app) newDaemonCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "daemon",
@@ -33,7 +35,7 @@ func (a *app) newDaemonInstallCmd() *cobra.Command {
 				return err
 			}
 
-			path, err := daemon.Install(cmd.Context(), spec, execRunner)
+			path, err := daemon.Install(cmd.Context(), spec, daemonInstallRunner)
 			if err != nil {
 				return err
 			}
@@ -59,7 +61,7 @@ func (a *app) newDaemonUninstallCmd() *cobra.Command {
 				return err
 			}
 
-			path, err := daemon.Uninstall(cmd.Context(), spec, execRunner)
+			path, err := daemon.Uninstall(cmd.Context(), spec, daemonInstallRunner)
 			if err != nil {
 				return err
 			}

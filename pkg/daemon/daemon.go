@@ -11,7 +11,11 @@ import (
 	"strings"
 )
 
-const DefaultLabel = "com.beadle.watch"
+const (
+	DefaultLabel = "com.beadle.watch"
+	brewLabel    = "homebrew.mxcl.beadle"
+	osDarwin     = "darwin"
+)
 
 type Spec struct {
 	Label      string
@@ -27,7 +31,7 @@ type Runner func(ctx context.Context, name string, args ...string) error
 
 func Render(spec Spec) (string, string, error) {
 	switch runtime.GOOS {
-	case "darwin":
+	case osDarwin:
 		return RenderLaunchd(spec)
 	case "linux":
 		return RenderSystemd(spec)
@@ -76,7 +80,7 @@ func Uninstall(ctx context.Context, spec Spec, run Runner) (string, error) {
 
 func register(ctx context.Context, spec Spec, run Runner) error {
 	switch runtime.GOOS {
-	case "darwin":
+	case osDarwin:
 		return registerLaunchd(ctx, spec, run)
 	case "linux":
 		return registerSystemd(ctx, spec, run)
@@ -87,7 +91,7 @@ func register(ctx context.Context, spec Spec, run Runner) error {
 
 func unregister(ctx context.Context, spec Spec, run Runner) error {
 	switch runtime.GOOS {
-	case "darwin":
+	case osDarwin:
 		return unregisterLaunchd(ctx, spec, run)
 	case "linux":
 		return unregisterSystemd(ctx, spec, run)

@@ -88,9 +88,9 @@ type Config struct {
 	Version       int              `json:"version"`
 	Agents        map[string]Agent `json:"agents,omitempty"`
 	Kinds         map[kind.ID]Mode `json:"kinds,omitempty"`
-	Permissions   string           `json:"permissions,omitempty"`
-	History       string           `json:"history,omitempty"`
-	Secrets       string           `json:"secrets,omitempty"`
+	Permissions   string           `json:"permissions"`
+	History       string           `json:"history"`
+	Secrets       string           `json:"secrets"`
 	ApprovedHooks []string         `json:"approved_hooks,omitempty"`
 }
 
@@ -149,7 +149,39 @@ func (c *Config) HistoryMode() string {
 }
 
 func Default() *Config {
-	return &Config{Version: CurrentVersion, Agents: map[string]Agent{}}
+	return &Config{
+		Version:     CurrentVersion,
+		Agents:      map[string]Agent{},
+		Permissions: permission.ModeOff,
+		History:     HistoryGit,
+		Secrets:     secret.ModeLiteral,
+	}
+}
+
+// Normalize fills empty scalars with their defaults so legacy or partial
+// files behave like a fresh config.
+func (c *Config) Normalize() {
+	defaults := Default()
+
+	if c.Version == 0 {
+		c.Version = defaults.Version
+	}
+
+	if c.Permissions == "" {
+		c.Permissions = defaults.Permissions
+	}
+
+	if c.History == "" {
+		c.History = defaults.History
+	}
+
+	if c.Secrets == "" {
+		c.Secrets = defaults.Secrets
+	}
+
+	if c.Agents == nil {
+		c.Agents = map[string]Agent{}
+	}
 }
 
 func Load(path string) (*Config, error) {
@@ -167,9 +199,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
-	if cfg.Agents == nil {
-		cfg.Agents = map[string]Agent{}
-	}
+	cfg.Normalize()
 
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
