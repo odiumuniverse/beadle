@@ -6,81 +6,98 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/daemon"
 )
 
 func TestRenderLaunchd(t *testing.T) {
-	t.Parallel()
+	Convey("Given a launchd spec", t, func() {
+		spec := daemon.Spec{
+			Binary:     "/usr/local/bin/beadle",
+			Args:       []string{"watch"},
+			Home:       "/Users/test",
+			LogPath:    "/Users/test/Library/Logs/beadle.log",
+			ErrLogPath: "/Users/test/Library/Logs/beadle.err.log",
+		}
 
-	spec := daemon.Spec{
-		Binary:     "/usr/local/bin/beadle",
-		Args:       []string{"watch"},
-		Home:       "/Users/test",
-		LogPath:    "/Users/test/Library/Logs/beadle.log",
-		ErrLogPath: "/Users/test/Library/Logs/beadle.err.log",
-	}
+		Convey("When the plist is rendered", func() {
+			path, content, err := daemon.RenderLaunchd(spec)
 
-	path, content, err := daemon.RenderLaunchd(spec)
-	require.NoError(t, err)
-	require.Equal(t, filepath.Join("/Users/test", "Library/LaunchAgents", daemon.DefaultLabel+".plist"), path)
-
-	require.Contains(t, content, "<key>NumberOfFiles</key><integer>8192</integer>")
-	require.Contains(t, content, "<string>/usr/local/bin/beadle</string>")
-	require.Contains(t, content, "<string>watch</string>")
-	require.Contains(t, content, "<key>KeepAlive</key><true/>")
-	require.Contains(t, content, "<key>StandardOutPath</key><string>/Users/test/Library/Logs/beadle.log</string>")
+			Convey("Then it lands in LaunchAgents with the expected keys", func() {
+				So(err, ShouldBeNil)
+				So(path, ShouldEqual, filepath.Join("/Users/test", "Library/LaunchAgents", daemon.DefaultLabel+".plist"))
+				So(content, ShouldContainSubstring, "<key>NumberOfFiles</key><integer>8192</integer>")
+				So(content, ShouldContainSubstring, "<string>/usr/local/bin/beadle</string>")
+				So(content, ShouldContainSubstring, "<string>watch</string>")
+				So(content, ShouldContainSubstring, "<key>KeepAlive</key><true/>")
+				So(content, ShouldContainSubstring, "<key>StandardOutPath</key><string>/Users/test/Library/Logs/beadle.log</string>")
+			})
+		})
+	})
 }
 
 func TestRenderSystemd(t *testing.T) {
-	t.Parallel()
+	Convey("Given a systemd spec", t, func() {
+		spec := daemon.Spec{
+			Binary: "/usr/local/bin/beadle",
+			Args:   []string{"watch"},
+			Home:   "/home/test",
+		}
 
-	spec := daemon.Spec{
-		Binary: "/usr/local/bin/beadle",
-		Args:   []string{"watch"},
-		Home:   "/home/test",
-	}
+		Convey("When the unit is rendered", func() {
+			path, content, err := daemon.RenderSystemd(spec)
 
-	path, content, err := daemon.RenderSystemd(spec)
-	require.NoError(t, err)
-	require.Equal(t, filepath.Join("/home/test", ".config/systemd/user", "com-beadle-watch.service"), path)
-
-	require.Contains(t, content, "ExecStart=/usr/local/bin/beadle watch")
-	require.Contains(t, content, "Restart=on-failure")
-	require.Contains(t, content, "ProtectHome=no")
-	require.Contains(t, content, "WantedBy=default.target")
+			Convey("Then it lands in the user unit directory", func() {
+				So(err, ShouldBeNil)
+				So(path, ShouldEqual, filepath.Join("/home/test", ".config/systemd/user", "com-beadle-watch.service"))
+				So(content, ShouldContainSubstring, "ExecStart=/usr/local/bin/beadle watch")
+				So(content, ShouldContainSubstring, "Restart=on-failure")
+				So(content, ShouldContainSubstring, "ProtectHome=no")
+				So(content, ShouldContainSubstring, "WantedBy=default.target")
+			})
+		})
+	})
 }
 
 func TestRenderRejectsRelativePaths(t *testing.T) {
-	t.Parallel()
+	Convey("Given specs with relative paths", t, func() {
+		Convey("When they are rendered", func() {
+			Convey("Then they are rejected", func() {
+				_, _, err := daemon.RenderSystemd(daemon.Spec{Binary: "beadle", Home: "/home/test"})
+				So(err, ShouldBeError)
 
-	_, _, err := daemon.RenderSystemd(daemon.Spec{Binary: "beadle", Home: "/home/test"})
-	require.Error(t, err)
-
-	_, _, err = daemon.RenderLaunchd(daemon.Spec{Binary: "/bin/beadle", Home: "relative"})
-	require.Error(t, err)
+				_, _, err = daemon.RenderLaunchd(daemon.Spec{Binary: "/bin/beadle", Home: "relative"})
+				So(err, ShouldBeError)
+			})
+		})
+	})
 }
 
 func TestInstallWritesFileAndRegisters(t *testing.T) {
-	t.Parallel()
+	Convey("Given a daemon spec and a stub runner", t, func() {
+		home := t.TempDir()
 
-	home := t.TempDir()
+		var calls [][]string
 
-	var calls [][]string
+		run := func(_ context.Context, name string, args ...string) error {
+			calls = append(calls, append([]string{name}, args...))
 
-	run := func(_ context.Context, name string, args ...string) error {
-		calls = append(calls, append([]string{name}, args...))
+			return nil
+		}
 
-		return nil
-	}
+		spec := daemon.Spec{Binary: "/bin/beadle", Args: []string{"watch"}, Home: home}
 
-	spec := daemon.Spec{Binary: "/bin/beadle", Args: []string{"watch"}, Home: home}
+		Convey("When the daemon is installed", func() {
+			path, err := daemon.Install(t.Context(), spec, run)
 
-	path, err := daemon.Install(t.Context(), spec, run)
-	require.NoError(t, err)
+			Convey("Then the unit file exists and the runner was called", func() {
+				So(err, ShouldBeNil)
 
-	_, err = os.Stat(path)
-	require.NoError(t, err)
-	require.NotEmpty(t, calls)
+				_, statErr := os.Stat(path)
+				So(statErr, ShouldBeNil)
+				So(calls, ShouldNotBeEmpty)
+			})
+		})
+	})
 }

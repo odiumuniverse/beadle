@@ -5,39 +5,45 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
 )
 
 func TestExpandHome(t *testing.T) {
-	t.Parallel()
+	Convey("Given a table of paths", t, func() {
+		home, err := os.UserHomeDir()
+		So(err, ShouldBeNil)
 
-	home, err := os.UserHomeDir()
-	require.NoError(t, err)
+		tests := map[string]string{
+			"~":         home,
+			"~/x":       filepath.Join(home, "x"),
+			"/abs/path": "/abs/path",
+			"relative":  "relative",
+		}
 
-	tests := map[string]string{
-		"~":         home,
-		"~/x":       filepath.Join(home, "x"),
-		"/abs/path": "/abs/path",
-		"relative":  "relative",
-	}
+		for in, want := range tests {
+			Convey("When expanding "+in, func() {
+				got, err := fsutil.ExpandHome(in)
 
-	for in, want := range tests {
-		t.Run(in, func(t *testing.T) {
-			t.Parallel()
-
-			got, err := fsutil.ExpandHome(in)
-			require.NoError(t, err)
-			require.Equal(t, want, got)
-		})
-	}
+				Convey("Then the path matches", func() {
+					So(err, ShouldBeNil)
+					So(got, ShouldEqual, want)
+				})
+			})
+		}
+	})
 }
 
 func TestExists(t *testing.T) {
-	t.Parallel()
+	Convey("Given an existing and a missing path", t, func() {
+		dir := t.TempDir()
 
-	dir := t.TempDir()
-	require.True(t, fsutil.Exists(dir))
-	require.False(t, fsutil.Exists(filepath.Join(dir, "missing")))
+		Convey("When existence is checked", func() {
+			Convey("Then it is reported", func() {
+				So(fsutil.Exists(dir), ShouldBeTrue)
+				So(fsutil.Exists(filepath.Join(dir, "missing")), ShouldBeFalse)
+			})
+		})
+	})
 }

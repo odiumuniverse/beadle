@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/engine"
@@ -47,95 +47,122 @@ func pivotSkillPath(f *fixture, skillName string) string {
 	return filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current", "skills", skillName)
 }
 
-func TestPluginPresentationDirectCacheLinkIsInvisible(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := presentationFixture(t)
-
-	claudeLink := filepath.Join(claudeSkillsDir(f.home), "plugged")
-	require.NoError(t, os.Remove(claudeLink))
-	versionedLink(t, claudeSkillsDir(f.home), "plugged", cacheSkillPath(f.home, "1.0.0", "plugged"))
-
-	report := f.sync(t)
-
-	require.False(t, report.Kind(kind.Skills).VaultChanged)
-
-	for _, change := range report.Kind(kind.Skills).Pulled {
-		require.NotContains(t, change.Key, "plugged")
-	}
-
-	entries, err := os.ReadDir(f.vault.SkillsDir())
-	require.NoError(t, err)
-	require.Empty(t, entries, "a cache link never reaches the canon")
-
-	link, err := os.Readlink(claudeLink)
-	require.NoError(t, err)
-	require.Equal(t, cacheSkillPath(f.home, "1.0.0", "plugged"), link, "the foreign link is never re-pointed")
-
-	require.Equal(t, pivotSkillPath(f, "plugged"), farmLink(t, openCodeSkillsDir(f.home), "plugged"))
-
-	issues, err := f.engine.Doctor(t.Context())
-	require.NoError(t, err)
-	require.False(t, hasIssue(issues, engine.SeverityError, "plugged"), "issues: %v", issues)
-}
-
-func TestPluginPresentationExternalChainIsInvisible(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := presentationFixture(t)
-
-	dock := filepath.Join(f.home, "dock", "alpha")
-	require.NoError(t, os.MkdirAll(filepath.Dir(dock), 0o750))
-	require.NoError(t, os.Symlink(cacheSkillPath(f.home, "2.0.0", "alpha"), dock))
-	versionedLink(t, claudeSkillsDir(f.home), "alpha", dock)
-
-	report := f.sync(t)
-
-	require.False(t, report.Kind(kind.Skills).VaultChanged)
-	require.Empty(t, report.Kind(kind.Skills).Pulled)
-	require.Equal(t, engine.ActionNoop, report.Action(kind.Skills, agent.ClaudeCodeID))
-
-	entries, err := os.ReadDir(f.vault.SkillsDir())
-	require.NoError(t, err)
-	require.Empty(t, entries, "a chain that ends in the plugin cache never reaches the canon")
-}
-
-func TestPluginPresentationDockRoundTrip(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := presentationFixture(t, agent.GeminiCLIID, agent.SharedID)
-
-	dock := filepath.Join(sharedSkillsDir(f.home), "alpha")
-	write(t, filepath.Join(dock, "SKILL.md"), "# alpha v1\n")
-	versionedLink(t, claudeSkillsDir(f.home), "alpha", dock)
-
-	report := f.sync(t)
-	require.True(t, report.Kind(kind.Skills).VaultChanged)
-	require.Equal(t, "# alpha v1\n", read(t, f.vaultSkill("alpha")))
-	requireGeminiCopy(t, f, "# alpha v1\n")
-
-	write(t, filepath.Join(claudeSkillsDir(f.home), "alpha", "SKILL.md"), "# alpha v2\n")
-
-	f.sync(t)
-	require.Equal(t, "# alpha v2\n", read(t, f.vaultSkill("alpha")), "an edit through the dock link is pulled")
-	requireGeminiCopy(t, f, "# alpha v2\n")
-
-	require.NoError(t, os.RemoveAll(dock))
-
-	issues, err := f.engine.Doctor(t.Context())
-	require.NoError(t, err)
-	require.True(t, hasIssue(issues, engine.SeverityError, "broken symlink: "+filepath.Join(claudeSkillsDir(f.home), "alpha")), "issues: %v", issues)
-	require.Equal(t, "# alpha v2\n", read(t, f.vaultSkill("alpha")), "the canon stays intact")
-	requireGeminiCopy(t, f, "# alpha v2\n")
-}
-
 func requireGeminiCopy(t *testing.T, f *fixture, content string) {
 	t.Helper()
 
 	path := filepath.Join(f.home, ".gemini", "skills", "alpha", "SKILL.md")
 
 	info, err := os.Lstat(path)
-	require.NoError(t, err)
-	require.Zero(t, info.Mode()&fs.ModeSymlink, "Gemini holds a real copy, not a symlink")
-	require.Equal(t, content, read(t, path))
+	if err != nil {
+		t.Fatalf("lstat %s: %v", path, err)
+	}
+
+	if info.Mode()&fs.ModeSymlink != 0 {
+		t.Fatalf("Gemini holds a symlink, expected a real copy")
+	}
+
+	if got := read(t, path); got != content {
+		t.Fatalf("gemini copy = %q, want %q", got, content)
+	}
+}
+
+func TestPluginPresentationDirectCacheLinkIsInvisible(t *testing.T) {
+	Convey("Given a foreign direct cache link in the Claude skills dir", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := presentationFixture(t)
+
+		claudeLink := filepath.Join(claudeSkillsDir(f.home), "plugged")
+		So(os.Remove(claudeLink), ShouldBeNil)
+		versionedLink(t, claudeSkillsDir(f.home), "plugged", cacheSkillPath(f.home, "1.0.0", "plugged"))
+
+		Convey("When sync and doctor run", func() {
+			report := f.sync(t)
+
+			entries, err := os.ReadDir(f.vault.SkillsDir())
+			So(err, ShouldBeNil)
+
+			link, linkErr := os.Readlink(claudeLink)
+			So(linkErr, ShouldBeNil)
+
+			issues, err := f.engine.Doctor(t.Context())
+			So(err, ShouldBeNil)
+
+			Convey("Then the cache link never reaches the canon or is re-pointed", func() {
+				So(report.Kind(kind.Skills).VaultChanged, ShouldBeFalse)
+
+				for _, change := range report.Kind(kind.Skills).Pulled {
+					So(change.Key, ShouldNotContainSubstring, "plugged")
+				}
+
+				So(entries, ShouldBeEmpty)
+				So(link, ShouldEqual, cacheSkillPath(f.home, "1.0.0", "plugged"))
+
+				So(farmLink(t, openCodeSkillsDir(f.home), "plugged"), ShouldEqual, pivotSkillPath(f, "plugged"))
+				So(hasIssue(issues, engine.SeverityError, "plugged"), ShouldBeFalse)
+			})
+		})
+	})
+}
+
+func TestPluginPresentationExternalChainIsInvisible(t *testing.T) {
+	Convey("Given a link chain ending in the plugin cache", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := presentationFixture(t)
+
+		dock := filepath.Join(f.home, "dock", "alpha")
+		So(os.MkdirAll(filepath.Dir(dock), 0o750), ShouldBeNil)
+		So(os.Symlink(cacheSkillPath(f.home, "2.0.0", "alpha"), dock), ShouldBeNil)
+		versionedLink(t, claudeSkillsDir(f.home), "alpha", dock)
+
+		Convey("When sync runs", func() {
+			report := f.sync(t)
+
+			entries, err := os.ReadDir(f.vault.SkillsDir())
+			So(err, ShouldBeNil)
+
+			Convey("Then the chain never reaches the canon", func() {
+				So(report.Kind(kind.Skills).VaultChanged, ShouldBeFalse)
+				So(report.Kind(kind.Skills).Pulled, ShouldBeEmpty)
+				So(report.Action(kind.Skills, agent.ClaudeCodeID), ShouldEqual, engine.ActionNoop)
+				So(entries, ShouldBeEmpty)
+			})
+		})
+	})
+}
+
+func TestPluginPresentationDockRoundTrip(t *testing.T) {
+	Convey("Given a dock link into the Claude skills dir", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := presentationFixture(t, agent.GeminiCLIID, agent.SharedID)
+
+		dock := filepath.Join(sharedSkillsDir(f.home), "alpha")
+		write(t, filepath.Join(dock, "SKILL.md"), "# alpha v1\n")
+		versionedLink(t, claudeSkillsDir(f.home), "alpha", dock)
+
+		report := f.sync(t)
+
+		Convey("When the dock is edited and then removed", func() {
+			write(t, filepath.Join(claudeSkillsDir(f.home), "alpha", "SKILL.md"), "# alpha v2\n")
+
+			f.sync(t)
+
+			So(os.RemoveAll(dock), ShouldBeNil)
+
+			issues, err := f.engine.Doctor(t.Context())
+			So(err, ShouldBeNil)
+
+			Convey("Then edits pull through and removal surfaces a broken link", func() {
+				So(report.Kind(kind.Skills).VaultChanged, ShouldBeTrue)
+				So(read(t, f.vaultSkill("alpha")), ShouldEqual, "# alpha v2\n")
+
+				requireGeminiCopy(t, f, "# alpha v2\n")
+
+				So(hasIssue(issues, engine.SeverityError, "broken symlink: "+filepath.Join(claudeSkillsDir(f.home), "alpha")), ShouldBeTrue)
+				So(read(t, f.vaultSkill("alpha")), ShouldEqual, "# alpha v2\n")
+			})
+		})
+	})
 }

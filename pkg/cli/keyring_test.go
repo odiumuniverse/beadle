@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func newSecretsVault(t *testing.T) string {
@@ -17,8 +17,9 @@ func newSecretsVault(t *testing.T) string {
 	t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
 	t.Setenv("XDG_CONFIG_HOME", "")
 
-	_, err := runCLI(t, "init")
-	require.NoError(t, err)
+	if _, err := runCLI(t, "init"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
 
 	return home
 }
@@ -27,66 +28,96 @@ func readSecrets(t *testing.T, home string) string {
 	t.Helper()
 
 	data, err := os.ReadFile(filepath.Join(home, ".beadle", "mcp", "secrets.json")) //nolint:gosec // G304: test reads its own temp file
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("read secrets: %v", err)
+	}
 
 	return string(data)
 }
 
-func TestKeyringListShowsBackend(t *testing.T) { //nolint:paralleltest // mutates HOME via t.Setenv
-	home := newSecretsVault(t)
+func TestKeyringListShowsBackend(t *testing.T) {
+	Convey("Given a vault with a stored secret", t, func() {
+		home := newSecretsVault(t)
 
-	out, err := runCLI(t, "secrets", "set", "TOKEN", "s3cr3t")
-	require.NoError(t, err)
-	require.Contains(t, out, "stored TOKEN")
+		setOut, err := runCLI(t, "secrets", "set", "TOKEN", "s3cr3t")
+		So(err, ShouldBeNil)
+		So(setOut, ShouldContainSubstring, "stored TOKEN")
 
-	out, err = runCLI(t, "secrets", "list")
-	require.NoError(t, err)
-	require.Contains(t, out, "secrets: 1 (backend: file, mode: literal)")
-	require.Contains(t, out, "TOKEN")
+		Convey("When secrets are listed", func() {
+			out, err := runCLI(t, "secrets", "list")
 
-	require.Contains(t, readSecrets(t, home), "s3cr3t")
+			Convey("Then the backend and the secret are shown", func() {
+				So(err, ShouldBeNil)
+				So(out, ShouldContainSubstring, "secrets: 1 (backend: file, mode: literal)")
+				So(out, ShouldContainSubstring, "TOKEN")
+				So(readSecrets(t, home), ShouldContainSubstring, "s3cr3t")
+			})
+		})
+	})
 }
 
 func TestKeyringMigrateRefusesWithoutTool(t *testing.T) {
-	home := newSecretsVault(t)
+	Convey("Given a vault with a secret and no keyring tool", t, func() {
+		home := newSecretsVault(t)
 
-	_, err := runCLI(t, "secrets", "set", "TOKEN", "s3cr3t")
-	require.NoError(t, err)
+		_, err := runCLI(t, "secrets", "set", "TOKEN", "s3cr3t")
+		So(err, ShouldBeNil)
 
-	before := readSecrets(t, home)
+		before := readSecrets(t, home)
 
-	t.Setenv("PATH", t.TempDir())
+		t.Setenv("PATH", t.TempDir())
 
-	_, err = runCLI(t, "secrets", "migrate", "keyring")
-	require.ErrorContains(t, err, "keyring unavailable")
+		Convey("When migrating to keyring", func() {
+			_, err := runCLI(t, "secrets", "migrate", "keyring")
 
-	require.Equal(t, before, readSecrets(t, home), "the refusal happens before any change")
-	require.NotContains(t, readSecrets(t, home), `"backend"`)
+			Convey("Then it refuses before changing anything", func() {
+				So(err, ShouldBeError)
+				So(err.Error(), ShouldContainSubstring, "keyring unavailable")
+				So(readSecrets(t, home), ShouldEqual, before)
+				So(readSecrets(t, home), ShouldNotContainSubstring, `"backend"`)
+			})
+		})
+	})
 }
 
 func TestKeyringMigrateAlreadyKeyringProbes(t *testing.T) {
-	home := newSecretsVault(t)
+	Convey("Given a keyring-backed secrets file and no tool", t, func() {
+		home := newSecretsVault(t)
 
-	writeFile(t, filepath.Join(home, ".beadle", "mcp", "secrets.json"), `{"version": 2, "backend": "keyring", "secrets": {}}`)
+		writeFile(t, filepath.Join(home, ".beadle", "mcp", "secrets.json"), `{"version": 2, "backend": "keyring", "secrets": {}}`)
 
-	t.Setenv("PATH", t.TempDir())
+		t.Setenv("PATH", t.TempDir())
 
-	_, err := runCLI(t, "secrets", "migrate", "keyring")
-	require.ErrorContains(t, err, "keyring unavailable")
+		Convey("When migrating to keyring", func() {
+			_, err := runCLI(t, "secrets", "migrate", "keyring")
+
+			Convey("Then it still probes and refuses", func() {
+				So(err, ShouldBeError)
+				So(err.Error(), ShouldContainSubstring, "keyring unavailable")
+			})
+		})
+	})
 }
 
-func TestKeyringMigrateFileIsNoop(t *testing.T) { //nolint:paralleltest // mutates HOME via t.Setenv
-	home := newSecretsVault(t)
+func TestKeyringMigrateFileIsNoop(t *testing.T) {
+	Convey("Given a file-backed vault with a secret", t, func() {
+		home := newSecretsVault(t)
 
-	_, err := runCLI(t, "secrets", "set", "TOKEN", "s3cr3t")
-	require.NoError(t, err)
+		_, err := runCLI(t, "secrets", "set", "TOKEN", "s3cr3t")
+		So(err, ShouldBeNil)
 
-	out, err := runCLI(t, "secrets", "migrate", "file")
-	require.NoError(t, err)
-	require.Contains(t, out, "backend is already file")
+		Convey("When migrating to file or an unknown backend", func() {
+			out, err := runCLI(t, "secrets", "migrate", "file")
+			So(err, ShouldBeNil)
 
-	_, err = runCLI(t, "secrets", "migrate", "gpg")
-	require.ErrorContains(t, err, "unknown backend")
+			_, err = runCLI(t, "secrets", "migrate", "gpg")
 
-	require.Contains(t, readSecrets(t, home), "s3cr3t")
+			Convey("Then file is a no-op and the unknown backend is refused", func() {
+				So(out, ShouldContainSubstring, "backend is already file")
+				So(err, ShouldBeError)
+				So(err.Error(), ShouldContainSubstring, "unknown backend")
+				So(readSecrets(t, home), ShouldContainSubstring, "s3cr3t")
+			})
+		})
+	})
 }

@@ -4,25 +4,35 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
 )
 
 func TestInboxPath(t *testing.T) {
-	home := t.TempDir()
+	Convey("Given a home directory", t, func() {
+		home := t.TempDir()
 
-	t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	require.Equal(t, filepath.Join(home, ".config", "opencode", "inbox.md"), agent.InboxPath(home, agent.OpenCodeID))
-	require.Equal(t, filepath.Join(home, ".gemini", "inbox.md"), agent.InboxPath(home, agent.GeminiCLIID))
-	require.Equal(t, filepath.Join(home, ".cursor", "inbox.md"), agent.InboxPath(home, agent.CursorID))
-	require.Empty(t, agent.InboxPath(home, agent.ClaudeCodeID), "claude-code has no inbox")
-	require.Empty(t, agent.InboxPath(home, agent.SharedID))
+		Convey("When inbox paths are resolved", func() {
+			Convey("Then each agent gets its own inbox or none", func() {
+				So(agent.InboxPath(home, agent.OpenCodeID), ShouldEqual, filepath.Join(home, ".config", "opencode", "inbox.md"))
+				So(agent.InboxPath(home, agent.GeminiCLIID), ShouldEqual, filepath.Join(home, ".gemini", "inbox.md"))
+				So(agent.InboxPath(home, agent.CursorID), ShouldEqual, filepath.Join(home, ".cursor", "inbox.md"))
+				So(agent.InboxPath(home, agent.ClaudeCodeID), ShouldBeEmpty)
+				So(agent.InboxPath(home, agent.SharedID), ShouldBeEmpty)
+			})
+		})
 
-	sandbox := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", sandbox)
+		Convey("When XDG_CONFIG_HOME is set", func() {
+			sandbox := t.TempDir()
+			t.Setenv("XDG_CONFIG_HOME", sandbox)
 
-	require.Equal(t, filepath.Join(sandbox, "opencode", "inbox.md"), agent.InboxPath(home, agent.OpenCodeID), "the opencode inbox honors XDG_CONFIG_HOME")
-	require.Equal(t, filepath.Join(home, ".gemini", "inbox.md"), agent.InboxPath(home, agent.GeminiCLIID), "gemini ignores XDG_CONFIG_HOME")
+			Convey("Then only OpenCode follows it", func() {
+				So(agent.InboxPath(home, agent.OpenCodeID), ShouldEqual, filepath.Join(sandbox, "opencode", "inbox.md"))
+				So(agent.InboxPath(home, agent.GeminiCLIID), ShouldEqual, filepath.Join(home, ".gemini", "inbox.md"))
+			})
+		})
+	})
 }

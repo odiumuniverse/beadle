@@ -4,75 +4,90 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestHooksCommands(t *testing.T) {
-	home := t.TempDir()
+	Convey("Given an initialized vault", t, func() {
+		home := t.TempDir()
 
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
 
-	_, err := runCLI(t, "init")
-	require.NoError(t, err)
+		_, err := runCLI(t, "init")
+		So(err, ShouldBeNil)
 
-	out, err := runCLI(t, "hooks", "list")
-	require.NoError(t, err)
-	require.Contains(t, out, "no hooks")
+		out, err := runCLI(t, "hooks", "list")
+		So(err, ShouldBeNil)
+		So(out, ShouldContainSubstring, "no hooks")
 
-	out, err = runCLI(t, "hooks", "add", "notify", "--event", "notification", "--command", "echo done", "--timeout", "5")
-	require.NoError(t, err)
-	require.Contains(t, out, "hook notify saved")
+		Convey("When a hook is added", func() {
+			out, err := runCLI(t, "hooks", "add", "notify", "--event", "notification", "--command", "echo done", "--timeout", "5")
 
-	out, err = runCLI(t, "hooks", "list")
-	require.NoError(t, err)
-	require.Contains(t, out, "notify")
-	require.Contains(t, out, "notification")
-	require.Contains(t, out, "pending")
-	require.NotContains(t, out, "echo done")
+			Convey("Then it is pending and its command is hidden by default", func() {
+				So(err, ShouldBeNil)
+				So(out, ShouldContainSubstring, "hook notify saved")
 
-	out, err = runCLI(t, "hooks", "list", "--commands")
-	require.NoError(t, err)
-	require.Contains(t, out, "echo done")
+				out, err := runCLI(t, "hooks", "list")
+				So(err, ShouldBeNil)
+				So(out, ShouldContainSubstring, "notify")
+				So(out, ShouldContainSubstring, "notification")
+				So(out, ShouldContainSubstring, "pending")
+				So(out, ShouldNotContainSubstring, "echo done")
 
-	_, err = runCLI(t, "hooks", "approve", "ghost")
-	require.ErrorContains(t, err, "unknown hook")
+				out, err = runCLI(t, "hooks", "list", "--commands")
+				So(err, ShouldBeNil)
+				So(out, ShouldContainSubstring, "echo done")
 
-	out, err = runCLI(t, "hooks", "approve", "notify")
-	require.NoError(t, err)
-	require.Contains(t, out, "hook notify approved")
+				Convey("And approving an unknown hook fails", func() {
+					_, err := runCLI(t, "hooks", "approve", "ghost")
+					So(err, ShouldBeError)
+					So(err.Error(), ShouldContainSubstring, "unknown hook")
 
-	out, err = runCLI(t, "hooks", "list")
-	require.NoError(t, err)
-	require.Contains(t, out, "approved")
+					out, err = runCLI(t, "hooks", "approve", "notify")
+					So(err, ShouldBeNil)
+					So(out, ShouldContainSubstring, "hook notify approved")
 
-	_, err = runCLI(t, "hooks", "add", "bad", "--event", "nope", "--command", "true")
-	require.ErrorContains(t, err, "unknown event")
+					out, err = runCLI(t, "hooks", "list")
+					So(err, ShouldBeNil)
+					So(out, ShouldContainSubstring, "approved")
 
-	_, err = runCLI(t, "hooks", "add", "BadName", "--event", "stop", "--command", "true")
-	require.ErrorContains(t, err, "invalid hook name")
+					_, err = runCLI(t, "hooks", "add", "bad", "--event", "nope", "--command", "true")
+					So(err, ShouldBeError)
+					So(err.Error(), ShouldContainSubstring, "unknown event")
 
-	out, err = runCLI(t, "hooks", "revoke", "notify")
-	require.NoError(t, err)
-	require.Contains(t, out, "hook notify revoked")
+					_, err = runCLI(t, "hooks", "add", "BadName", "--event", "stop", "--command", "true")
+					So(err, ShouldBeError)
+					So(err.Error(), ShouldContainSubstring, "invalid hook name")
 
-	out, err = runCLI(t, "hooks", "list")
-	require.NoError(t, err)
-	require.Contains(t, out, "pending")
+					out, err = runCLI(t, "hooks", "revoke", "notify")
+					So(err, ShouldBeNil)
+					So(out, ShouldContainSubstring, "hook notify revoked")
 
-	out, err = runCLI(t, "hooks", "rm", "notify")
-	require.NoError(t, err)
-	require.Contains(t, out, "hook notify removed")
+					out, err = runCLI(t, "hooks", "list")
+					So(err, ShouldBeNil)
+					So(out, ShouldContainSubstring, "pending")
 
-	_, err = runCLI(t, "hooks", "rm", "notify")
-	require.ErrorContains(t, err, "unknown hook")
+					out, err = runCLI(t, "hooks", "rm", "notify")
+					So(err, ShouldBeNil)
+					So(out, ShouldContainSubstring, "hook notify removed")
 
-	out, err = runCLI(t, "hooks", "add", "notify", "--event", "notification", "--command", "echo again")
-	require.NoError(t, err)
-	require.Contains(t, out, "hook notify saved")
+					_, err = runCLI(t, "hooks", "rm", "notify")
+					So(err, ShouldBeError)
+					So(err.Error(), ShouldContainSubstring, "unknown hook")
 
-	out, err = runCLI(t, "hooks", "list")
-	require.NoError(t, err)
-	require.Contains(t, out, "pending", "removing a hook must drop its approval")
+					Convey("And re-adding a removed hook drops its approval", func() {
+						out, err := runCLI(t, "hooks", "add", "notify", "--event", "notification", "--command", "echo again")
+						So(err, ShouldBeNil)
+						So(out, ShouldContainSubstring, "hook notify saved")
+
+						out, err = runCLI(t, "hooks", "list")
+						So(err, ShouldBeNil)
+						So(out, ShouldContainSubstring, "pending")
+					})
+				})
+			})
+		})
+	})
 }

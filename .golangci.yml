@@ -96,6 +96,7 @@ linters:
       - path: _test\.go
         linters:
           - goconst
+          - paralleltest
     paths:
       - vendor$
       - third_party$
@@ -138,6 +139,7 @@ linters:
     nolintlint:
       require-explanation: true
       require-specific: true
+      allow-unused: true
     revive:
       rules:
         - name: exported

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/plugin"
 )
@@ -15,8 +15,13 @@ import (
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 
-	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o750))
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("mkdir %s: %v", path, err)
+	}
+
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
 }
 
 func pluginFixture(t *testing.T) (home, pluginDir, ghostDir, fallbackDir string) {
@@ -40,7 +45,10 @@ func pluginFixture(t *testing.T) (home, pluginDir, ghostDir, fallbackDir string)
 
 	linked := filepath.Join(home, "shared-skill")
 	writeFile(t, filepath.Join(linked, "SKILL.md"), "# linked\n")
-	require.NoError(t, os.Symlink(linked, filepath.Join(pluginDir, "skills", "delta")))
+
+	if err := os.Symlink(linked, filepath.Join(pluginDir, "skills", "delta")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
 
 	writeFile(t, filepath.Join(fallbackDir, ".claude-plugin", "plugin.json"), `{"version":"2.0.0"}`)
 
@@ -92,118 +100,143 @@ func pluginFixture(t *testing.T) (home, pluginDir, ghostDir, fallbackDir string)
 }
 
 func TestRead(t *testing.T) {
-	t.Parallel()
+	Convey("Given a plugin cache with installs, a ghost, orphans and a marketplace", t, func() {
+		home, pluginDir, ghostDir, fallbackDir := pluginFixture(t)
 
-	home, pluginDir, ghostDir, fallbackDir := pluginFixture(t)
+		Convey("When the manifest is read", func() {
+			manifest, err := plugin.Read(home)
 
-	manifest, err := plugin.Read(home)
-	require.NoError(t, err)
+			Convey("Then plugins, warnings, marketplaces and orphans match", func() {
+				So(err, ShouldBeNil)
 
-	require.Equal(t, []plugin.Plugin{
-		{
-			Name:         "ghost",
-			Marketplace:  "acme",
-			Version:      "1.0.0",
-			Scope:        "user",
-			InstallPath:  ghostDir,
-			GitCommitSha: "def5678",
-		},
-		{
-			Name:         "fallback",
-			Marketplace:  "vmkteam",
-			Version:      "2.0.0",
-			Scope:        "user",
-			InstallPath:  fallbackDir,
-			GitCommitSha: "beef001",
-		},
-		{
-			Name:           "vmkteam-developer",
-			Marketplace:    "vmkteam",
-			Version:        "1.1.0",
-			Scope:          "user",
-			InstallPath:    pluginDir,
-			GitCommitSha:   "abc1234",
-			Description:    "vmkteam toolkit",
-			Skills:         []string{"alpha", "beta", "delta"},
-			Commands:       []string{"dev.md"},
-			Hooks:          []string{"SessionStart", "Setup"},
-			MCPServers:     []string{"fetch", "search"},
-			PluginRootRefs: []string{".mcp.json"},
-		},
-	}, manifest.Plugins)
+				So(manifest.Plugins, ShouldResemble, []plugin.Plugin{
+					{
+						Name:         "ghost",
+						Marketplace:  "acme",
+						Version:      "1.0.0",
+						Scope:        "user",
+						InstallPath:  ghostDir,
+						GitCommitSha: "def5678",
+					},
+					{
+						Name:         "fallback",
+						Marketplace:  "vmkteam",
+						Version:      "2.0.0",
+						Scope:        "user",
+						InstallPath:  fallbackDir,
+						GitCommitSha: "beef001",
+					},
+					{
+						Name:           "vmkteam-developer",
+						Marketplace:    "vmkteam",
+						Version:        "1.1.0",
+						Scope:          "user",
+						InstallPath:    pluginDir,
+						GitCommitSha:   "abc1234",
+						Description:    "vmkteam toolkit",
+						Skills:         []string{"alpha", "beta", "delta"},
+						Commands:       []string{"dev.md"},
+						Hooks:          []string{"SessionStart", "Setup"},
+						MCPServers:     []string{"fetch", "search"},
+						PluginRootRefs: []string{".mcp.json"},
+					},
+				})
 
-	require.Equal(t, []string{
-		"installed plugin ghost@acme points to a missing directory: " + ghostDir,
-		"cannot parse .orphaned_at in " + filepath.Join(home, ".claude", "plugins", "cache", "acme", "tool", "0.8.0"),
-	}, manifest.Warnings)
+				So(manifest.Warnings, ShouldResemble, []string{
+					"installed plugin ghost@acme points to a missing directory: " + ghostDir,
+					"cannot parse .orphaned_at in " + filepath.Join(home, ".claude", "plugins", "cache", "acme", "tool", "0.8.0"),
+				})
 
-	require.Equal(t, []plugin.Marketplace{{
-		Name:        "vmkteam",
-		Repo:        "git.example.com/vmkteam/plugins",
-		InstallPath: filepath.Join(home, ".claude", "plugins", "marketplaces", "vmkteam"),
-		AutoUpdate:  true,
-	}}, manifest.Marketplaces)
+				So(manifest.Marketplaces, ShouldResemble, []plugin.Marketplace{{
+					Name:        "vmkteam",
+					Repo:        "git.example.com/vmkteam/plugins",
+					InstallPath: filepath.Join(home, ".claude", "plugins", "marketplaces", "vmkteam"),
+					AutoUpdate:  true,
+				}})
 
-	require.Equal(t, []plugin.Orphan{
-		{
-			Marketplace: "acme",
-			Name:        "tool",
-			Version:     "0.8.0",
-			Path:        filepath.Join(home, ".claude", "plugins", "cache", "acme", "tool", "0.8.0"),
-		},
-		{
-			Marketplace: "acme",
-			Name:        "tool",
-			Version:     "0.9.0",
-			Path:        filepath.Join(home, ".claude", "plugins", "cache", "acme", "tool", "0.9.0"),
-		},
-		{
-			Marketplace: "acme",
-			Name:        "tool",
-			Version:     "1.0.0",
-			Path:        filepath.Join(home, ".claude", "plugins", "cache", "acme", "tool", "1.0.0"),
-			OrphanedAt:  time.UnixMilli(1789083161350),
-		},
-	}, manifest.Orphans)
+				So(manifest.Orphans, ShouldResemble, []plugin.Orphan{
+					{
+						Marketplace: "acme",
+						Name:        "tool",
+						Version:     "0.8.0",
+						Path:        filepath.Join(home, ".claude", "plugins", "cache", "acme", "tool", "0.8.0"),
+					},
+					{
+						Marketplace: "acme",
+						Name:        "tool",
+						Version:     "0.9.0",
+						Path:        filepath.Join(home, ".claude", "plugins", "cache", "acme", "tool", "0.9.0"),
+					},
+					{
+						Marketplace: "acme",
+						Name:        "tool",
+						Version:     "1.0.0",
+						Path:        filepath.Join(home, ".claude", "plugins", "cache", "acme", "tool", "1.0.0"),
+						OrphanedAt:  time.UnixMilli(1789083161350),
+					},
+				})
+			})
+		})
+	})
 }
 
 func TestReadMissingRoot(t *testing.T) {
-	t.Parallel()
+	Convey("Given an empty home", t, func() {
+		Convey("When the manifest is read", func() {
+			manifest, err := plugin.Read(t.TempDir())
 
-	manifest, err := plugin.Read(t.TempDir())
-	require.NoError(t, err)
-	require.Empty(t, manifest.Plugins)
-	require.Empty(t, manifest.Marketplaces)
-	require.Empty(t, manifest.Orphans)
-	require.Empty(t, manifest.Warnings)
+			Convey("Then everything is empty", func() {
+				So(err, ShouldBeNil)
+				So(manifest.Plugins, ShouldBeEmpty)
+				So(manifest.Marketplaces, ShouldBeEmpty)
+				So(manifest.Orphans, ShouldBeEmpty)
+				So(manifest.Warnings, ShouldBeEmpty)
+			})
+		})
+	})
 }
 
 func TestReadMissingRegistries(t *testing.T) {
-	t.Parallel()
+	Convey("Given a plugins directory without registries", t, func() {
+		home := t.TempDir()
+		So(os.MkdirAll(filepath.Join(home, ".claude", "plugins"), 0o750), ShouldBeNil)
 
-	home := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude", "plugins"), 0o750))
+		Convey("When the manifest is read", func() {
+			manifest, err := plugin.Read(home)
 
-	manifest, err := plugin.Read(home)
-	require.NoError(t, err)
-	require.Len(t, manifest.Warnings, 2)
-	require.Contains(t, manifest.Warnings[0], "installed_plugins.json not found")
-	require.Contains(t, manifest.Warnings[1], "known_marketplaces.json not found")
+			Convey("Then both missing registries are warned about", func() {
+				So(err, ShouldBeNil)
+				So(manifest.Warnings, ShouldHaveLength, 2)
+				So(manifest.Warnings[0], ShouldContainSubstring, "installed_plugins.json not found")
+				So(manifest.Warnings[1], ShouldContainSubstring, "known_marketplaces.json not found")
+			})
+		})
+	})
 }
 
 func TestReadMalformedInstalled(t *testing.T) {
-	t.Parallel()
+	Convey("Given a malformed installed_plugins.json", t, func() {
+		home := t.TempDir()
+		writeFile(t, filepath.Join(home, ".claude", "plugins", "installed_plugins.json"), "{oops")
 
-	home := t.TempDir()
-	writeFile(t, filepath.Join(home, ".claude", "plugins", "installed_plugins.json"), "{oops")
+		Convey("When the manifest is read", func() {
+			_, err := plugin.Read(home)
 
-	_, err := plugin.Read(home)
-	require.Error(t, err)
+			Convey("Then it fails", func() {
+				So(err, ShouldBeError)
+			})
+		})
+	})
 }
 
 func TestReadEmptyHome(t *testing.T) {
-	t.Parallel()
+	Convey("Given an empty home path", t, func() {
+		Convey("When the manifest is read", func() {
+			_, err := plugin.Read("")
 
-	_, err := plugin.Read("")
-	require.Error(t, err)
+			Convey("Then it fails", func() {
+				So(err, ShouldBeError)
+			})
+		})
+	})
 }

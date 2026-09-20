@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/kind"
@@ -16,60 +16,82 @@ func projectMCPSurfaceOf(t *testing.T, cwd string) (agent.Surface, string) {
 	t.Helper()
 
 	surface := agent.ClaudeCode(t.TempDir(), cwd).Surface(kind.Projects)
-	require.NotNil(t, surface)
+	if surface == nil {
+		t.Fatal("no projects surface")
+	}
 
 	file, ok := surface.(agent.ProjectFile)
-	require.True(t, ok)
+	if !ok {
+		t.Fatal("projects surface is not a ProjectFile")
+	}
 
 	return surface, proj.Resolve(cwd).ID + "/" + file.ProjectRel()
 }
 
 func TestProjectMCPSurfaceWriteRefusesLinks(t *testing.T) {
-	t.Parallel()
+	Convey("Given a symlinked project .mcp.json", t, func() {
+		home := t.TempDir()
+		cwd := t.TempDir()
 
-	home := t.TempDir()
-	cwd := t.TempDir()
+		surface, key := projectMCPSurfaceOf(t, cwd)
 
-	surface, key := projectMCPSurfaceOf(t, cwd)
+		target := filepath.Join(home, "target.json")
+		writeFile(t, target, `{"orig": true}`)
 
-	target := filepath.Join(home, "target.json")
-	writeFile(t, target, `{"orig": true}`)
+		So(os.Symlink(target, filepath.Join(cwd, ".mcp.json")), ShouldBeNil)
 
-	require.NoError(t, os.Symlink(target, filepath.Join(cwd, ".mcp.json")))
+		Convey("When the surface writes", func() {
+			err := surface.Write(t.Context(), kind.Items{key: []byte(`{"mcpServers": {"evil": {}}}`)})
 
-	err := surface.Write(t.Context(), kind.Items{key: []byte(`{"mcpServers": {"evil": {}}}`)})
-	require.ErrorContains(t, err, "symlink")
-	require.JSONEq(t, `{"orig": true}`, readFile(t, target), "no write-through into the symlink target")
+			Convey("Then it refuses and never writes through the link", func() {
+				So(err, ShouldBeError)
+				So(err.Error(), ShouldContainSubstring, "symlink")
+				So(readFile(t, target), ShouldEqualJSON, `{"orig": true}`)
 
-	info, err := os.Lstat(filepath.Join(cwd, ".mcp.json"))
-	require.NoError(t, err)
-	require.NotEqual(t, os.FileMode(0), info.Mode()&os.ModeSymlink, "the symlink stays untouched")
+				info, statErr := os.Lstat(filepath.Join(cwd, ".mcp.json"))
+				So(statErr, ShouldBeNil)
+				So(info.Mode()&os.ModeSymlink, ShouldNotEqual, os.FileMode(0))
+			})
+		})
 
-	require.NoError(t, os.Remove(filepath.Join(cwd, ".mcp.json")))
+		Convey("When the file is replaced by a hard link", func() {
+			So(os.Remove(filepath.Join(cwd, ".mcp.json")), ShouldBeNil)
 
-	other := filepath.Join(cwd, "shared.json")
-	writeFile(t, other, `{"mcpServers": {}}`)
-	require.NoError(t, os.Link(other, filepath.Join(cwd, ".mcp.json")))
+			other := filepath.Join(cwd, "shared.json")
+			writeFile(t, other, `{"mcpServers": {}}`)
+			So(os.Link(other, filepath.Join(cwd, ".mcp.json")), ShouldBeNil)
 
-	err = surface.Write(t.Context(), kind.Items{key: []byte(`{"mcpServers": {"evil": {}}}`)})
-	require.ErrorContains(t, err, "hard links")
-	require.JSONEq(t, `{"mcpServers": {}}`, readFile(t, other), "the hard-link sibling is untouched")
+			err := surface.Write(t.Context(), kind.Items{key: []byte(`{"mcpServers": {"evil": {}}}`)})
+
+			Convey("Then it refuses and leaves the sibling untouched", func() {
+				So(err, ShouldBeError)
+				So(err.Error(), ShouldContainSubstring, "hard links")
+				So(readFile(t, other), ShouldEqualJSON, `{"mcpServers": {}}`)
+			})
+		})
+	})
 }
 
 func TestProjectRulesSurfaceRefusesSymlinkRead(t *testing.T) {
-	t.Parallel()
+	Convey("Given a symlinked project rules file", t, func() {
+		home := t.TempDir()
+		cwd := t.TempDir()
 
-	home := t.TempDir()
-	cwd := t.TempDir()
+		secret := filepath.Join(home, "id_rsa")
+		writeFile(t, secret, "PRIVATE KEY MATERIAL\n")
+		So(os.Symlink(secret, filepath.Join(cwd, "AGENTS.md")), ShouldBeNil)
 
-	secret := filepath.Join(home, "id_rsa")
-	writeFile(t, secret, "PRIVATE KEY MATERIAL\n")
-	require.NoError(t, os.Symlink(secret, filepath.Join(cwd, "AGENTS.md")))
+		a := agent.OpenCode(home, cwd)
+		surface := a.Surface(kind.Projects)
+		So(surface, ShouldNotBeNil)
 
-	a := agent.OpenCode(home, cwd)
-	surface := a.Surface(kind.Projects)
-	require.NotNil(t, surface)
+		Convey("When the surface reads", func() {
+			_, err := surface.Read(t.Context())
 
-	_, err := surface.Read(t.Context())
-	require.ErrorContains(t, err, "symlink", "a symlinked rules file is refused on read")
+			Convey("Then it refuses the symlink", func() {
+				So(err, ShouldBeError)
+				So(err.Error(), ShouldContainSubstring, "symlink")
+			})
+		})
+	})
 }

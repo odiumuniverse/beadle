@@ -5,35 +5,47 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/skill"
 )
 
 func TestIsStubDir(t *testing.T) {
-	t.Parallel()
+	Convey("Given a directory without a stub marker", t, func() {
+		dir := t.TempDir()
+		marker := filepath.Join(dir, skill.StubMarkerFile)
 
-	dir := t.TempDir()
-	marker := filepath.Join(dir, skill.StubMarkerFile)
+		_, ok := skill.IsStubDir(dir)
+		So(ok, ShouldBeFalse)
 
-	_, ok := skill.IsStubDir(dir)
-	require.False(t, ok)
+		Convey("When a valid stub marker is written", func() {
+			So(os.WriteFile(marker, []byte("v1 acme/tool 1.0.0 2026-09-16T10:30:00Z\n"), 0o600), ShouldBeNil)
 
-	require.NoError(t, os.WriteFile(marker, []byte("v1 acme/tool 1.0.0 2026-09-16T10:30:00Z\n"), 0o600))
+			key, ok := skill.IsStubDir(dir)
 
-	key, ok := skill.IsStubDir(dir)
-	require.True(t, ok)
-	require.Equal(t, "acme/tool", key)
+			Convey("Then it is recognized", func() {
+				So(ok, ShouldBeTrue)
+				So(key, ShouldEqual, "acme/tool")
+			})
+		})
 
-	for _, broken := range []string{
-		"v2 acme/tool 1.0.0 2026-09-16T10:30:00Z\n",
-		"v1 acme/tool 1.0.0 not-a-date\n",
-		"v1 acme/tool\n",
-		"",
-	} {
-		require.NoError(t, os.WriteFile(marker, []byte(broken), 0o600))
+		Convey("When the marker is malformed", func() {
+			for _, broken := range []string{
+				"v2 acme/tool 1.0.0 2026-09-16T10:30:00Z\n",
+				"v1 acme/tool 1.0.0 not-a-date\n",
+				"v1 acme/tool\n",
+				"",
+			} {
+				Convey("With marker "+broken, func() {
+					So(os.WriteFile(marker, []byte(broken), 0o600), ShouldBeNil)
 
-		_, ok = skill.IsStubDir(dir)
-		require.False(t, ok, "marker %q must not be recognized", broken)
-	}
+					_, ok := skill.IsStubDir(dir)
+
+					Convey("Then it is not recognized", func() {
+						So(ok, ShouldBeFalse)
+					})
+				})
+			}
+		})
+	})
 }

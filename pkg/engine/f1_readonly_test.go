@@ -3,28 +3,35 @@ package engine_test
 import (
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestDoctorReadOnlyOnRealFilesystem(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a synced fixture with a plugin skill", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
+		f := newFixture(t)
+		f.emptyConfigs(t)
 
-	plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-	writeSkill(t, plugin, "alpha", "# alpha\n")
+		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeSkill(t, plugin, "alpha", "# alpha\n")
 
-	f.sync(t)
+		f.sync(t)
 
-	before := hashTree(t, f.home)
+		before := hashTree(t, f.home)
 
-	issues, err := f.engine.Doctor(t.Context())
-	require.NoError(t, err)
+		Convey("When doctor runs", func() {
+			issues, err := f.engine.Doctor(t.Context())
 
-	for _, issue := range issues {
-		require.NotContains(t, issue.Message, "symlinks are not supported")
-	}
+			Convey("Then it reports no symlink warning and leaves the tree unchanged", func() {
+				So(err, ShouldBeNil)
 
-	require.Equal(t, before, hashTree(t, f.home), "doctor must be read-only")
+				for _, issue := range issues {
+					So(issue.Message, ShouldNotContainSubstring, "symlinks are not supported")
+				}
+
+				So(hashTree(t, f.home), ShouldEqual, before)
+			})
+		})
+	})
 }

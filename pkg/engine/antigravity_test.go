@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/kind"
@@ -20,92 +20,106 @@ func antigravityServers(t *testing.T, path string) map[string]map[string]any {
 		Servers map[string]map[string]any `json:"mcpServers"`
 	}
 
-	require.NoError(t, json.Unmarshal([]byte(read(t, path)), &doc))
+	if err := json.Unmarshal([]byte(read(t, path)), &doc); err != nil {
+		t.Fatalf("unmarshal antigravity config: %v", err)
+	}
 
 	return doc.Servers
 }
 
 func TestAntigravityUnion(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given an Antigravity install with Claude and OpenCode servers", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	f.config.Enable(agent.AntigravityCLIID)
-	require.NoError(t, f.config.Save(f.vault.ConfigPath()))
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		f.config.Enable(agent.AntigravityCLIID)
+		So(f.config.Save(f.vault.ConfigPath()), ShouldBeNil)
 
-	agyConfig := filepath.Join(f.home, ".gemini", "config", "mcp_config.json")
-	write(t, agyConfig, `{"mcpServers": {}}`)
+		agyConfig := filepath.Join(f.home, ".gemini", "config", "mcp_config.json")
+		write(t, agyConfig, `{"mcpServers": {}}`)
 
-	write(t, f.claudeConfig(), `{"mcpServers": {
-		"alpha": {"type": "stdio", "command": "a", "args": ["x"]},
-		"gamma": {"type": "http", "url": "https://gamma.example.com/mcp"}
-	}}`)
-	write(t, f.openCodeConfig(), `{"mcp": {"beta": {"type": "local", "command": ["b"]}}}`)
+		write(t, f.claudeConfig(), `{"mcpServers": {
+			"alpha": {"type": "stdio", "command": "a", "args": ["x"]},
+			"gamma": {"type": "http", "url": "https://gamma.example.com/mcp"}
+		}}`)
+		write(t, f.openCodeConfig(), `{"mcp": {"beta": {"type": "local", "command": ["b"]}}}`)
 
-	report := f.sync(t)
-	require.True(t, report.Kind(kind.MCP).VaultChanged)
+		report := f.sync(t)
+		So(report.Kind(kind.MCP).VaultChanged, ShouldBeTrue)
 
-	servers := antigravityServers(t, agyConfig)
-	require.Len(t, servers, 3)
-	require.Equal(t, "a", servers["alpha"]["command"])
-	require.Equal(t, []any{"x"}, servers["alpha"]["args"])
-	require.Equal(t, "b", servers["beta"]["command"])
-	require.Equal(t, "https://gamma.example.com/mcp", servers["gamma"]["serverUrl"], "the remote dialect uses serverUrl")
+		servers := antigravityServers(t, agyConfig)
 
-	for _, entry := range servers {
-		require.NotContains(t, entry, "url")
-		require.NotContains(t, entry, "httpUrl")
-	}
+		Convey("When the servers are read back", func() {
+			for _, entry := range servers {
+				So(entry, ShouldNotContainKey, "url")
+				So(entry, ShouldNotContainKey, "httpUrl")
+			}
 
-	var doc map[string]any
+			var doc map[string]any
+			So(json.Unmarshal([]byte(read(t, agyConfig)), &doc), ShouldBeNil)
 
-	require.NoError(t, json.Unmarshal([]byte(read(t, agyConfig)), &doc))
+			raw, ok := doc["mcpServers"].(map[string]any)
+			So(ok, ShouldBeTrue)
 
-	raw, ok := doc["mcpServers"].(map[string]any)
-	require.True(t, ok)
+			alpha, ok := raw["alpha"].(map[string]any)
+			So(ok, ShouldBeTrue)
 
-	alpha, ok := raw["alpha"].(map[string]any)
-	require.True(t, ok)
+			alpha["env"] = map[string]any{"TOKEN": "${LOCAL}"}
 
-	alpha["env"] = map[string]any{"TOKEN": "${LOCAL}"}
+			edited, err := json.Marshal(doc)
+			So(err, ShouldBeNil)
 
-	edited, err := json.Marshal(doc)
-	require.NoError(t, err)
+			write(t, agyConfig, string(edited))
 
-	write(t, agyConfig, string(edited))
+			f.sync(t)
 
-	f.sync(t)
+			canon, err := mcp.ParseCanonical([]byte(read(t, f.vault.ServersPath())))
+			So(err, ShouldBeNil)
 
-	canon, err := mcp.ParseCanonical([]byte(read(t, f.vault.ServersPath())))
-	require.NoError(t, err)
-	require.Equal(t, "{env:LOCAL}", canon["alpha"].Env["TOKEN"], "an edit through the antigravity dialect reaches the canon")
+			report = f.sync(t)
 
-	report = f.sync(t)
-	require.Empty(t, report.Kind(kind.MCP).Pulled)
-	require.False(t, report.VaultChanged())
+			Convey("Then edits reach the canon and no extra surface files exist", func() {
+				So(servers, ShouldHaveLength, 3)
+				So(servers["alpha"]["command"], ShouldEqual, "a")
+				So(servers["alpha"]["args"], ShouldResemble, []any{"x"})
+				So(servers["beta"]["command"], ShouldEqual, "b")
+				So(servers["gamma"]["serverUrl"], ShouldEqual, "https://gamma.example.com/mcp")
 
-	agy := agent.AntigravityCLI(f.home, t.TempDir())
+				So(canon["alpha"].Env["TOKEN"], ShouldEqual, "{env:LOCAL}")
+				So(report.Kind(kind.MCP).Pulled, ShouldBeEmpty)
+				So(report.VaultChanged(), ShouldBeFalse)
 
-	for _, k := range []kind.ID{kind.Rules, kind.Skills, kind.Permissions} {
-		require.Nil(t, agy.Surface(k), "antigravity v1 must not write %s", k)
-	}
+				agy := agent.AntigravityCLI(f.home, t.TempDir())
 
-	var rels []string
+				for _, k := range []kind.ID{kind.Rules, kind.Skills, kind.Permissions} {
+					So(agy.Surface(k), ShouldBeNil)
+				}
 
-	root := filepath.Join(f.home, ".gemini")
+				var rels []string
 
-	require.NoError(t, filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		require.NoError(t, err)
+				root := filepath.Join(f.home, ".gemini")
 
-		rel, err := filepath.Rel(root, path)
-		require.NoError(t, err)
+				walkErr := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+					if err != nil {
+						return err
+					}
 
-		if rel != "." {
-			rels = append(rels, rel)
-		}
+					rel, err := filepath.Rel(root, path)
+					if err != nil {
+						return err
+					}
 
-		return nil
-	}))
+					if rel != "." {
+						rels = append(rels, rel)
+					}
 
-	require.Equal(t, []string{"config", "config/mcp_config.json"}, rels, "no surface files beyond the shared mcp config")
+					return nil
+				})
+				So(walkErr, ShouldBeNil)
+
+				So(rels, ShouldResemble, []string{"config", "config/mcp_config.json"})
+			})
+		})
+	})
 }

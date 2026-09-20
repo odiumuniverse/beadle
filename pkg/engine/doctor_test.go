@@ -6,28 +6,29 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/engine"
 )
 
 func TestDoctorReportsBrokenPluginReferences(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given Gemini and Cursor configs referencing missing plugin paths", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.config.Enable(agent.GeminiCLIID)
-	f.config.Enable(agent.CursorID)
-	require.NoError(t, f.config.Save(f.vault.ConfigPath()))
+		f := newFixture(t)
+		f.config.Enable(agent.GeminiCLIID)
+		f.config.Enable(agent.CursorID)
+		So(f.config.Save(f.vault.ConfigPath()), ShouldBeNil)
 
-	keep := filepath.Join(f.home, ".claude", "plugins", "cache", "acme", "tool", "1.0.0", "keep.sh")
-	write(t, keep, "x")
+		keep := filepath.Join(f.home, ".claude", "plugins", "cache", "acme", "tool", "1.0.0", "keep.sh")
+		write(t, keep, "x")
 
-	missing := filepath.Join(f.home, ".claude", "plugins", "marketplaces", "thedotmack", "plugin", "scripts", "worker-service.cjs")
-	missingTilde := "~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/tilde.cjs"
-	missingCursor := filepath.Join(f.home, ".claude", "plugins", "marketplaces", "thedotmack", "plugin", "scripts", "mcp-server.cjs")
+		missing := filepath.Join(f.home, ".claude", "plugins", "marketplaces", "thedotmack", "plugin", "scripts", "worker-service.cjs")
+		missingTilde := "~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/tilde.cjs"
+		missingCursor := filepath.Join(f.home, ".claude", "plugins", "marketplaces", "thedotmack", "plugin", "scripts", "mcp-server.cjs")
 
-	write(t, f.geminiSettings(), fmt.Sprintf(`{
+		write(t, f.geminiSettings(), fmt.Sprintf(`{
   "hooks": {
     "SessionStart": [{"hooks": [{"command": "\"bun\" \"%s\" hook"}]}],
     "BeforeAgent": [{"hooks": [{"command": "sh %s"}]}],
@@ -37,82 +38,90 @@ func TestDoctorReportsBrokenPluginReferences(t *testing.T) {
   "mcpServers": {}
 }`, missing, keep, missingTilde))
 
-	write(t, filepath.Join(f.home, ".cursor", "mcp.json"),
-		fmt.Sprintf(`{"mcpServers":{"claude-mem":{"command":"node","args":[%q]}}}`, missingCursor))
+		write(t, filepath.Join(f.home, ".cursor", "mcp.json"),
+			fmt.Sprintf(`{"mcpServers":{"claude-mem":{"command":"node","args":[%q]}}}`, missingCursor))
 
-	write(t, f.claudeRules(), "see "+missing+" for details\n")
+		write(t, f.claudeRules(), "see "+missing+" for details\n")
 
-	issues, err := f.engine.Doctor(t.Context())
-	require.NoError(t, err)
+		Convey("When doctor runs", func() {
+			issues, err := f.engine.Doctor(t.Context())
+			So(err, ShouldBeNil)
 
-	var broken []engine.Issue
+			var broken []engine.Issue
 
-	for _, issue := range issues {
-		if strings.Contains(issue.Message, "broken plugin reference") {
-			broken = append(broken, issue)
-		}
-	}
+			for _, issue := range issues {
+				if strings.Contains(issue.Message, "broken plugin reference") {
+					broken = append(broken, issue)
+				}
+			}
 
-	require.Len(t, broken, 3)
+			So(broken, ShouldHaveLength, 3)
 
-	for _, issue := range broken {
-		require.Equal(t, engine.SeverityError, issue.Severity)
-		require.NotContains(t, issue.Message, "keep.sh")
-		require.NotContains(t, issue.Message, "CLAUDE_PLUGIN_ROOT")
-	}
+			var gemini, cursor []engine.Issue
 
-	var gemini, cursor []engine.Issue
+			for _, issue := range broken {
+				switch issue.Agent {
+				case agent.GeminiCLIID:
+					gemini = append(gemini, issue)
+				case agent.CursorID:
+					cursor = append(cursor, issue)
+				}
+			}
 
-	for _, issue := range broken {
-		switch issue.Agent {
-		case agent.GeminiCLIID:
-			gemini = append(gemini, issue)
-		case agent.CursorID:
-			cursor = append(cursor, issue)
-		}
-	}
+			Convey("Then only the unresolved references are reported per agent", func() {
+				So(gemini, ShouldHaveLength, 2)
+				So(cursor, ShouldHaveLength, 1)
 
-	require.Len(t, gemini, 2)
-	require.Len(t, cursor, 1)
+				for _, issue := range broken {
+					So(issue.Severity, ShouldEqual, engine.SeverityError)
+					So(issue.Message, ShouldNotContainSubstring, "keep.sh")
+					So(issue.Message, ShouldNotContainSubstring, "CLAUDE_PLUGIN_ROOT")
+				}
 
-	require.Contains(t, gemini[0].Message, "worker-service.cjs")
-	require.Contains(t, gemini[0].Message, "/hooks/SessionStart/0/hooks/0/command")
-	require.True(t, strings.HasPrefix(gemini[0].Message,
-		"broken plugin reference: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs ("),
-		"message: %s", gemini[0].Message)
-	require.True(t, strings.HasSuffix(gemini[0].Message, "/hooks/SessionStart/0/hooks/0/command)"),
-		"message: %s", gemini[0].Message)
-	require.Contains(t, gemini[1].Message, "tilde.cjs")
-	require.Contains(t, gemini[1].Message, "/hooks/BeforeTool/0/hooks/0/command")
-	require.Contains(t, cursor[0].Message, "mcp-server.cjs")
-	require.Contains(t, cursor[0].Message, "/mcpServers/claude-mem/args/0")
+				So(gemini[0].Message, ShouldContainSubstring, "worker-service.cjs")
+				So(gemini[0].Message, ShouldContainSubstring, "/hooks/SessionStart/0/hooks/0/command")
+				So(strings.HasPrefix(gemini[0].Message, "broken plugin reference: ~/.claude/plugins/marketplaces/thedotmack/plugin/scripts/worker-service.cjs ("), ShouldBeTrue)
+				So(strings.HasSuffix(gemini[0].Message, "/hooks/SessionStart/0/hooks/0/command)"), ShouldBeTrue)
+				So(gemini[1].Message, ShouldContainSubstring, "tilde.cjs")
+				So(gemini[1].Message, ShouldContainSubstring, "/hooks/BeforeTool/0/hooks/0/command")
+				So(cursor[0].Message, ShouldContainSubstring, "mcp-server.cjs")
+				So(cursor[0].Message, ShouldContainSubstring, "/mcpServers/claude-mem/args/0")
+			})
+		})
+	})
 }
 
 func TestDoctorPluginReferencesResolve(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given plugin references that exist", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.config.Enable(agent.GeminiCLIID)
-	f.config.Enable(agent.CursorID)
-	require.NoError(t, f.config.Save(f.vault.ConfigPath()))
+		f := newFixture(t)
+		f.config.Enable(agent.GeminiCLIID)
+		f.config.Enable(agent.CursorID)
+		So(f.config.Save(f.vault.ConfigPath()), ShouldBeNil)
 
-	keep := filepath.Join(f.home, ".claude", "plugins", "cache", "acme", "tool", "1.0.0", "keep.sh")
-	write(t, keep, "x")
+		keep := filepath.Join(f.home, ".claude", "plugins", "cache", "acme", "tool", "1.0.0", "keep.sh")
+		write(t, keep, "x")
 
-	write(t, f.geminiSettings(), fmt.Sprintf(`{
+		write(t, f.geminiSettings(), fmt.Sprintf(`{
   "hooks": {"SessionStart": [{"hooks": [{"command": "sh %s"}]}]},
   "mcpServers": {}
 }`, keep))
 
-	write(t, filepath.Join(f.home, ".cursor", "mcp.json"),
-		fmt.Sprintf(`{"mcpServers":{"claude-mem":{"command":"node","args":[%q]}}}`, keep))
+		write(t, filepath.Join(f.home, ".cursor", "mcp.json"),
+			fmt.Sprintf(`{"mcpServers":{"claude-mem":{"command":"node","args":[%q]}}}`, keep))
 
-	write(t, f.claudeRules(), "# r\n")
+		write(t, f.claudeRules(), "# r\n")
 
-	issues, err := f.engine.Doctor(t.Context())
-	require.NoError(t, err)
+		Convey("When doctor runs", func() {
+			issues, err := f.engine.Doctor(t.Context())
+			So(err, ShouldBeNil)
 
-	for _, issue := range issues {
-		require.NotContains(t, issue.Message, "broken plugin reference")
-	}
+			Convey("Then no broken reference is reported", func() {
+				for _, issue := range issues {
+					So(issue.Message, ShouldNotContainSubstring, "broken plugin reference")
+				}
+			})
+		})
+	})
 }

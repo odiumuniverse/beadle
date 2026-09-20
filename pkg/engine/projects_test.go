@@ -1,13 +1,15 @@
 package engine_test
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/config"
@@ -29,7 +31,9 @@ func (f *fixture) useCwd(t *testing.T, dir string) {
 	t.Helper()
 
 	e, err := engine.New(f.vault, f.config, agent.All(f.home, dir), engine.WithHome(f.home), engine.WithCwd(dir))
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
 
 	f.engine = e
 }
@@ -40,7 +44,9 @@ func gitIn(t *testing.T, dir string, args ...string) string {
 	all := append([]string{"-C", dir}, args...)
 
 	out, err := exec.CommandContext(t.Context(), "git", all...).CombinedOutput() //nolint:gosec // G204: fixed git subcommands in tests
-	require.NoError(t, err, string(out))
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
 
 	return string(out)
 }
@@ -72,15 +78,19 @@ func (f *fixture) seedProjectCanon(t *testing.T, repo, rel, content string) {
 	t.Helper()
 
 	write(t, filepath.Join(f.vault.ProjectsDir(), repoID(repo), filepath.FromSlash(rel)), content)
-	require.NoError(t, os.Remove(filepath.Join(repo, filepath.FromSlash(rel))), "the skeleton file makes room for the canon")
+
+	if err := os.Remove(filepath.Join(repo, filepath.FromSlash(rel))); err != nil {
+		t.Fatalf("remove skeleton: %v", err)
+	}
 }
 
 func (f *fixture) enableProjectWith(t *testing.T, opts engine.ProjectOptions, rels ...string) {
 	t.Helper()
 
 	for _, rel := range rels {
-		_, err := f.engine.ProjectEnable(t.Context(), rel, opts)
-		require.NoError(t, err)
+		if _, err := f.engine.ProjectEnable(t.Context(), rel, opts); err != nil {
+			t.Fatalf("enable %s: %v", rel, err)
+		}
 	}
 }
 
@@ -120,504 +130,647 @@ func baseBlob(t *testing.T, f *fixture, k kind.ID, agentID, key string) []byte {
 	t.Helper()
 
 	st, err := state.Load(f.vault.StatePath())
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
 
 	base, ok := st.Base(k, agentID)
-	require.True(t, ok)
-	require.Contains(t, base, key)
+	if !ok {
+		t.Fatal("no base")
+	}
 
-	hash := base[key]
-	require.Len(t, hash, 64)
+	hash, ok := base[key]
+	if !ok {
+		t.Fatalf("no base key %s", key)
+	}
+
+	if len(hash) != 64 {
+		t.Fatalf("hash length %d", len(hash))
+	}
 
 	data, err := os.ReadFile(filepath.Join(f.vault.ObjectsDir(), string(hash[:2]), string(hash[2:])))
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("read blob: %v", err)
+	}
 
 	return data
 }
 
 func TestProjectsSyncRoundTrip(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given an enabled project AGENTS.md", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	repo := newRepo(t)
-	f.useRepo(t, repo)
-	f.enableProject(t, "AGENTS.md")
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		repo := newRepo(t)
+		f.useRepo(t, repo)
+		f.enableProject(t, "AGENTS.md")
 
-	write(t, repoFile(repo), "# repo rules\n")
+		write(t, repoFile(repo), "# repo rules\n")
 
-	report := f.sync(t)
-	require.True(t, report.Kind(kind.Projects).VaultChanged)
-	require.Equal(t, "# repo rules\n", read(t, vaultProject(f, repo, "AGENTS.md")))
+		report := f.sync(t)
 
-	report = f.sync(t)
-	require.False(t, report.Kind(kind.Projects).VaultChanged)
-	require.Equal(t, engine.ActionNoop, report.Action(kind.Projects, agent.OpenCodeID))
+		Convey("When syncs, edits and a deletion happen", func() {
+			So(report.Kind(kind.Projects).VaultChanged, ShouldBeTrue)
+			So(read(t, vaultProject(f, repo, "AGENTS.md")), ShouldEqual, "# repo rules\n")
 
-	write(t, vaultProject(f, repo, "AGENTS.md"), "# canon edit\n")
-	f.sync(t)
-	require.Equal(t, "# canon edit\n", read(t, repoFile(repo)))
+			report = f.sync(t)
+			So(report.Kind(kind.Projects).VaultChanged, ShouldBeFalse)
+			So(report.Action(kind.Projects, agent.OpenCodeID), ShouldEqual, engine.ActionNoop)
 
-	write(t, repoFile(repo), "# local edit\n")
-	f.sync(t)
-	require.Equal(t, "# local edit\n", read(t, vaultProject(f, repo, "AGENTS.md")))
+			write(t, vaultProject(f, repo, "AGENTS.md"), "# canon edit\n")
+			f.sync(t)
+			So(read(t, repoFile(repo)), ShouldEqual, "# canon edit\n")
 
-	require.NoError(t, os.Remove(repoFile(repo)))
+			write(t, repoFile(repo), "# local edit\n")
+			f.sync(t)
+			So(read(t, vaultProject(f, repo, "AGENTS.md")), ShouldEqual, "# local edit\n")
 
-	report = f.sync(t)
-	require.FileExists(t, vaultProject(f, repo, "AGENTS.md"), "deleting the repo file keeps the canon")
-	require.NoFileExists(t, repoFile(repo), "the file is not re-imposed")
-	require.NotEmpty(t, report.Kind(kind.Projects).Kept, "the deletion is reported as kept")
-	require.Equal(t, engine.ActionNoop, report.Action(kind.Projects, agent.OpenCodeID))
+			So(os.Remove(repoFile(repo)), ShouldBeNil)
+
+			report = f.sync(t)
+
+			_, repoErr := os.Stat(repoFile(repo))
+
+			Convey("Then deleting the repo file keeps the canon and imposes nothing", func() {
+				So(read(t, vaultProject(f, repo, "AGENTS.md")), ShouldEqual, "# local edit\n")
+				So(errors.Is(repoErr, fs.ErrNotExist), ShouldBeTrue)
+				So(report.Kind(kind.Projects).Kept, ShouldNotBeEmpty)
+				So(report.Action(kind.Projects, agent.OpenCodeID), ShouldEqual, engine.ActionNoop)
+			})
+		})
+	})
 }
 
 func TestProjectsUntrackedFileIsReadOnly(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a repo without a policy entry", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	repo := newRepo(t)
-	f.useRepo(t, repo)
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		repo := newRepo(t)
+		f.useRepo(t, repo)
 
-	write(t, repoFile(repo), "# repo rules\n")
+		write(t, repoFile(repo), "# repo rules\n")
 
-	report := f.sync(t)
-	require.False(t, report.Kind(kind.Projects).VaultChanged, "without a policy the project stays read-only")
-	require.NoFileExists(t, vaultProject(f, repo, "AGENTS.md"))
-	require.Equal(t, "# repo rules\n", read(t, repoFile(repo)))
+		report := f.sync(t)
 
-	issues, err := f.engine.Doctor(t.Context())
-	require.NoError(t, err)
-	require.True(t, hasIssue(issues, engine.SeverityInfo, "not a git checkout") ||
-		hasIssue(issues, engine.SeverityInfo, "project "), "doctor reports the identity: %v", issues)
+		issues, err := f.engine.Doctor(t.Context())
+		So(err, ShouldBeNil)
+
+		Convey("When sync runs", func() {
+			_, canonErr := os.Stat(vaultProject(f, repo, "AGENTS.md"))
+
+			Convey("Then the project stays read-only and doctor reports the identity", func() {
+				So(report.Kind(kind.Projects).VaultChanged, ShouldBeFalse)
+				So(errors.Is(canonErr, fs.ErrNotExist), ShouldBeTrue)
+				So(read(t, repoFile(repo)), ShouldEqual, "# repo rules\n")
+				So(hasIssue(issues, engine.SeverityInfo, "not a git checkout") || hasIssue(issues, engine.SeverityInfo, "project "), ShouldBeTrue)
+			})
+		})
+	})
 }
 
 func TestProjectsConflictResolvedInEditor(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a project conflict resolved in the editor", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	repo := newRepo(t)
-	f.useRepo(t, repo)
-	f.enableProject(t, "AGENTS.md")
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		repo := newRepo(t)
+		f.useRepo(t, repo)
+		f.enableProject(t, "AGENTS.md")
 
-	write(t, repoFile(repo), "v1\n")
-	f.sync(t)
+		write(t, repoFile(repo), "v1\n")
+		f.sync(t)
 
-	write(t, repoFile(repo), "agent-edit\n")
-	write(t, vaultProject(f, repo, "AGENTS.md"), "vault-edit\n")
+		write(t, repoFile(repo), "agent-edit\n")
+		write(t, vaultProject(f, repo, "AGENTS.md"), "vault-edit\n")
 
-	report := f.sync(t)
-	require.Len(t, report.ConflictsOf(kind.Projects), 1)
-	require.Equal(t, "vault-edit\n", read(t, vaultProject(f, repo, "AGENTS.md")))
+		report := f.sync(t)
+		So(report.ConflictsOf(kind.Projects), ShouldHaveLength, 1)
 
-	c := f.conflict(t, kind.Projects, agent.OpenCodeID)
+		c := f.conflict(t, kind.Projects, agent.OpenCodeID)
 
-	file, err := f.engine.ConflictFile(c)
-	require.NoError(t, err)
-	require.Equal(t, ".md", filepath.Ext(file))
-	require.Contains(t, filepath.Base(file), "projects-opencode-")
-	require.Contains(t, read(t, file), ">>>>>>> agent:opencode")
+		file, err := f.engine.ConflictFile(c)
+		So(err, ShouldBeNil)
+		So(filepath.Ext(file), ShouldEqual, ".md")
+		So(filepath.Base(file), ShouldContainSubstring, "projects-opencode-")
+		So(read(t, file), ShouldContainSubstring, ">>>>>>> agent:opencode")
 
-	write(t, file, "# resolved\n")
+		write(t, file, "# resolved\n")
 
-	_, err = f.engine.Resolve(t.Context(), []string{c.ID()}, engine.Resolution{Take: engine.TakeFile})
-	require.NoError(t, err)
+		Convey("When the edited file is taken", func() {
+			_, err = f.engine.Resolve(t.Context(), []string{c.ID()}, engine.Resolution{Take: engine.TakeFile})
+			So(err, ShouldBeNil)
 
-	require.Equal(t, "# resolved\n", read(t, vaultProject(f, repo, "AGENTS.md")))
-	require.Equal(t, "# resolved\n", read(t, repoFile(repo)))
+			Convey("Then it lands on both sides", func() {
+				So(read(t, vaultProject(f, repo, "AGENTS.md")), ShouldEqual, "# resolved\n")
+				So(read(t, repoFile(repo)), ShouldEqual, "# resolved\n")
+			})
+		})
+	})
 }
 
 func TestProjectsCanonDeletionRemovesFile(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a canon deletion of an ignored project file", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	repo := newRepo(t)
-	f.useRepo(t, repo)
-	f.enableProject(t, "AGENTS.md")
-	ignoreInRepo(t, repo, "AGENTS.md")
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		repo := newRepo(t)
+		f.useRepo(t, repo)
+		f.enableProject(t, "AGENTS.md")
+		ignoreInRepo(t, repo, "AGENTS.md")
 
-	write(t, repoFile(repo), "# repo rules\n")
-	f.sync(t)
+		write(t, repoFile(repo), "# repo rules\n")
+		f.sync(t)
 
-	require.NoError(t, os.Remove(vaultProject(f, repo, "AGENTS.md")))
+		So(os.Remove(vaultProject(f, repo, "AGENTS.md")), ShouldBeNil)
 
-	f.sync(t)
+		f.sync(t)
 
-	require.NoFileExists(t, repoFile(repo), "a deleted canon item removes the project file")
-	require.NoFileExists(t, vaultProject(f, repo, "AGENTS.md"))
+		_, repoErr := os.Stat(repoFile(repo))
+		_, canonErr := os.Stat(vaultProject(f, repo, "AGENTS.md"))
 
-	writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
-	f.sync(t)
+		Convey("When memory returns it recreates a fence-only file", func() {
+			So(errors.Is(repoErr, fs.ErrNotExist), ShouldBeTrue)
+			So(errors.Is(canonErr, fs.ErrNotExist), ShouldBeTrue)
 
-	data := read(t, repoFile(repo))
-	require.True(t, strings.HasPrefix(data, digest.BeginPrefix), "a non-empty memory canon recreates the file as fence-only")
-	require.NotContains(t, data, "# repo rules")
+			writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
+			f.sync(t)
+
+			data := read(t, repoFile(repo))
+
+			So(strings.HasPrefix(data, digest.BeginPrefix), ShouldBeTrue)
+			So(data, ShouldNotContainSubstring, "# repo rules")
+		})
+	})
 }
 
 func TestProjectsConflictTakeAgent(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a project conflict taken from the agent", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	repo := newRepo(t)
-	f.useRepo(t, repo)
-	f.enableProject(t, "AGENTS.md")
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		repo := newRepo(t)
+		f.useRepo(t, repo)
+		f.enableProject(t, "AGENTS.md")
 
-	write(t, repoFile(repo), "v1\n")
-	f.sync(t)
+		write(t, repoFile(repo), "v1\n")
+		f.sync(t)
 
-	write(t, repoFile(repo), "agent-edit\n")
-	write(t, vaultProject(f, repo, "AGENTS.md"), "vault-edit\n")
-	f.sync(t)
+		write(t, repoFile(repo), "agent-edit\n")
+		write(t, vaultProject(f, repo, "AGENTS.md"), "vault-edit\n")
+		f.sync(t)
 
-	f.resolve(t, kind.Projects, agent.OpenCodeID, engine.TakeAgent)
+		f.resolve(t, kind.Projects, agent.OpenCodeID, engine.TakeAgent)
 
-	require.Equal(t, "agent-edit\n", read(t, vaultProject(f, repo, "AGENTS.md")))
-	require.Equal(t, "agent-edit\n", read(t, repoFile(repo)))
+		Convey("When resolved", func() {
+			Convey("Then the agent value wins everywhere", func() {
+				So(read(t, vaultProject(f, repo, "AGENTS.md")), ShouldEqual, "agent-edit\n")
+				So(read(t, repoFile(repo)), ShouldEqual, "agent-edit\n")
+			})
+		})
+	})
 }
 
 func TestProjectsFenceBlindNoop(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given an ignored project file with a digest fence", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	repo := newRepo(t)
-	f.useRepo(t, repo)
-	f.enableProject(t, "AGENTS.md")
-	ignoreInRepo(t, repo, "AGENTS.md")
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		repo := newRepo(t)
+		f.useRepo(t, repo)
+		f.enableProject(t, "AGENTS.md")
+		ignoreInRepo(t, repo, "AGENTS.md")
 
-	write(t, repoFile(repo), "# repo rules\n")
-	writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
+		write(t, repoFile(repo), "# repo rules\n")
+		writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
 
-	report := f.sync(t)
-	require.NotEmpty(t, digestResults(report, engine.DigestRefreshed))
+		report := f.sync(t)
+		So(digestResults(report, engine.DigestRefreshed), ShouldNotBeEmpty)
 
-	data := read(t, repoFile(repo))
-	require.True(t, strings.HasPrefix(data, digest.BeginPrefix), "the fence sits at the top")
-	require.True(t, strings.HasSuffix(data, "# repo rules\n"))
+		data := read(t, repoFile(repo))
+		canon := read(t, vaultProject(f, repo, "AGENTS.md"))
 
-	canon := read(t, vaultProject(f, repo, "AGENTS.md"))
-	require.Equal(t, "# repo rules\n", canon, "the fence never reaches the canon")
-	require.NotContains(t, canon, digest.BeginPrefix)
-	require.NotContains(t, string(baseBlob(t, f, kind.Projects, agent.OpenCodeID, repoID(repo)+"/AGENTS.md")), digest.BeginPrefix)
+		Convey("When the digest node changes", func() {
+			So(strings.HasPrefix(data, digest.BeginPrefix), ShouldBeTrue)
+			So(strings.HasSuffix(data, "# repo rules\n"), ShouldBeTrue)
 
-	report = f.sync(t)
-	require.Empty(t, report.Digest, "an unchanged digest is a noop")
-	require.Equal(t, engine.ActionNoop, report.Action(kind.Projects, agent.OpenCodeID))
+			So(canon, ShouldEqual, "# repo rules\n")
+			So(canon, ShouldNotContainSubstring, digest.BeginPrefix)
+			So(string(baseBlob(t, f, kind.Projects, agent.OpenCodeID, repoID(repo)+"/AGENTS.md")), ShouldNotContainSubstring, digest.BeginPrefix)
 
-	writeMemoryCanon(t, f, repo, "feedback.md", "---\ndescription: second\n---\nbody\n")
+			report = f.sync(t)
+			So(report.Digest, ShouldBeEmpty)
+			So(report.Action(kind.Projects, agent.OpenCodeID), ShouldEqual, engine.ActionNoop)
 
-	report = f.sync(t)
-	require.NotEmpty(t, digestResults(report, engine.DigestRefreshed))
+			writeMemoryCanon(t, f, repo, "feedback.md", "---\ndescription: second\n---\nbody\n")
 
-	data = read(t, repoFile(repo))
-	require.Contains(t, data, "feedback.md")
-	require.True(t, strings.HasSuffix(data, "# repo rules\n"), "the body survives a digest refresh")
-	require.Equal(t, "# repo rules\n", read(t, vaultProject(f, repo, "AGENTS.md")))
+			report = f.sync(t)
+			So(digestResults(report, engine.DigestRefreshed), ShouldNotBeEmpty)
+
+			data = read(t, repoFile(repo))
+
+			Convey("Then the fence never reaches the canon and refreshes cleanly", func() {
+				So(data, ShouldContainSubstring, "feedback.md")
+				So(strings.HasSuffix(data, "# repo rules\n"), ShouldBeTrue)
+				So(read(t, vaultProject(f, repo, "AGENTS.md")), ShouldEqual, "# repo rules\n")
+			})
+		})
+	})
 }
 
 func TestProjectsFenceOnlyFileSurvives(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a memory canon with no project body", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	repo := newRepo(t)
-	f.useRepo(t, repo)
-	f.enableProject(t, "AGENTS.md")
-	ignoreInRepo(t, repo, "AGENTS.md")
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		repo := newRepo(t)
+		f.useRepo(t, repo)
+		f.enableProject(t, "AGENTS.md")
+		ignoreInRepo(t, repo, "AGENTS.md")
 
-	writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
+		writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
 
-	report := f.sync(t)
-	require.NotEmpty(t, digestResults(report, engine.DigestCreated))
+		report := f.sync(t)
+		So(digestResults(report, engine.DigestCreated), ShouldNotBeEmpty)
 
-	require.NoFileExists(t, vaultProject(f, repo, "AGENTS.md"), "a fence-only file has no canon item")
+		Convey("When it is synced again", func() {
+			_, canonErr := os.Stat(vaultProject(f, repo, "AGENTS.md"))
+			So(errors.Is(canonErr, fs.ErrNotExist), ShouldBeTrue)
 
-	data := read(t, repoFile(repo))
-	require.True(t, strings.HasPrefix(data, digest.BeginPrefix))
+			data := read(t, repoFile(repo))
+			So(strings.HasPrefix(data, digest.BeginPrefix), ShouldBeTrue)
 
-	report = f.sync(t)
-	require.Equal(t, engine.ActionNoop, report.Action(kind.Projects, agent.OpenCodeID))
-	require.FileExists(t, repoFile(repo), "push never deletes a fence-only file")
+			report = f.sync(t)
+
+			_, fileErr := os.Stat(repoFile(repo))
+
+			Convey("Then the fence-only file is never deleted", func() {
+				So(report.Action(kind.Projects, agent.OpenCodeID), ShouldEqual, engine.ActionNoop)
+				So(fileErr, ShouldBeNil)
+			})
+		})
+	})
 }
 
 func TestDigestRemovedWhenMemoryEmpty(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a fence removed once memory is empty", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	repo := newRepo(t)
-	f.useRepo(t, repo)
-	f.enableProject(t, "AGENTS.md")
-	ignoreInRepo(t, repo, "AGENTS.md")
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		repo := newRepo(t)
+		f.useRepo(t, repo)
+		f.enableProject(t, "AGENTS.md")
+		ignoreInRepo(t, repo, "AGENTS.md")
 
-	write(t, repoFile(repo), "# repo rules\n")
-	writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
-	f.sync(t)
+		write(t, repoFile(repo), "# repo rules\n")
+		writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
+		f.sync(t)
 
-	require.NoError(t, os.Remove(filepath.Join(f.vault.MemoryDir(), memory.Slug(repo), "MEMORY.md")))
+		So(os.Remove(filepath.Join(f.vault.MemoryDir(), memory.Slug(repo), "MEMORY.md")), ShouldBeNil)
 
-	report := f.sync(t)
-	require.NotEmpty(t, digestResults(report, engine.DigestRemoved))
-	require.Equal(t, "# repo rules\n", read(t, repoFile(repo)), "removing the fence keeps the body")
+		report := f.sync(t)
 
-	report = f.sync(t)
-	require.Empty(t, report.Digest)
+		Convey("When memory is emptied", func() {
+			So(digestResults(report, engine.DigestRemoved), ShouldNotBeEmpty)
+			So(read(t, repoFile(repo)), ShouldEqual, "# repo rules\n")
+
+			report = f.sync(t)
+
+			Convey("Then the fence is removed and the body kept", func() {
+				So(report.Digest, ShouldBeEmpty)
+			})
+		})
+	})
 }
 
 func TestDigestGates(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given digest write gates", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	repo := newRepo(t)
-	f.useRepo(t, repo)
-	f.enableProject(t, "AGENTS.md")
-	ignoreInRepo(t, repo, "AGENTS.md")
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		repo := newRepo(t)
+		f.useRepo(t, repo)
+		f.enableProject(t, "AGENTS.md")
+		ignoreInRepo(t, repo, "AGENTS.md")
 
-	write(t, repoFile(repo), "# repo rules\n")
-	writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
+		write(t, repoFile(repo), "# repo rules\n")
+		writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
 
-	f.run(t, engine.SyncOptions{Direction: config.ModePull})
-	require.NotContains(t, read(t, repoFile(repo)), digest.BeginPrefix, "pull never writes a fence")
+		Convey("When pull, a kind filter, projects-off and mode-off are applied", func() {
+			f.run(t, engine.SyncOptions{Direction: config.ModePull})
+			So(read(t, repoFile(repo)), ShouldNotContainSubstring, digest.BeginPrefix)
 
-	f.run(t, engine.SyncOptions{Kinds: []kind.ID{kind.Memory}})
-	require.NotContains(t, read(t, repoFile(repo)), digest.BeginPrefix, "a kind filter excludes the digest phase")
+			f.run(t, engine.SyncOptions{Kinds: []kind.ID{kind.Memory}})
+			So(read(t, repoFile(repo)), ShouldNotContainSubstring, digest.BeginPrefix)
 
-	f.config.SetKind(kind.Projects, config.ModeOff)
-	f.sync(t)
-	require.NotContains(t, read(t, repoFile(repo)), digest.BeginPrefix, "kinds.projects=off silences the digest phase")
+			f.config.SetKind(kind.Projects, config.ModeOff)
+			f.sync(t)
+			So(read(t, repoFile(repo)), ShouldNotContainSubstring, digest.BeginPrefix)
 
-	f.config.SetKind(kind.Projects, config.ModeSync)
-	f.config.SetMode(agent.OpenCodeID, kind.Projects, config.ModeOff)
-	f.sync(t)
-	require.NotContains(t, read(t, repoFile(repo)), digest.BeginPrefix, "a mode-off agent gets no digest")
+			f.config.SetKind(kind.Projects, config.ModeSync)
+			f.config.SetMode(agent.OpenCodeID, kind.Projects, config.ModeOff)
+			f.sync(t)
+
+			Convey("Then no fence is ever written", func() {
+				So(read(t, repoFile(repo)), ShouldNotContainSubstring, digest.BeginPrefix)
+			})
+		})
+	})
 }
 
 func TestDigestAdoptBaseline(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a repo file whose digest block was adopted", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	repo := newRepo(t)
-	f.useRepo(t, repo)
-	f.enableProjectWith(t, engine.ProjectOptions{AllowSecrets: true}, "AGENTS.md")
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		repo := newRepo(t)
+		f.useRepo(t, repo)
+		f.enableProjectWith(t, engine.ProjectOptions{AllowSecrets: true}, "AGENTS.md")
 
-	slug := memory.Slug(repo)
-	notes := map[string][]byte{slug + "/MEMORY.md": []byte("---\ndescription: hook\n---\nbody\n")}
-	block, _ := digest.Render(filepath.Join(f.home, ".claude", "projects", slug, "memory"), notes, digest.DefaultBudget)
+		slug := memory.Slug(repo)
+		notes := map[string][]byte{slug + "/MEMORY.md": []byte("---\ndescription: hook\n---\nbody\n")}
+		block, _ := digest.Render(filepath.Join(f.home, ".claude", "projects", slug, "memory"), notes, digest.DefaultBudget)
 
-	write(t, repoFile(repo), string(block)+"# repo rules\n")
-	writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
+		write(t, repoFile(repo), string(block)+"# repo rules\n")
+		writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
 
-	report := f.sync(t)
-	require.NotEmpty(t, digestResults(report, engine.DigestAdopted))
-	require.Equal(t, string(block)+"# repo rules\n", read(t, repoFile(repo)), "the adopted block is not rewritten")
+		report := f.sync(t)
 
-	st, err := state.Load(f.vault.StatePath())
-	require.NoError(t, err)
-	require.Contains(t, st.Renders, repoFile(repo))
-	require.Zero(t, st.Drift[repoFile(repo)].Count)
+		st, err := state.Load(f.vault.StatePath())
+		So(err, ShouldBeNil)
 
-	report = f.sync(t)
-	require.Empty(t, report.Digest, "an adopted baseline settles into noop")
+		Convey("When it is adopted", func() {
+			So(digestResults(report, engine.DigestAdopted), ShouldNotBeEmpty)
+			So(read(t, repoFile(repo)), ShouldEqual, string(block)+"# repo rules\n")
+			So(st.Renders, ShouldContainKey, repoFile(repo))
+			So(st.Drift[repoFile(repo)].Count, ShouldEqual, 0)
+
+			report = f.sync(t)
+
+			Convey("Then the block is not rewritten and it settles into noop", func() {
+				So(report.Digest, ShouldBeEmpty)
+			})
+		})
+	})
 }
 
 func TestDigestDriftHoldAndRefresh(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a manual edit inside the generated block", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	repo := newRepo(t)
-	f.useRepo(t, repo)
-	f.enableProjectWith(t, engine.ProjectOptions{AllowSecrets: true}, "AGENTS.md")
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		repo := newRepo(t)
+		f.useRepo(t, repo)
+		f.enableProjectWith(t, engine.ProjectOptions{AllowSecrets: true}, "AGENTS.md")
 
-	write(t, repoFile(repo), "# repo rules\n")
-	writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
-	f.sync(t)
+		write(t, repoFile(repo), "# repo rules\n")
+		writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
+		f.sync(t)
 
-	edited := strings.Replace(read(t, repoFile(repo)), "hook", "hand edit", 1)
-	write(t, repoFile(repo), edited)
+		edited := strings.Replace(read(t, repoFile(repo)), "hook", "hand edit", 1)
+		write(t, repoFile(repo), edited)
 
-	report := f.sync(t)
-	require.NotEmpty(t, digestResults(report, engine.DigestHeld))
-	require.Contains(t, strings.Join(report.Warnings, " "), "manual edits inside the generated block")
-	require.Equal(t, edited, read(t, repoFile(repo)), "held bytes stay untouched")
+		report := f.sync(t)
 
-	st, err := state.Load(f.vault.StatePath())
-	require.NoError(t, err)
-	require.Equal(t, 1, st.Drift[repoFile(repo)].Count)
+		So(digestResults(report, engine.DigestHeld), ShouldNotBeEmpty)
+		So(strings.Join(report.Warnings, " "), ShouldContainSubstring, "manual edits inside the generated block")
+		So(read(t, repoFile(repo)), ShouldEqual, edited)
 
-	report = f.sync(t)
-	require.NotEmpty(t, digestResults(report, engine.DigestHeld))
+		Convey("When drift accumulates and an explicit refresh runs", func() {
+			st, err := state.Load(f.vault.StatePath())
+			So(err, ShouldBeNil)
+			So(st.Drift[repoFile(repo)].Count, ShouldEqual, 1)
 
-	st, err = state.Load(f.vault.StatePath())
-	require.NoError(t, err)
-	require.Equal(t, 2, st.Drift[repoFile(repo)].Count)
+			report = f.sync(t)
+			So(digestResults(report, engine.DigestHeld), ShouldNotBeEmpty)
 
-	issues, err := f.engine.Doctor(t.Context())
-	require.NoError(t, err)
-	require.True(t, hasIssue(issues, engine.SeverityError, "manual edits inside the generated block in "+repoFile(repo)), "issues: %v", issues)
+			st, err = state.Load(f.vault.StatePath())
+			So(err, ShouldBeNil)
+			So(st.Drift[repoFile(repo)].Count, ShouldEqual, 2)
 
-	report, err = f.engine.Sync(t.Context(), engine.SyncOptions{Refresh: true})
-	require.NoError(t, err)
-	require.NotEmpty(t, digestResults(report, engine.DigestRefreshed))
-	require.NotContains(t, read(t, repoFile(repo)), "hand edit")
+			issues, err := f.engine.Doctor(t.Context())
+			So(err, ShouldBeNil)
+			So(hasIssue(issues, engine.SeverityError, "manual edits inside the generated block in "+repoFile(repo)), ShouldBeTrue)
 
-	st, err = state.Load(f.vault.StatePath())
-	require.NoError(t, err)
-	require.Zero(t, st.Drift[repoFile(repo)].Count, "an explicit refresh resets the drift counter")
+			report, err = f.engine.Sync(t.Context(), engine.SyncOptions{Refresh: true})
+			So(err, ShouldBeNil)
 
-	require.Equal(t, engine.ActionNoop, f.sync(t).Action(kind.Projects, agent.OpenCodeID))
+			st, err = state.Load(f.vault.StatePath())
+			So(err, ShouldBeNil)
+
+			Convey("Then the refresh resets drift and rewrites the block", func() {
+				So(digestResults(report, engine.DigestRefreshed), ShouldNotBeEmpty)
+				So(read(t, repoFile(repo)), ShouldNotContainSubstring, "hand edit")
+				So(st.Drift[repoFile(repo)].Count, ShouldEqual, 0)
+
+				So(f.sync(t).Action(kind.Projects, agent.OpenCodeID), ShouldEqual, engine.ActionNoop)
+			})
+		})
+	})
 }
 
 func TestDigestBlockDeletedRestores(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a generated block deleted by hand", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	repo := newRepo(t)
-	f.useRepo(t, repo)
-	f.enableProject(t, "AGENTS.md")
-	ignoreInRepo(t, repo, "AGENTS.md")
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		repo := newRepo(t)
+		f.useRepo(t, repo)
+		f.enableProject(t, "AGENTS.md")
+		ignoreInRepo(t, repo, "AGENTS.md")
 
-	write(t, repoFile(repo), "# repo rules\n")
-	writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
-	f.sync(t)
+		write(t, repoFile(repo), "# repo rules\n")
+		writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
+		f.sync(t)
 
-	require.NoError(t, os.Remove(repoFile(repo)))
-	write(t, repoFile(repo), "# repo rules\n")
+		So(os.Remove(repoFile(repo)), ShouldBeNil)
+		write(t, repoFile(repo), "# repo rules\n")
 
-	report := f.sync(t)
-	require.NotEmpty(t, digestResults(report, engine.DigestRefreshed))
-	require.True(t, strings.HasPrefix(read(t, repoFile(repo)), digest.BeginPrefix), "a deleted block comes back")
+		report := f.sync(t)
+
+		Convey("When it is restored", func() {
+			Convey("Then the block comes back", func() {
+				So(digestResults(report, engine.DigestRefreshed), ShouldNotBeEmpty)
+				So(strings.HasPrefix(read(t, repoFile(repo)), digest.BeginPrefix), ShouldBeTrue)
+			})
+		})
+	})
 }
 
 func TestDigestPrune(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a render record for a repo that disappears", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	repo := newRepo(t)
-	f.useRepo(t, repo)
-	f.enableProjectWith(t, engine.ProjectOptions{AllowSecrets: true}, "AGENTS.md")
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		repo := newRepo(t)
+		f.useRepo(t, repo)
+		f.enableProjectWith(t, engine.ProjectOptions{AllowSecrets: true}, "AGENTS.md")
 
-	write(t, repoFile(repo), "# repo rules\n")
-	writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
-	f.sync(t)
+		write(t, repoFile(repo), "# repo rules\n")
+		writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
+		f.sync(t)
 
-	st, err := state.Load(f.vault.StatePath())
-	require.NoError(t, err)
-	require.Contains(t, st.Renders, repoFile(repo))
+		st, err := state.Load(f.vault.StatePath())
+		So(err, ShouldBeNil)
+		So(st.Renders, ShouldContainKey, repoFile(repo))
 
-	require.NoError(t, os.RemoveAll(filepath.Join(repo, ".git")))
-	require.NoError(t, os.Remove(repoFile(repo)))
+		So(os.RemoveAll(filepath.Join(repo, ".git")), ShouldBeNil)
+		So(os.Remove(repoFile(repo)), ShouldBeNil)
 
-	report := f.sync(t)
-	require.NotEmpty(t, digestResults(report, engine.DigestPruned))
+		report := f.sync(t)
 
-	st, err = state.Load(f.vault.StatePath())
-	require.NoError(t, err)
-	require.NotContains(t, st.Renders, repoFile(repo))
-	require.NotContains(t, st.Drift, repoFile(repo))
+		st, err = state.Load(f.vault.StatePath())
+		So(err, ShouldBeNil)
+
+		Convey("When the identity is gone", func() {
+			Convey("Then the record and drift are pruned", func() {
+				So(digestResults(report, engine.DigestPruned), ShouldNotBeEmpty)
+				So(st.Renders, ShouldNotContainKey, repoFile(repo))
+				So(st.Drift, ShouldNotContainKey, repoFile(repo))
+			})
+		})
+	})
 }
 
 func TestDigestDryRunPreview(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a dry run with memory to digest", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	repo := newRepo(t)
-	f.useRepo(t, repo)
-	f.enableProjectWith(t, engine.ProjectOptions{AllowSecrets: true}, "AGENTS.md")
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		repo := newRepo(t)
+		f.useRepo(t, repo)
+		f.enableProjectWith(t, engine.ProjectOptions{AllowSecrets: true}, "AGENTS.md")
 
-	writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
+		writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
 
-	report := f.run(t, engine.SyncOptions{DryRun: true})
-	require.NotEmpty(t, digestResults(report, engine.DigestWouldCreate))
-	require.NoFileExists(t, repoFile(repo), "a dry run writes nothing")
+		report := f.run(t, engine.SyncOptions{DryRun: true})
 
-	st, err := state.Load(f.vault.StatePath())
-	require.NoError(t, err)
-	require.NotContains(t, st.Renders, repoFile(repo))
+		st, err := state.Load(f.vault.StatePath())
+		So(err, ShouldBeNil)
+
+		Convey("When it previews", func() {
+			_, fileErr := os.Stat(repoFile(repo))
+
+			Convey("Then nothing is written or recorded", func() {
+				So(digestResults(report, engine.DigestWouldCreate), ShouldNotBeEmpty)
+				So(errors.Is(fileErr, fs.ErrNotExist), ShouldBeTrue)
+				So(st.Renders, ShouldNotContainKey, repoFile(repo))
+			})
+		})
+	})
 }
 
 func TestDigestFenceGate(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a git-tracked project file", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	repo := newRepo(t)
-	f.useRepo(t, repo)
-	f.enableProject(t, "AGENTS.md")
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		repo := newRepo(t)
+		f.useRepo(t, repo)
+		f.enableProject(t, "AGENTS.md")
 
-	write(t, repoFile(repo), "# repo rules\n")
-	writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
+		write(t, repoFile(repo), "# repo rules\n")
+		writeMemoryCanon(t, f, repo, "MEMORY.md", "---\ndescription: hook\n---\nbody\n")
 
-	report := f.sync(t)
-	require.NotEmpty(t, digestResults(report, engine.DigestSkipped), "a tracked file gets no fence")
-	require.NotContains(t, read(t, repoFile(repo)), digest.BeginPrefix)
-	require.Contains(t, strings.Join(report.Warnings, " "), "is not gitignored")
+		report := f.sync(t)
 
-	ignoreInRepo(t, repo, "AGENTS.md")
+		Convey("When it becomes ignored and then tracked again", func() {
+			So(digestResults(report, engine.DigestSkipped), ShouldNotBeEmpty)
+			So(read(t, repoFile(repo)), ShouldNotContainSubstring, digest.BeginPrefix)
+			So(strings.Join(report.Warnings, " "), ShouldContainSubstring, "is not gitignored")
 
-	report = f.sync(t)
-	require.NotEmpty(t, digestResults(report, engine.DigestRefreshed))
-	require.True(t, strings.HasPrefix(read(t, repoFile(repo)), digest.BeginPrefix), "an ignored file gets the fence")
+			ignoreInRepo(t, repo, "AGENTS.md")
 
-	issues, err := f.engine.Doctor(t.Context())
-	require.NoError(t, err)
-	require.False(t, hasIssue(issues, engine.SeverityError, "lives in a git-tracked file"), "no fence in a tracked file: %v", issues)
+			report = f.sync(t)
 
-	require.NoError(t, os.Remove(filepath.Join(repo, ".gitignore")))
+			issues, err := f.engine.Doctor(t.Context())
+			So(err, ShouldBeNil)
 
-	issues, err = f.engine.Doctor(t.Context())
-	require.NoError(t, err)
-	require.True(t, hasIssue(issues, engine.SeverityError, "lives in a git-tracked file"), "a tracked file with a fence is doctor error: %v", issues)
+			So(digestResults(report, engine.DigestRefreshed), ShouldNotBeEmpty)
+			So(strings.HasPrefix(read(t, repoFile(repo)), digest.BeginPrefix), ShouldBeTrue)
+			So(hasIssue(issues, engine.SeverityError, "lives in a git-tracked file"), ShouldBeFalse)
+
+			So(os.Remove(filepath.Join(repo, ".gitignore")), ShouldBeNil)
+
+			issues, err = f.engine.Doctor(t.Context())
+			So(err, ShouldBeNil)
+
+			Convey("Then a fence in a tracked file is a doctor error", func() {
+				So(hasIssue(issues, engine.SeverityError, "lives in a git-tracked file"), ShouldBeTrue)
+			})
+		})
+	})
 }
 
 func TestProjectsWatchPathsAndKindFilter(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given an enabled project", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	repo := newRepo(t)
-	f.useRepo(t, repo)
-	f.enableProject(t, "AGENTS.md")
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		repo := newRepo(t)
+		f.useRepo(t, repo)
+		f.enableProject(t, "AGENTS.md")
 
-	paths, err := f.engine.WatchPaths(t.Context())
-	require.NoError(t, err)
-	require.Contains(t, paths, f.vault.ProjectsDir())
-	require.Contains(t, paths, repoFile(repo))
+		Convey("When watch paths and a kind filter are used", func() {
+			paths, err := f.engine.WatchPaths(t.Context())
+			So(err, ShouldBeNil)
 
-	write(t, repoFile(repo), "# repo rules\n")
+			write(t, repoFile(repo), "# repo rules\n")
 
-	report := f.run(t, engine.SyncOptions{Kinds: []kind.ID{kind.Projects}})
-	require.NotNil(t, report.Kind(kind.Projects))
-	require.Nil(t, report.Kind(kind.Memory))
-	require.Equal(t, "# repo rules\n", read(t, vaultProject(f, repo, "AGENTS.md")))
+			report := f.run(t, engine.SyncOptions{Kinds: []kind.ID{kind.Projects}})
+
+			Convey("Then only projects is synced", func() {
+				So(paths, ShouldContain, f.vault.ProjectsDir())
+				So(paths, ShouldContain, repoFile(repo))
+
+				So(report.Kind(kind.Projects), ShouldNotBeNil)
+				So(report.Kind(kind.Memory), ShouldBeNil)
+				So(read(t, vaultProject(f, repo, "AGENTS.md")), ShouldEqual, "# repo rules\n")
+			})
+		})
+	})
 }
 
 func TestProjectsRestore(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given canon versions of a project file", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	repo := newRepo(t)
-	f.useRepo(t, repo)
-	f.enableProject(t, "AGENTS.md")
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		repo := newRepo(t)
+		f.useRepo(t, repo)
+		f.enableProject(t, "AGENTS.md")
 
-	write(t, repoFile(repo), "# v1\n")
-	f.sync(t)
+		write(t, repoFile(repo), "# v1\n")
+		f.sync(t)
 
-	write(t, vaultProject(f, repo, "AGENTS.md"), "# v2\n")
-	f.sync(t)
+		write(t, vaultProject(f, repo, "AGENTS.md"), "# v2\n")
+		f.sync(t)
 
-	_, err := f.engine.Restore(t.Context(), kind.Projects, -2)
-	require.NoError(t, err)
+		_, err := f.engine.Restore(t.Context(), kind.Projects, -2)
+		So(err, ShouldBeNil)
 
-	require.Equal(t, "# v1\n", read(t, vaultProject(f, repo, "AGENTS.md")))
-	require.Equal(t, "# v1\n", read(t, repoFile(repo)))
+		Convey("When the previous version is restored", func() {
+			Convey("Then the canon and the repo roll back", func() {
+				So(read(t, vaultProject(f, repo, "AGENTS.md")), ShouldEqual, "# v1\n")
+				So(read(t, repoFile(repo)), ShouldEqual, "# v1\n")
+			})
+		})
+	})
 }

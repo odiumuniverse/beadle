@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/secret"
 )
 
-func TestKeyringRealRoundTrip(t *testing.T) { //nolint:paralleltest // touches the real keychain
+func TestKeyringRealRoundTrip(t *testing.T) {
 	if os.Getenv("BEADLE_KEYRING_E2E") != "1" {
 		t.Skip("set BEADLE_KEYRING_E2E=1 to touch the real keychain")
 	}
@@ -21,29 +21,36 @@ func TestKeyringRealRoundTrip(t *testing.T) { //nolint:paralleltest // touches t
 		t.Skip("the round-trip documents the macOS transport; the Linux mapping is untested")
 	}
 
-	keyring, err := secret.NewShellKeyring(secret.ExecRunner{})
-	require.NoError(t, err)
+	Convey("Given the real shell keyring", t, func() {
+		keyring, err := secret.NewShellKeyring(secret.ExecRunner{})
+		So(err, ShouldBeNil)
 
-	account := fmt.Sprintf("beadle-e2e-%d", time.Now().UnixNano())
+		account := fmt.Sprintf("beadle-e2e-%d", time.Now().UnixNano())
 
-	t.Cleanup(func() {
-		_, _ = keyring.Delete(account)
+		t.Cleanup(func() {
+			_, _ = keyring.Delete(account)
+		})
+
+		value := "s3cr3t\nPEM line \u2603"
+
+		Convey("When a value with newlines and unicode is stored and read back", func() {
+			So(keyring.Set(account, value), ShouldBeNil)
+
+			got, found, err := keyring.Get(account)
+
+			Convey("Then it round-trips and can be deleted", func() {
+				So(err, ShouldBeNil)
+				So(found, ShouldBeTrue)
+				So(got, ShouldEqual, value)
+
+				removed, err := keyring.Delete(account)
+				So(err, ShouldBeNil)
+				So(removed, ShouldBeTrue)
+
+				_, found, err = keyring.Get(account)
+				So(err, ShouldBeNil)
+				So(found, ShouldBeFalse)
+			})
+		})
 	})
-
-	value := "s3cr3t\nPEM line \u2603"
-
-	require.NoError(t, keyring.Set(account, value))
-
-	got, found, err := keyring.Get(account)
-	require.NoError(t, err)
-	require.True(t, found)
-	require.Equal(t, value, got, "the -X hex transport preserves newlines and unicode")
-
-	removed, err := keyring.Delete(account)
-	require.NoError(t, err)
-	require.True(t, removed)
-
-	_, found, err = keyring.Get(account)
-	require.NoError(t, err)
-	require.False(t, found)
 }

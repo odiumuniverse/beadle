@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/cas"
 	"github.com/odiumuniverse/beadle/pkg/kind"
@@ -15,131 +15,184 @@ import (
 )
 
 func TestSaveLoadRoundTrip(t *testing.T) {
-	t.Parallel()
+	Convey("Given a state with a base and a conflict", t, func() {
+		path := filepath.Join(t.TempDir(), state.FileName)
 
-	path := filepath.Join(t.TempDir(), state.FileName)
+		st := state.New()
+		st.SetBase(kind.MCP, "claude-code", state.Base{"alpha": cas.HashOf([]byte("a"))})
+		st.ReplaceConflicts(kind.MCP, "opencode", []state.Conflict{{
+			Kind: kind.MCP, Agent: "opencode", Key: "alpha", Reason: state.ReasonModified, Since: time.Unix(100, 0).UTC(),
+		}})
 
-	st := state.New()
-	st.SetBase(kind.MCP, "claude-code", state.Base{"alpha": cas.HashOf([]byte("a"))})
-	st.ReplaceConflicts(kind.MCP, "opencode", []state.Conflict{{
-		Kind: kind.MCP, Agent: "opencode", Key: "alpha", Reason: state.ReasonModified, Since: time.Unix(100, 0).UTC(),
-	}})
+		Convey("When it is saved and loaded back", func() {
+			So(st.Save(path), ShouldBeNil)
 
-	require.NoError(t, st.Save(path))
+			loaded, err := state.Load(path)
 
-	loaded, err := state.Load(path)
-	require.NoError(t, err)
+			Convey("Then the base and conflicts survive", func() {
+				So(err, ShouldBeNil)
 
-	base, ok := loaded.Base(kind.MCP, "claude-code")
-	require.True(t, ok)
-	require.Equal(t, cas.HashOf([]byte("a")), base["alpha"])
+				base, ok := loaded.Base(kind.MCP, "claude-code")
+				So(ok, ShouldBeTrue)
+				So(base["alpha"], ShouldEqual, cas.HashOf([]byte("a")))
 
-	_, ok = loaded.Base(kind.MCP, "opencode")
-	require.False(t, ok, "an agent that never synchronized has no base")
+				_, ok = loaded.Base(kind.MCP, "opencode")
+				So(ok, ShouldBeFalse)
 
-	require.Len(t, loaded.OpenConflicts(), 1)
+				So(loaded.OpenConflicts(), ShouldHaveLength, 1)
+			})
+		})
+	})
 }
 
 func TestLoadMissingFileIsEmpty(t *testing.T) {
-	t.Parallel()
+	Convey("Given a state file that does not exist", t, func() {
+		Convey("When it is loaded", func() {
+			require := 0
+			_ = require
 
-	st, err := state.Load(filepath.Join(t.TempDir(), "missing.json"))
-	require.NoError(t, err)
-	require.Empty(t, st.OpenConflicts())
+			st, err := state.Load(filepath.Join(t.TempDir(), "missing.json"))
+
+			Convey("Then an empty state is returned", func() {
+				So(err, ShouldBeNil)
+				So(st.OpenConflicts(), ShouldBeEmpty)
+			})
+		})
+	})
 }
 
 func TestLoadRejectsOtherVersions(t *testing.T) {
-	t.Parallel()
+	Convey("Given a state file with an unsupported version", t, func() {
+		path := filepath.Join(t.TempDir(), state.FileName)
+		So(os.WriteFile(path, []byte(`{"version": 1}`), 0o600), ShouldBeNil)
 
-	path := filepath.Join(t.TempDir(), state.FileName)
-	require.NoError(t, os.WriteFile(path, []byte(`{"version": 1}`), 0o600))
+		Convey("When it is loaded", func() {
+			_, err := state.Load(path)
 
-	_, err := state.Load(path)
-	require.Error(t, err)
+			Convey("Then loading fails", func() {
+				So(err, ShouldBeError)
+			})
+		})
+	})
 }
 
 func TestLoadReinitializesNullMaps(t *testing.T) {
-	t.Parallel()
+	Convey("Given a state file with null maps", t, func() {
+		path := filepath.Join(t.TempDir(), state.FileName)
+		So(os.WriteFile(path, []byte(`{"version": 2, "bases": null, "snapshots": null, "renders": null, "drift": null}`), 0o600), ShouldBeNil)
 
-	path := filepath.Join(t.TempDir(), state.FileName)
-	require.NoError(t, os.WriteFile(path, []byte(`{"version": 2, "bases": null, "snapshots": null, "renders": null, "drift": null}`), 0o600))
+		st, err := state.Load(path)
+		So(err, ShouldBeNil)
 
-	st, err := state.Load(path)
-	require.NoError(t, err)
+		Convey("When the maps are written to and saved", func() {
+			st.Renders["/repo/AGENTS.md"] = state.Render{Notes: 1}
+			st.Drift["/repo/AGENTS.md"] = state.Drift{Count: 1}
+			st.SetBase(kind.Rules, "a", nil)
 
-	st.Renders["/repo/AGENTS.md"] = state.Render{Notes: 1}
-	st.Drift["/repo/AGENTS.md"] = state.Drift{Count: 1}
-	st.SetBase(kind.Rules, "a", nil)
+			So(st.Save(path), ShouldBeNil)
 
-	require.NoError(t, st.Save(path))
+			again, err := state.Load(path)
 
-	again, err := state.Load(path)
-	require.NoError(t, err)
-	require.Contains(t, again.Renders, "/repo/AGENTS.md")
-	require.Contains(t, again.Drift, "/repo/AGENTS.md")
+			Convey("Then the entries survive the round trip", func() {
+				So(err, ShouldBeNil)
+				So(again.Renders, ShouldContainKey, "/repo/AGENTS.md")
+				So(again.Drift, ShouldContainKey, "/repo/AGENTS.md")
+			})
+		})
+	})
 }
 
 func TestReplaceConflictsKeepsDetectionTime(t *testing.T) {
-	t.Parallel()
+	Convey("Given a conflict replaced for the same agent", t, func() {
+		st := state.New()
+		first := state.Conflict{Kind: kind.Rules, Agent: "a", Key: kind.RulesKey, Since: time.Unix(100, 0).UTC()}
+		st.ReplaceConflicts(kind.Rules, "a", []state.Conflict{first})
 
-	st := state.New()
-	first := state.Conflict{Kind: kind.Rules, Agent: "a", Key: kind.RulesKey, Since: time.Unix(100, 0).UTC()}
-	st.ReplaceConflicts(kind.Rules, "a", []state.Conflict{first})
+		again := first
+		again.Since = time.Unix(200, 0).UTC()
+		st.ReplaceConflicts(kind.Rules, "a", []state.Conflict{again})
 
-	again := first
-	again.Since = time.Unix(200, 0).UTC()
-	st.ReplaceConflicts(kind.Rules, "a", []state.Conflict{again})
+		Convey("When another agent is replaced and the first is cleared", func() {
+			other := state.Conflict{Kind: kind.Rules, Agent: "b", Key: kind.RulesKey}
+			st.ReplaceConflicts(kind.Rules, "b", []state.Conflict{other})
+			st.ReplaceConflicts(kind.Rules, "a", nil)
 
-	require.Equal(t, time.Unix(100, 0).UTC(), st.OpenConflicts()[0].Since)
+			Convey("Then the detection time is kept and the other agent is untouched", func() {
+				So(st.OpenConflicts(), ShouldResemble, []state.Conflict{other})
+			})
+		})
 
-	other := state.Conflict{Kind: kind.Rules, Agent: "b", Key: kind.RulesKey}
-	st.ReplaceConflicts(kind.Rules, "b", []state.Conflict{other})
-	st.ReplaceConflicts(kind.Rules, "a", nil)
-
-	require.Equal(t, []state.Conflict{other}, st.OpenConflicts(), "replacing one agent never touches another")
+		Convey("Then the original detection time is preserved", func() {
+			So(st.OpenConflicts()[0].Since, ShouldResemble, time.Unix(100, 0).UTC())
+		})
+	})
 }
 
 func TestConflictLookup(t *testing.T) {
-	t.Parallel()
+	Convey("Given a state with one conflict", t, func() {
+		st := state.New()
+		c := state.Conflict{Kind: kind.MCP, Agent: "cursor", Key: "alpha"}
+		st.ReplaceConflicts(kind.MCP, "cursor", []state.Conflict{c})
 
-	st := state.New()
-	c := state.Conflict{Kind: kind.MCP, Agent: "cursor", Key: "alpha"}
-	st.ReplaceConflicts(kind.MCP, "cursor", []state.Conflict{c})
+		Convey("When it is looked up by a prefix", func() {
+			found, err := st.Conflict(c.ID()[:4])
 
-	found, err := st.Conflict(c.ID()[:4])
-	require.NoError(t, err)
-	require.Equal(t, c.ID(), found.ID())
+			Convey("Then it is found", func() {
+				So(err, ShouldBeNil)
+				So(found.ID(), ShouldEqual, c.ID())
+			})
+		})
 
-	_, err = st.Conflict("zzzz")
-	require.Error(t, err)
+		Convey("When an unknown id is looked up", func() {
+			_, err := st.Conflict("zzzz")
 
-	st.RemoveConflict(c.ID())
-	require.Empty(t, st.OpenConflicts())
+			Convey("Then the lookup fails", func() {
+				So(err, ShouldBeError)
+			})
+		})
+
+		Convey("When the conflict is removed", func() {
+			st.RemoveConflict(c.ID())
+
+			Convey("Then no conflicts remain", func() {
+				So(st.OpenConflicts(), ShouldBeEmpty)
+			})
+		})
+	})
 }
 
 func TestSnapshotsAreBoundedAndDeduplicated(t *testing.T) {
-	t.Parallel()
+	Convey("Given a state with more snapshots than the bound", t, func() {
+		st := state.New()
 
-	st := state.New()
+		for i := range state.MaxSnapshots + 5 {
+			st.AddSnapshot(kind.Rules, state.Snapshot{Manifest: cas.HashOf(fmt.Appendf(nil, "%d", i))})
+		}
 
-	for i := range state.MaxSnapshots + 5 {
-		st.AddSnapshot(kind.Rules, state.Snapshot{Manifest: cas.HashOf(fmt.Appendf(nil, "%d", i))})
-	}
+		history := st.History(kind.Rules)
 
-	history := st.History(kind.Rules)
-	require.Len(t, history, state.MaxSnapshots)
+		Convey("When the newest snapshot is added again", func() {
+			st.AddSnapshot(kind.Rules, history[len(history)-1])
 
-	st.AddSnapshot(kind.Rules, history[len(history)-1])
-	require.Len(t, st.History(kind.Rules), state.MaxSnapshots, "an unchanged vault adds no snapshot")
+			Convey("Then the history is bounded and the duplicate is dropped", func() {
+				So(history, ShouldHaveLength, state.MaxSnapshots)
+				So(st.History(kind.Rules), ShouldHaveLength, state.MaxSnapshots)
+			})
+		})
+	})
 }
 
 func TestHashesCoverEveryReference(t *testing.T) {
-	t.Parallel()
+	Convey("Given a state referencing hashes from a base, a conflict and a snapshot", t, func() {
+		st := state.New()
+		st.SetBase(kind.Skills, "claude-code", state.Base{"a/SKILL.md": "h1"})
+		st.ReplaceConflicts(kind.Skills, "claude-code", []state.Conflict{{Kind: kind.Skills, Agent: "claude-code", Key: "a/SKILL.md", Local: "h2"}})
+		st.AddSnapshot(kind.Skills, state.Snapshot{Manifest: "h3"})
 
-	st := state.New()
-	st.SetBase(kind.Skills, "claude-code", state.Base{"a/SKILL.md": "h1"})
-	st.ReplaceConflicts(kind.Skills, "claude-code", []state.Conflict{{Kind: kind.Skills, Agent: "claude-code", Key: "a/SKILL.md", Local: "h2"}})
-	st.AddSnapshot(kind.Skills, state.Snapshot{Manifest: "h3"})
-
-	require.Equal(t, []cas.Hash{"h1", "h2", "h3"}, st.Hashes())
+		Convey("When the referenced hashes are listed", func() {
+			Convey("Then every reference is present", func() {
+				So(st.Hashes(), ShouldResemble, []cas.Hash{"h1", "h2", "h3"})
+			})
+		})
+	})
 }

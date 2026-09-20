@@ -1,12 +1,15 @@
 package engine_test
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/config"
@@ -31,360 +34,479 @@ func vaultMemory(f *fixture, slug, note string) string {
 	return filepath.Join(f.vault.MemoryDir(), slug, note)
 }
 
-func TestMemorySyncRoundTrip(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+func noFile(t *testing.T, path string) {
+	t.Helper()
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-
-	write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
-	write(t, claudeMemory(f, "-Users-a", "feedback_x.md"), "# x\n")
-	write(t, claudeMemory(f, "-Users-b", "MEMORY.md"), "# b\n")
-	write(t, filepath.Join(claudeSlug(f, "-Users-a"), "s.jsonl"), "{}\n")
-
-	report := f.sync(t)
-	require.True(t, report.Kind(kind.Memory).VaultChanged)
-	require.Equal(t, "# a\n", read(t, vaultMemory(f, "-Users-a", "MEMORY.md")))
-	require.Equal(t, "# x\n", read(t, vaultMemory(f, "-Users-a", "feedback_x.md")))
-	require.Equal(t, "# b\n", read(t, vaultMemory(f, "-Users-b", "MEMORY.md")))
-
-	report = f.sync(t)
-	require.False(t, report.Kind(kind.Memory).VaultChanged)
-	require.Equal(t, engine.ActionNoop, report.Action(kind.Memory, agent.ClaudeCodeID))
-
-	write(t, vaultMemory(f, "-Users-a", "MEMORY.md"), "# a2\n")
-	f.sync(t)
-	require.Equal(t, "# a2\n", read(t, claudeMemory(f, "-Users-a", "MEMORY.md")))
-
-	require.Equal(t, "{}\n", read(t, filepath.Join(claudeSlug(f, "-Users-a"), "s.jsonl")))
-
-	require.NoError(t, os.Remove(claudeMemory(f, "-Users-a", "feedback_x.md")))
-	f.sync(t)
-
-	require.NoFileExists(t, vaultMemory(f, "-Users-a", "feedback_x.md"), "an agent deletion reaches the canon")
-	require.DirExists(t, filepath.Join(f.vault.MemoryDir(), "-Users-a"), "the slug keeps its remaining notes")
-	require.NoFileExists(t, claudeMemory(f, "-Users-a", "feedback_x.md"))
-
-	past := time.Now().Add(-time.Hour)
-	require.NoError(t, os.Chtimes(vaultMemory(f, "-Users-b", "MEMORY.md"), past, past))
-
-	write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a3\n")
-	f.sync(t)
-
-	info, err := os.Stat(vaultMemory(f, "-Users-b", "MEMORY.md"))
-	require.NoError(t, err)
-	require.True(t, info.ModTime().Equal(past), "an unchanged slug is not rewritten")
-	require.Equal(t, "# a3\n", read(t, vaultMemory(f, "-Users-a", "MEMORY.md")))
-}
-
-func TestMemoryCanonForeignEntriesSurvive(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := newFixture(t)
-	f.emptyConfigs(t)
-
-	write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
-	f.sync(t)
-
-	write(t, vaultMemory(f, "-Users-a", "junk.txt"), "junk\n")
-	write(t, filepath.Join(f.vault.MemoryDir(), "-Users-a", "memory", "nested", "deep.md"), "deep\n")
-	write(t, filepath.Join(f.vault.MemoryDir(), ".hidden-slug", "note.md"), "hidden\n")
-
-	external := t.TempDir()
-	write(t, filepath.Join(external, "note.md"), "outer\n")
-	require.NoError(t, os.Symlink(external, filepath.Join(f.vault.MemoryDir(), "-Users-link")))
-
-	f.sync(t)
-
-	require.Equal(t, "junk\n", read(t, vaultMemory(f, "-Users-a", "junk.txt")))
-	require.Equal(t, "deep\n", read(t, filepath.Join(f.vault.MemoryDir(), "-Users-a", "memory", "nested", "deep.md")))
-	require.Equal(t, "hidden\n", read(t, filepath.Join(f.vault.MemoryDir(), ".hidden-slug", "note.md")))
-	require.Equal(t, "outer\n", read(t, filepath.Join(external, "note.md")))
-
-	info, err := os.Lstat(filepath.Join(f.vault.MemoryDir(), "-Users-link"))
-	require.NoError(t, err)
-	require.NotZero(t, info.Mode()&os.ModeSymlink)
-}
-
-func TestMemorySlugDirDisappears(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := newFixture(t)
-	f.emptyConfigs(t)
-
-	write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
-	write(t, claudeMemory(f, "-Users-b", "MEMORY.md"), "# b\n")
-	f.sync(t)
-
-	require.NoError(t, os.RemoveAll(claudeSlug(f, "-Users-b")))
-
-	report := f.sync(t)
-	require.Empty(t, report.ConflictsOf(kind.Memory))
-	require.NoDirExists(t, filepath.Join(f.vault.MemoryDir(), "-Users-b"))
-	require.FileExists(t, vaultMemory(f, "-Users-a", "MEMORY.md"))
-}
-
-func TestMemoryMassDeletionGuard(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := newFixture(t)
-	f.emptyConfigs(t)
-
-	write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
-	write(t, claudeMemory(f, "-Users-b", "MEMORY.md"), "# b\n")
-	f.sync(t)
-
-	require.NoError(t, os.RemoveAll(claudeSlug(f, "-Users-a")))
-	require.NoError(t, os.RemoveAll(claudeSlug(f, "-Users-b")))
-
-	report := f.sync(t)
-	require.Len(t, report.ConflictsOf(kind.Memory), 2)
-	require.Equal(t, state.ReasonMassDelete, report.ConflictsOf(kind.Memory)[0].Reason)
-	require.FileExists(t, vaultMemory(f, "-Users-a", "MEMORY.md"), "a mass deletion waits for confirmation")
-	require.FileExists(t, vaultMemory(f, "-Users-b", "MEMORY.md"))
-}
-
-func TestMemoryConflictResolvedInEditor(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := newFixture(t)
-	f.emptyConfigs(t)
-
-	write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "v1\n")
-	f.sync(t)
-
-	write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "agent-edit\n")
-	write(t, vaultMemory(f, "-Users-a", "MEMORY.md"), "vault-edit\n")
-
-	report := f.sync(t)
-	require.Len(t, report.ConflictsOf(kind.Memory), 1)
-	require.Equal(t, "vault-edit\n", read(t, vaultMemory(f, "-Users-a", "MEMORY.md")))
-	require.Equal(t, "agent-edit\n", read(t, claudeMemory(f, "-Users-a", "MEMORY.md")))
-
-	c := f.conflict(t, kind.Memory, agent.ClaudeCodeID)
-
-	file, err := f.engine.ConflictFile(c)
-	require.NoError(t, err)
-	require.Equal(t, ".md", filepath.Ext(file))
-	require.Contains(t, filepath.Base(file), "memory-claude-code-")
-	require.Contains(t, read(t, file), ">>>>>>> agent:claude-code")
-
-	write(t, file, "# resolved\n")
-
-	_, err = f.engine.Resolve(t.Context(), []string{c.ID()}, engine.Resolution{Take: engine.TakeFile})
-	require.NoError(t, err)
-
-	require.Equal(t, "# resolved\n", read(t, vaultMemory(f, "-Users-a", "MEMORY.md")))
-	require.Equal(t, "# resolved\n", read(t, claudeMemory(f, "-Users-a", "MEMORY.md")))
-	require.NoFileExists(t, file)
-	require.Empty(t, f.conflicts(t, kind.Memory, agent.ClaudeCodeID))
-}
-
-func TestMemoryProjectorHidesMissingSlug(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := newFixture(t)
-	f.emptyConfigs(t)
-
-	write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
-	f.sync(t)
-
-	write(t, vaultMemory(f, "-Users-ghost", "MEMORY.md"), "# g\n")
-
-	report := f.sync(t)
-	require.False(t, report.Kind(kind.Memory).VaultChanged)
-	require.Equal(t, engine.ActionNoop, report.Action(kind.Memory, agent.ClaudeCodeID))
-	require.NoDirExists(t, claudeSlug(f, "-Users-ghost"))
-	require.Equal(t, "# g\n", read(t, vaultMemory(f, "-Users-ghost", "MEMORY.md")), "the hidden note stays in the canon")
-
-	for _, result := range report.Kind(kind.Memory).Agents {
-		require.NotContains(t, result.Note, "did not keep")
+	_, err := os.Stat(path)
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("%s should not exist (err=%v)", path, err)
 	}
 }
 
+func TestMemorySyncRoundTrip(t *testing.T) {
+	Convey("Given Claude memory notes and junk in the projects tree", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
+		write(t, claudeMemory(f, "-Users-a", "feedback_x.md"), "# x\n")
+		write(t, claudeMemory(f, "-Users-b", "MEMORY.md"), "# b\n")
+		write(t, filepath.Join(claudeSlug(f, "-Users-a"), "s.jsonl"), "{}\n")
+
+		report := f.sync(t)
+
+		Convey("When it syncs again and edits flow both ways", func() {
+			So(report.Kind(kind.Memory).VaultChanged, ShouldBeTrue)
+			So(read(t, vaultMemory(f, "-Users-a", "MEMORY.md")), ShouldEqual, "# a\n")
+			So(read(t, vaultMemory(f, "-Users-a", "feedback_x.md")), ShouldEqual, "# x\n")
+			So(read(t, vaultMemory(f, "-Users-b", "MEMORY.md")), ShouldEqual, "# b\n")
+
+			report = f.sync(t)
+			So(report.Kind(kind.Memory).VaultChanged, ShouldBeFalse)
+			So(report.Action(kind.Memory, agent.ClaudeCodeID), ShouldEqual, engine.ActionNoop)
+
+			write(t, vaultMemory(f, "-Users-a", "MEMORY.md"), "# a2\n")
+			f.sync(t)
+			So(read(t, claudeMemory(f, "-Users-a", "MEMORY.md")), ShouldEqual, "# a2\n")
+			So(read(t, filepath.Join(claudeSlug(f, "-Users-a"), "s.jsonl")), ShouldEqual, "{}\n")
+
+			Convey("Then an agent deletion reaches the canon and unchanged slugs are untouched", func() {
+				So(os.Remove(claudeMemory(f, "-Users-a", "feedback_x.md")), ShouldBeNil)
+				f.sync(t)
+
+				noFile(t, vaultMemory(f, "-Users-a", "feedback_x.md"))
+				noFile(t, claudeMemory(f, "-Users-a", "feedback_x.md"))
+
+				_, dirErr := os.Stat(filepath.Join(f.vault.MemoryDir(), "-Users-a"))
+				So(dirErr, ShouldBeNil)
+
+				past := time.Now().Add(-time.Hour)
+				So(os.Chtimes(vaultMemory(f, "-Users-b", "MEMORY.md"), past, past), ShouldBeNil)
+
+				write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a3\n")
+				f.sync(t)
+
+				info, err := os.Stat(vaultMemory(f, "-Users-b", "MEMORY.md"))
+				So(err, ShouldBeNil)
+				So(info.ModTime().Equal(past), ShouldBeTrue)
+				So(read(t, vaultMemory(f, "-Users-a", "MEMORY.md")), ShouldEqual, "# a3\n")
+			})
+		})
+	})
+}
+
+func TestMemoryCanonForeignEntriesSurvive(t *testing.T) {
+	Convey("Given foreign canon entries and a symlinked slug", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
+		f.sync(t)
+
+		write(t, vaultMemory(f, "-Users-a", "junk.txt"), "junk\n")
+		write(t, filepath.Join(f.vault.MemoryDir(), "-Users-a", "memory", "nested", "deep.md"), "deep\n")
+		write(t, filepath.Join(f.vault.MemoryDir(), ".hidden-slug", "note.md"), "hidden\n")
+
+		external := t.TempDir()
+		write(t, filepath.Join(external, "note.md"), "outer\n")
+		So(os.Symlink(external, filepath.Join(f.vault.MemoryDir(), "-Users-link")), ShouldBeNil)
+
+		Convey("When sync runs", func() {
+			f.sync(t)
+
+			info, err := os.Lstat(filepath.Join(f.vault.MemoryDir(), "-Users-link"))
+			So(err, ShouldBeNil)
+
+			Convey("Then foreign entries and the symlink survive", func() {
+				So(read(t, vaultMemory(f, "-Users-a", "junk.txt")), ShouldEqual, "junk\n")
+				So(read(t, filepath.Join(f.vault.MemoryDir(), "-Users-a", "memory", "nested", "deep.md")), ShouldEqual, "deep\n")
+				So(read(t, filepath.Join(f.vault.MemoryDir(), ".hidden-slug", "note.md")), ShouldEqual, "hidden\n")
+				So(read(t, filepath.Join(external, "note.md")), ShouldEqual, "outer\n")
+				So(info.Mode()&os.ModeSymlink, ShouldNotBeZeroValue)
+			})
+		})
+	})
+}
+
+func TestMemorySlugDirDisappears(t *testing.T) {
+	Convey("Given one slug whose directory disappears", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
+		write(t, claudeMemory(f, "-Users-b", "MEMORY.md"), "# b\n")
+		f.sync(t)
+
+		So(os.RemoveAll(claudeSlug(f, "-Users-b")), ShouldBeNil)
+
+		Convey("When sync runs", func() {
+			report := f.sync(t)
+
+			_, dirErr := os.Stat(filepath.Join(f.vault.MemoryDir(), "-Users-b"))
+
+			Convey("Then the slug is dropped without a conflict", func() {
+				So(report.ConflictsOf(kind.Memory), ShouldBeEmpty)
+				So(errors.Is(dirErr, fs.ErrNotExist), ShouldBeTrue)
+				So(read(t, vaultMemory(f, "-Users-a", "MEMORY.md")), ShouldEqual, "# a\n")
+			})
+		})
+	})
+}
+
+func TestMemoryMassDeletionGuard(t *testing.T) {
+	Convey("Given all slugs deleted at once", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
+		write(t, claudeMemory(f, "-Users-b", "MEMORY.md"), "# b\n")
+		f.sync(t)
+
+		So(os.RemoveAll(claudeSlug(f, "-Users-a")), ShouldBeNil)
+		So(os.RemoveAll(claudeSlug(f, "-Users-b")), ShouldBeNil)
+
+		Convey("When sync runs", func() {
+			report := f.sync(t)
+
+			Convey("Then it waits for confirmation with a mass-delete conflict each", func() {
+				So(report.ConflictsOf(kind.Memory), ShouldHaveLength, 2)
+				So(report.ConflictsOf(kind.Memory)[0].Reason, ShouldEqual, state.ReasonMassDelete)
+				So(read(t, vaultMemory(f, "-Users-a", "MEMORY.md")), ShouldEqual, "# a\n")
+				So(read(t, vaultMemory(f, "-Users-b", "MEMORY.md")), ShouldEqual, "# b\n")
+			})
+		})
+	})
+}
+
+func TestMemoryConflictResolvedInEditor(t *testing.T) {
+	Convey("Given a memory conflict resolved in the editor file", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "v1\n")
+		f.sync(t)
+
+		write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "agent-edit\n")
+		write(t, vaultMemory(f, "-Users-a", "MEMORY.md"), "vault-edit\n")
+
+		report := f.sync(t)
+		So(report.ConflictsOf(kind.Memory), ShouldHaveLength, 1)
+
+		c := f.conflict(t, kind.Memory, agent.ClaudeCodeID)
+
+		file, err := f.engine.ConflictFile(c)
+		So(err, ShouldBeNil)
+		So(filepath.Ext(file), ShouldEqual, ".md")
+		So(filepath.Base(file), ShouldContainSubstring, "memory-claude-code-")
+		So(read(t, file), ShouldContainSubstring, ">>>>>>> agent:claude-code")
+
+		write(t, file, "# resolved\n")
+
+		Convey("When the edited file is taken", func() {
+			_, err = f.engine.Resolve(t.Context(), []string{c.ID()}, engine.Resolution{Take: engine.TakeFile})
+			So(err, ShouldBeNil)
+
+			_, fileErr := os.Stat(file)
+
+			Convey("Then it lands on both sides and the file is gone", func() {
+				So(read(t, vaultMemory(f, "-Users-a", "MEMORY.md")), ShouldEqual, "# resolved\n")
+				So(read(t, claudeMemory(f, "-Users-a", "MEMORY.md")), ShouldEqual, "# resolved\n")
+				So(errors.Is(fileErr, fs.ErrNotExist), ShouldBeTrue)
+				So(f.conflicts(t, kind.Memory, agent.ClaudeCodeID), ShouldBeEmpty)
+			})
+		})
+	})
+}
+
+func TestMemoryProjectorHidesMissingSlug(t *testing.T) {
+	Convey("Given a canon note for a slug that has no directory", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
+		f.sync(t)
+
+		write(t, vaultMemory(f, "-Users-ghost", "MEMORY.md"), "# g\n")
+
+		Convey("When sync runs", func() {
+			report := f.sync(t)
+
+			_, dirErr := os.Stat(claudeSlug(f, "-Users-ghost"))
+
+			Convey("Then the hidden note stays in the canon and no slug is fabricated", func() {
+				So(report.Kind(kind.Memory).VaultChanged, ShouldBeFalse)
+				So(report.Action(kind.Memory, agent.ClaudeCodeID), ShouldEqual, engine.ActionNoop)
+				So(errors.Is(dirErr, fs.ErrNotExist), ShouldBeTrue)
+				So(read(t, vaultMemory(f, "-Users-ghost", "MEMORY.md")), ShouldEqual, "# g\n")
+
+				for _, result := range report.Kind(kind.Memory).Agents {
+					So(result.Note, ShouldNotContainSubstring, "did not keep")
+				}
+			})
+		})
+	})
+}
+
 func TestMemorySymlinkedNoteUntouched(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a symlinked memory note", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
+		f := newFixture(t)
+		f.emptyConfigs(t)
 
-	write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
-	f.sync(t)
+		write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
+		f.sync(t)
 
-	target := filepath.Join(t.TempDir(), "external.md")
-	write(t, target, "outer\n")
+		target := filepath.Join(t.TempDir(), "external.md")
+		write(t, target, "outer\n")
 
-	link := claudeMemory(f, "-Users-a", "linked.md")
-	require.NoError(t, os.Symlink(target, link))
+		link := claudeMemory(f, "-Users-a", "linked.md")
+		So(os.Symlink(target, link), ShouldBeNil)
 
-	f.sync(t)
+		f.sync(t)
 
-	require.NoFileExists(t, vaultMemory(f, "-Users-a", "linked.md"))
-	require.Equal(t, "outer\n", read(t, target))
+		Convey("When the same-named canon note is removed", func() {
+			noFile(t, vaultMemory(f, "-Users-a", "linked.md"))
+			So(read(t, target), ShouldEqual, "outer\n")
 
-	require.NoError(t, os.Remove(vaultMemory(f, "-Users-a", "MEMORY.md")))
-	f.sync(t)
+			So(os.Remove(vaultMemory(f, "-Users-a", "MEMORY.md")), ShouldBeNil)
+			f.sync(t)
 
-	require.NoFileExists(t, claudeMemory(f, "-Users-a", "MEMORY.md"))
+			info, err := os.Lstat(link)
 
-	info, err := os.Lstat(link)
-	require.NoError(t, err)
-	require.NotZero(t, info.Mode()&os.ModeSymlink, "a symlinked note is never deleted")
-	require.Equal(t, "outer\n", read(t, target))
+			Convey("Then the symlinked note is never adopted or deleted", func() {
+				noFile(t, claudeMemory(f, "-Users-a", "MEMORY.md"))
+				So(err, ShouldBeNil)
+				So(info.Mode()&os.ModeSymlink, ShouldNotBeZeroValue)
+				So(read(t, target), ShouldEqual, "outer\n")
+			})
+		})
+	})
 }
 
 func TestMemoryRestore(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given canon versions of a memory note", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
+		f := newFixture(t)
+		f.emptyConfigs(t)
 
-	write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# v1\n")
-	f.sync(t)
+		write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# v1\n")
+		f.sync(t)
 
-	write(t, vaultMemory(f, "-Users-a", "MEMORY.md"), "# v2\n")
-	f.sync(t)
+		write(t, vaultMemory(f, "-Users-a", "MEMORY.md"), "# v2\n")
+		f.sync(t)
 
-	write(t, vaultMemory(f, "-Users-a", "extra.md"), "# extra\n")
-	f.sync(t)
+		write(t, vaultMemory(f, "-Users-a", "extra.md"), "# extra\n")
+		f.sync(t)
 
-	_, err := f.engine.Restore(t.Context(), kind.Memory, -2)
-	require.NoError(t, err)
+		_, err := f.engine.Restore(t.Context(), kind.Memory, -2)
+		So(err, ShouldBeNil)
 
-	require.Equal(t, "# v2\n", read(t, vaultMemory(f, "-Users-a", "MEMORY.md")))
-	require.NoFileExists(t, vaultMemory(f, "-Users-a", "extra.md"))
-	require.Equal(t, "# v2\n", read(t, claudeMemory(f, "-Users-a", "MEMORY.md")))
-	require.NoFileExists(t, claudeMemory(f, "-Users-a", "extra.md"))
+		Convey("When the previous version is restored", func() {
+			Convey("Then the canon and the agent roll back", func() {
+				So(read(t, vaultMemory(f, "-Users-a", "MEMORY.md")), ShouldEqual, "# v2\n")
+				noFile(t, vaultMemory(f, "-Users-a", "extra.md"))
+				So(read(t, claudeMemory(f, "-Users-a", "MEMORY.md")), ShouldEqual, "# v2\n")
+				noFile(t, claudeMemory(f, "-Users-a", "extra.md"))
+			})
+		})
+	})
 }
 
 func TestMemoryKindOff(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given the memory kind disabled", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	f.config.SetKind(kind.Memory, config.ModeOff)
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		f.config.SetKind(kind.Memory, config.ModeOff)
 
-	write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
+		write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
 
-	report := f.sync(t)
-	require.Nil(t, report.Kind(kind.Memory))
-	require.NoDirExists(t, filepath.Join(f.vault.MemoryDir(), "-Users-a"))
-	require.Equal(t, "# a\n", read(t, claudeMemory(f, "-Users-a", "MEMORY.md")))
+		Convey("When sync runs", func() {
+			report := f.sync(t)
+
+			_, dirErr := os.Stat(filepath.Join(f.vault.MemoryDir(), "-Users-a"))
+
+			Convey("Then nothing is read or written", func() {
+				So(report.Kind(kind.Memory), ShouldBeNil)
+				So(errors.Is(dirErr, fs.ErrNotExist), ShouldBeTrue)
+				So(read(t, claudeMemory(f, "-Users-a", "MEMORY.md")), ShouldEqual, "# a\n")
+			})
+		})
+	})
 }
 
 func TestMemoryKindFilter(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a sync filtered to the memory kind", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
+		f := newFixture(t)
+		f.emptyConfigs(t)
 
-	write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
-	write(t, f.claudeRules(), "# r\n")
+		write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
+		write(t, f.claudeRules(), "# r\n")
 
-	report := f.run(t, engine.SyncOptions{Kinds: []kind.ID{kind.Memory}})
-	require.NotNil(t, report.Kind(kind.Memory))
-	require.Nil(t, report.Kind(kind.Rules))
-	require.Equal(t, "# a\n", read(t, vaultMemory(f, "-Users-a", "MEMORY.md")))
+		Convey("When the filtered sync runs", func() {
+			report := f.run(t, engine.SyncOptions{Kinds: []kind.ID{kind.Memory}})
+
+			Convey("Then only memory is reported", func() {
+				So(report.Kind(kind.Memory), ShouldNotBeNil)
+				So(report.Kind(kind.Rules), ShouldBeNil)
+				So(read(t, vaultMemory(f, "-Users-a", "MEMORY.md")), ShouldEqual, "# a\n")
+			})
+		})
+	})
 }
 
 func TestMCPHiddenKeyWithBaseIsKept(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given an MCP key hidden from the agent but known to the base", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
+		f := newFixture(t)
+		f.emptyConfigs(t)
 
-	write(t, f.claudeConfig(), `{"mcpServers": {"alpha": {"type": "stdio", "command": "a"}}}`)
-	f.sync(t)
-	require.Contains(t, f.servers(t), "alpha")
+		write(t, f.claudeConfig(), `{"mcpServers": {"alpha": {"type": "stdio", "command": "a"}}}`)
+		f.sync(t)
+		So(f.servers(t), ShouldContainKey, "alpha")
 
-	write(t, f.vault.ServersPath(), `{"alpha": {"type": "stdio"}}`)
-	write(t, f.claudeConfig(), `{"mcpServers": {}}`)
+		write(t, f.vault.ServersPath(), `{"alpha": {"type": "stdio"}}`)
+		write(t, f.claudeConfig(), `{"mcpServers": {}}`)
 
-	report := f.sync(t)
-	require.Empty(t, report.ConflictsOf(kind.MCP), "a hidden MCP key is not a memory deletion")
-	require.Contains(t, f.servers(t), "alpha", "a hidden key with a base stays in the canon")
+		Convey("When sync runs", func() {
+			report := f.sync(t)
+
+			Convey("Then it is neither a memory deletion nor a canon loss", func() {
+				So(report.ConflictsOf(kind.MCP), ShouldBeEmpty)
+				So(f.servers(t), ShouldContainKey, "alpha")
+			})
+		})
+	})
 }
 
 func TestMemoryDeletedSlugWithCanonEditConflicts(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a deleted slug with a canon edit", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
+		f := newFixture(t)
+		f.emptyConfigs(t)
 
-	write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
-	write(t, claudeMemory(f, "-Users-b", "MEMORY.md"), "# b\n")
-	f.sync(t)
+		write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
+		write(t, claudeMemory(f, "-Users-b", "MEMORY.md"), "# b\n")
+		f.sync(t)
 
-	write(t, vaultMemory(f, "-Users-a", "MEMORY.md"), "# edited\n")
-	require.NoError(t, os.RemoveAll(claudeSlug(f, "-Users-a")))
+		write(t, vaultMemory(f, "-Users-a", "MEMORY.md"), "# edited\n")
+		So(os.RemoveAll(claudeSlug(f, "-Users-a")), ShouldBeNil)
 
-	report := f.sync(t)
-	require.Len(t, report.ConflictsOf(kind.Memory), 1)
-	require.Equal(t, state.ReasonDeleted, report.ConflictsOf(kind.Memory)[0].Reason)
-	require.Equal(t, "# edited\n", read(t, vaultMemory(f, "-Users-a", "MEMORY.md")))
+		Convey("When sync runs", func() {
+			report := f.sync(t)
+
+			Convey("Then it conflicts as a deletion and the canon keeps the edit", func() {
+				So(report.ConflictsOf(kind.Memory), ShouldHaveLength, 1)
+				So(report.ConflictsOf(kind.Memory)[0].Reason, ShouldEqual, state.ReasonDeleted)
+				So(read(t, vaultMemory(f, "-Users-a", "MEMORY.md")), ShouldEqual, "# edited\n")
+			})
+		})
+	})
 }
 
 func TestMemorySymlinkedCanonRootFailsBeforeWrites(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a symlinked memory canon root", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
+		f := newFixture(t)
+		f.emptyConfigs(t)
 
-	write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
-	f.sync(t)
+		write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
+		f.sync(t)
 
-	external := t.TempDir()
-	require.NoError(t, os.Rename(f.vault.MemoryDir(), filepath.Join(external, "memory")))
-	require.NoError(t, os.Symlink(filepath.Join(external, "memory"), f.vault.MemoryDir()))
+		external := t.TempDir()
+		So(os.Rename(f.vault.MemoryDir(), filepath.Join(external, "memory")), ShouldBeNil)
+		So(os.Symlink(filepath.Join(external, "memory"), f.vault.MemoryDir()), ShouldBeNil)
 
-	require.NoError(t, os.RemoveAll(claudeSlug(f, "-Users-a")))
+		So(os.RemoveAll(claudeSlug(f, "-Users-a")), ShouldBeNil)
 
-	report, err := f.engine.Sync(t.Context(), engine.SyncOptions{})
-	require.NoError(t, err)
-	require.NotEmpty(t, report.Errors())
-	require.Equal(t, "# a\n", read(t, filepath.Join(external, "memory", "-Users-a", "MEMORY.md")), "nothing is removed through the symlink")
+		Convey("When sync runs", func() {
+			report, err := f.engine.Sync(t.Context(), engine.SyncOptions{})
+			So(err, ShouldBeNil)
+
+			Convey("Then it errors and removes nothing through the symlink", func() {
+				So(report.Errors(), ShouldNotBeEmpty)
+				So(read(t, filepath.Join(external, "memory", "-Users-a", "MEMORY.md")), ShouldEqual, "# a\n")
+			})
+		})
+	})
 }
 
 func TestMemorySymlinkedProjectsFailsWithoutDeletion(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a symlinked projects directory", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
+		f := newFixture(t)
+		f.emptyConfigs(t)
 
-	write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
-	f.sync(t)
+		write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
+		f.sync(t)
 
-	target := filepath.Join(t.TempDir(), "projects")
-	require.NoError(t, os.Rename(claudeProjects(f), target))
-	require.NoError(t, os.Symlink(target, claudeProjects(f)))
+		target := filepath.Join(t.TempDir(), "projects")
+		So(os.Rename(claudeProjects(f), target), ShouldBeNil)
+		So(os.Symlink(target, claudeProjects(f)), ShouldBeNil)
 
-	report, err := f.engine.Sync(t.Context(), engine.SyncOptions{})
-	require.NoError(t, err)
-	require.NotEmpty(t, report.Errors())
-	require.Empty(t, report.ConflictsOf(kind.Memory))
-	require.Equal(t, "# a\n", read(t, vaultMemory(f, "-Users-a", "MEMORY.md")), "a symlinked projects directory must not delete canon notes")
+		Convey("When sync runs", func() {
+			report, err := f.engine.Sync(t.Context(), engine.SyncOptions{})
+			So(err, ShouldBeNil)
+
+			Convey("Then it errors without deleting canon notes", func() {
+				So(report.Errors(), ShouldNotBeEmpty)
+				So(report.ConflictsOf(kind.Memory), ShouldBeEmpty)
+				So(read(t, vaultMemory(f, "-Users-a", "MEMORY.md")), ShouldEqual, "# a\n")
+			})
+		})
+	})
 }
 
 func TestMemoryWatchPaths(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a projects tree with several slug shapes", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
+		f := newFixture(t)
 
-	write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
-	require.NoError(t, os.MkdirAll(claudeSlug(f, "-Users-b"), 0o750))
-	require.NoError(t, os.MkdirAll(filepath.Join(claudeSlug(f, "-Users-c"), "memory"), 0o750))
-	require.NoError(t, os.MkdirAll(filepath.Join(claudeSlug(f, ".hidden-slug"), "memory"), 0o750))
-	require.NoError(t, os.MkdirAll(claudeSlug(f, "-Users-d"), 0o750))
-	require.NoError(t, os.Symlink(t.TempDir(), filepath.Join(claudeSlug(f, "-Users-d"), "memory")))
+		write(t, claudeMemory(f, "-Users-a", "MEMORY.md"), "# a\n")
+		So(os.MkdirAll(claudeSlug(f, "-Users-b"), 0o750), ShouldBeNil)
+		So(os.MkdirAll(filepath.Join(claudeSlug(f, "-Users-c"), "memory"), 0o750), ShouldBeNil)
+		So(os.MkdirAll(filepath.Join(claudeSlug(f, ".hidden-slug"), "memory"), 0o750), ShouldBeNil)
+		So(os.MkdirAll(claudeSlug(f, "-Users-d"), 0o750), ShouldBeNil)
+		So(os.Symlink(t.TempDir(), filepath.Join(claudeSlug(f, "-Users-d"), "memory")), ShouldBeNil)
 
-	paths, err := f.engine.WatchPaths(t.Context())
-	require.NoError(t, err)
+		Convey("When watch paths are listed", func() {
+			paths, err := f.engine.WatchPaths(t.Context())
+			So(err, ShouldBeNil)
 
-	require.Contains(t, paths, f.vault.MemoryDir())
-	require.Contains(t, paths, filepath.Join(claudeSlug(f, "-Users-a"), "memory"))
-	require.Contains(t, paths, filepath.Join(claudeSlug(f, "-Users-c"), "memory"))
-	require.NotContains(t, paths, filepath.Join(f.home, ".claude", "projects"), "projects is never watched recursively")
-	require.NotContains(t, paths, filepath.Join(claudeSlug(f, "-Users-b"), "memory"))
-	require.NotContains(t, paths, filepath.Join(claudeSlug(f, "-Users-d"), "memory"))
-	require.NotContains(t, paths, filepath.Join(claudeSlug(f, ".hidden-slug"), "memory"))
+			joined := strings.Join(paths, "\n")
+
+			Convey("Then only real slug memory dirs are watched, never recursively", func() {
+				So(paths, ShouldContain, f.vault.MemoryDir())
+				So(paths, ShouldContain, filepath.Join(claudeSlug(f, "-Users-a"), "memory"))
+				So(paths, ShouldContain, filepath.Join(claudeSlug(f, "-Users-c"), "memory"))
+
+				So(joined, ShouldNotContainSubstring, filepath.Join(f.home, ".claude", "projects")+"\n")
+				So(paths, ShouldNotContain, filepath.Join(claudeSlug(f, "-Users-b"), "memory"))
+				So(paths, ShouldNotContain, filepath.Join(claudeSlug(f, "-Users-d"), "memory"))
+				So(paths, ShouldNotContain, filepath.Join(claudeSlug(f, ".hidden-slug"), "memory"))
+			})
+		})
+	})
 }

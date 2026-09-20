@@ -3,12 +3,13 @@ package agent_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/digest"
@@ -40,208 +41,275 @@ func blockFor(t *testing.T, slug string) []byte {
 }
 
 func TestProjectSurfaceInactive(t *testing.T) {
-	t.Parallel()
+	Convey("Given a project surface in an inactive (non-git, no file) directory", t, func() {
+		home := t.TempDir()
+		cwd := t.TempDir()
+		surface := projectSurface(t, home, cwd)
 
-	home := t.TempDir()
-	cwd := t.TempDir()
-	surface := projectSurface(t, home, cwd)
+		Convey("When it is read and written", func() {
+			snap, err := surface.Read(t.Context())
+			So(err, ShouldBeNil)
 
-	snap, err := surface.Read(t.Context())
-	require.NoError(t, err)
-	require.False(t, snap.Present)
-	require.Empty(t, snap.Items)
+			So(surface.Write(t.Context(), kind.Items{projectKey(cwd): []byte("body\n")}), ShouldBeNil)
 
-	require.NoError(t, surface.Write(t.Context(), kind.Items{projectKey(cwd): []byte("body\n")}))
-	require.NoFileExists(t, filepath.Join(cwd, "AGENTS.md"))
+			Convey("Then nothing is present or written", func() {
+				So(snap.Present, ShouldBeFalse)
+				So(snap.Items, ShouldBeEmpty)
 
-	projector, ok := surface.(agent.Projector)
-	require.True(t, ok)
+				_, statErr := os.Stat(filepath.Join(cwd, "AGENTS.md"))
+				So(errors.Is(statErr, digest.ErrFence), ShouldBeFalse)
+				So(statErr, ShouldNotBeNil)
 
-	_, _, visible := projector.Project(projectKey(cwd), []byte("body\n"))
-	require.False(t, visible)
+				projector, ok := surface.(agent.Projector)
+				So(ok, ShouldBeTrue)
+
+				_, _, visible := projector.Project(projectKey(cwd), []byte("body\n"))
+				So(visible, ShouldBeFalse)
+			})
+		})
+	})
 }
 
 func TestProjectSurfaceActiveWithoutFile(t *testing.T) {
-	t.Parallel()
+	Convey("Given an active project without an AGENTS.md", t, func() {
+		home := t.TempDir()
+		cwd := t.TempDir()
+		So(os.MkdirAll(filepath.Join(cwd, ".git"), 0o750), ShouldBeNil)
 
-	home := t.TempDir()
-	cwd := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(cwd, ".git"), 0o750))
+		surface := projectSurface(t, home, cwd)
 
-	surface := projectSurface(t, home, cwd)
+		Convey("When it is read and written", func() {
+			snap, err := surface.Read(t.Context())
+			So(err, ShouldBeNil)
 
-	snap, err := surface.Read(t.Context())
-	require.NoError(t, err)
-	require.True(t, snap.Present)
-	require.Empty(t, snap.Items)
+			So(surface.Write(t.Context(), kind.Items{projectKey(cwd): []byte("# rules\n")}), ShouldBeNil)
 
-	require.NoError(t, surface.Write(t.Context(), kind.Items{projectKey(cwd): []byte("# rules\n")}))
-	require.Equal(t, "# rules\n", readFile(t, filepath.Join(cwd, "AGENTS.md")))
+			Convey("Then it becomes present and the body is written", func() {
+				So(snap.Present, ShouldBeTrue)
+				So(snap.Items, ShouldBeEmpty)
+				So(readFile(t, filepath.Join(cwd, "AGENTS.md")), ShouldEqual, "# rules\n")
+			})
+		})
+	})
 }
 
 func TestProjectSurfaceReadIsFenceBlind(t *testing.T) {
-	t.Parallel()
+	Convey("Given an active project with a fenced AGENTS.md", t, func() {
+		home := t.TempDir()
+		cwd := t.TempDir()
+		So(os.MkdirAll(filepath.Join(cwd, ".git"), 0o750), ShouldBeNil)
 
-	home := t.TempDir()
-	cwd := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(cwd, ".git"), 0o750))
+		surface := projectSurface(t, home, cwd)
+		block := blockFor(t, memory.Slug(cwd))
 
-	surface := projectSurface(t, home, cwd)
-	block := blockFor(t, memory.Slug(cwd))
+		writeFile(t, filepath.Join(cwd, "AGENTS.md"), string(block)+"# user rules\n\nText.\n")
 
-	writeFile(t, filepath.Join(cwd, "AGENTS.md"), string(block)+"# user rules\n\nText.\n")
+		Convey("When the file carries a body", func() {
+			snap, err := surface.Read(t.Context())
 
-	snap, err := surface.Read(t.Context())
-	require.NoError(t, err)
-	require.True(t, snap.Present)
-	require.Equal(t, "# user rules\n\nText.\n", string(snap.Items[projectKey(cwd)]), "the fence never reaches items")
+			Convey("Then the fence never reaches items", func() {
+				So(err, ShouldBeNil)
+				So(snap.Present, ShouldBeTrue)
+				So(string(snap.Items[projectKey(cwd)]), ShouldEqual, "# user rules\n\nText.\n")
 
-	writeFile(t, filepath.Join(cwd, "AGENTS.md"), string(block))
+				Convey("And a fence-only file has no item", func() {
+					writeFile(t, filepath.Join(cwd, "AGENTS.md"), string(block))
 
-	snap, err = surface.Read(t.Context())
-	require.NoError(t, err)
-	require.Empty(t, snap.Items, "a fence-only file has no item")
+					snap, err := surface.Read(t.Context())
+					So(err, ShouldBeNil)
+					So(snap.Items, ShouldBeEmpty)
+				})
 
-	writeFile(t, filepath.Join(cwd, "AGENTS.md"), string(block)+"x\n"+digest.BeginPrefix+" broken\n"+digest.EndMarker+"\n")
+				Convey("And a broken fence is an error", func() {
+					writeFile(t, filepath.Join(cwd, "AGENTS.md"), string(block)+"x\n"+digest.BeginPrefix+" broken\n"+digest.EndMarker+"\n")
 
-	_, err = surface.Read(t.Context())
-	require.ErrorIs(t, err, digest.ErrFence)
+					_, err := surface.Read(t.Context())
+					So(errors.Is(err, digest.ErrFence), ShouldBeTrue)
+				})
+			})
+		})
+	})
 }
 
 func TestProjectSurfaceWriteKeepsFence(t *testing.T) {
-	t.Parallel()
+	Convey("Given an active project file with a fence and a body", t, func() {
+		home := t.TempDir()
+		cwd := t.TempDir()
+		So(os.MkdirAll(filepath.Join(cwd, ".git"), 0o750), ShouldBeNil)
 
-	home := t.TempDir()
-	cwd := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(cwd, ".git"), 0o750))
+		surface := projectSurface(t, home, cwd)
+		block := blockFor(t, memory.Slug(cwd))
+		path := filepath.Join(cwd, "AGENTS.md")
 
-	surface := projectSurface(t, home, cwd)
-	block := blockFor(t, memory.Slug(cwd))
-	path := filepath.Join(cwd, "AGENTS.md")
+		writeFile(t, path, string(block)+"# v1\n")
+		So(os.Chmod(path, 0o600), ShouldBeNil)
 
-	writeFile(t, path, string(block)+"# v1\n")
-	require.NoError(t, os.Chmod(path, 0o600))
+		Convey("When the body is written", func() {
+			So(surface.Write(t.Context(), kind.Items{projectKey(cwd): []byte("# v2\n")}), ShouldBeNil)
 
-	require.NoError(t, surface.Write(t.Context(), kind.Items{projectKey(cwd): []byte("# v2\n")}))
+			body, fence, found, err := digest.Strip([]byte(readFile(t, path)))
+			So(err, ShouldBeNil)
 
-	body, fence, found, err := digest.Strip([]byte(readFile(t, path)))
-	require.NoError(t, err)
-	require.True(t, found)
-	require.Equal(t, "# v2\n", string(body))
-	require.Equal(t, string(block), string(fence))
+			info, err := os.Stat(path)
 
-	info, err := os.Stat(path)
-	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "the mode of an existing file survives")
+			Convey("Then the fence and mode are preserved", func() {
+				So(found, ShouldBeTrue)
+				So(string(body), ShouldEqual, "# v2\n")
+				So(string(fence), ShouldEqual, string(block))
+				So(err, ShouldBeNil)
+				So(info.Mode().Perm(), ShouldEqual, os.FileMode(0o600))
+			})
+		})
+	})
 }
 
 func TestProjectSurfaceWriteFenced(t *testing.T) {
-	t.Parallel()
+	Convey("Given an active project and a fenced writer", t, func() {
+		home := t.TempDir()
+		cwd := t.TempDir()
+		So(os.MkdirAll(filepath.Join(cwd, ".git"), 0o750), ShouldBeNil)
 
-	home := t.TempDir()
-	cwd := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(cwd, ".git"), 0o750))
+		surface := projectSurface(t, home, cwd)
+		writer, ok := surface.(fencedWriter)
+		So(ok, ShouldBeTrue)
 
-	surface := projectSurface(t, home, cwd)
-	writer, ok := surface.(fencedWriter)
-	require.True(t, ok)
+		path := filepath.Join(cwd, "AGENTS.md")
+		block := blockFor(t, memory.Slug(cwd))
 
-	path := filepath.Join(cwd, "AGENTS.md")
-	block := blockFor(t, memory.Slug(cwd))
+		Convey("When a fence is written into an empty file", func() {
+			So(writer.WriteFenced(t.Context(), block), ShouldBeNil)
 
-	require.NoError(t, writer.WriteFenced(t.Context(), block))
-	body, fence, found, err := digest.Strip([]byte(readFile(t, path)))
-	require.NoError(t, err)
-	require.True(t, found)
-	require.Empty(t, body)
-	require.Equal(t, string(block), string(fence))
+			body, fence, found, err := digest.Strip([]byte(readFile(t, path)))
+			So(err, ShouldBeNil)
 
-	writeFile(t, path, string(block)+"# local body\n")
+			Convey("Then only the fence is present", func() {
+				So(found, ShouldBeTrue)
+				So(body, ShouldBeEmpty)
+				So(string(fence), ShouldEqual, string(block))
 
-	fresh := blockFor(t, memory.Slug(cwd))
-	require.NoError(t, writer.WriteFenced(t.Context(), fresh))
+				Convey("And rewriting the fence keeps the local body", func() {
+					writeFile(t, path, string(block)+"# local body\n")
 
-	body, fence, found, err = digest.Strip([]byte(readFile(t, path)))
-	require.NoError(t, err)
-	require.True(t, found)
-	require.Equal(t, "# local body\n", string(body), "WriteFenced never touches the body")
-	require.Equal(t, string(fresh), string(fence))
+					fresh := blockFor(t, memory.Slug(cwd))
+					So(writer.WriteFenced(t.Context(), fresh), ShouldBeNil)
 
-	require.NoError(t, writer.WriteFenced(t.Context(), nil))
+					body, fence, found, err = digest.Strip([]byte(readFile(t, path)))
+					So(err, ShouldBeNil)
+					So(found, ShouldBeTrue)
+					So(string(body), ShouldEqual, "# local body\n")
+					So(string(fence), ShouldEqual, string(fresh))
 
-	require.Equal(t, "# local body\n", readFile(t, path))
+					Convey("And a nil fence removes it and leaves the body", func() {
+						So(writer.WriteFenced(t.Context(), nil), ShouldBeNil)
+						So(readFile(t, path), ShouldEqual, "# local body\n")
+					})
+				})
+			})
+		})
+	})
 }
 
 func TestProjectSurfaceNormalizesUnterminatedFence(t *testing.T) {
-	t.Parallel()
+	Convey("Given a file whose fence has no trailing newline", t, func() {
+		home := t.TempDir()
+		cwd := t.TempDir()
+		So(os.MkdirAll(filepath.Join(cwd, ".git"), 0o750), ShouldBeNil)
 
-	home := t.TempDir()
-	cwd := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(cwd, ".git"), 0o750))
+		surface := projectSurface(t, home, cwd)
+		path := filepath.Join(cwd, "AGENTS.md")
+		block := blockFor(t, memory.Slug(cwd))
 
-	surface := projectSurface(t, home, cwd)
-	path := filepath.Join(cwd, "AGENTS.md")
-	block := blockFor(t, memory.Slug(cwd))
+		writeFile(t, path, string(bytes.TrimSuffix(block, []byte("\n"))))
 
-	writeFile(t, path, string(bytes.TrimSuffix(block, []byte("\n"))))
+		Convey("When the body is written", func() {
+			So(surface.Write(t.Context(), kind.Items{projectKey(cwd): []byte("\n# body\n")}), ShouldBeNil)
 
-	require.NoError(t, surface.Write(t.Context(), kind.Items{projectKey(cwd): []byte("\n# body\n")}))
+			body, fence, found, err := digest.Strip([]byte(readFile(t, path)))
+			So(err, ShouldBeNil)
 
-	body, fence, found, err := digest.Strip([]byte(readFile(t, path)))
-	require.NoError(t, err)
-	require.True(t, found)
-	require.Equal(t, "\n# body\n", string(body), "a leading newline of the body survives")
-	require.True(t, strings.HasSuffix(string(fence), "\n"))
+			Convey("Then the fence is terminated and the body survives", func() {
+				So(found, ShouldBeTrue)
+				So(string(body), ShouldEqual, "\n# body\n")
+				So(strings.HasSuffix(string(fence), "\n"), ShouldBeTrue)
+			})
+		})
+	})
 }
 
 func TestProjectSurfaceWriteDeletesCanonicalFile(t *testing.T) {
-	t.Parallel()
+	Convey("Given an active project file", t, func() {
+		home := t.TempDir()
+		cwd := t.TempDir()
+		So(os.MkdirAll(filepath.Join(cwd, ".git"), 0o750), ShouldBeNil)
 
-	home := t.TempDir()
-	cwd := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(cwd, ".git"), 0o750))
+		surface := projectSurface(t, home, cwd)
+		path := filepath.Join(cwd, "AGENTS.md")
+		block := blockFor(t, memory.Slug(cwd))
 
-	surface := projectSurface(t, home, cwd)
-	path := filepath.Join(cwd, "AGENTS.md")
-	block := blockFor(t, memory.Slug(cwd))
+		Convey("When it carried canonical content and desired is empty", func() {
+			writeFile(t, path, string(block)+"# body\n")
+			So(surface.Write(t.Context(), kind.Items{}), ShouldBeNil)
 
-	writeFile(t, path, string(block)+"# body\n")
-	require.NoError(t, surface.Write(t.Context(), kind.Items{}))
-	require.NoFileExists(t, path, "a file that carried canonical content is removed")
+			Convey("Then it is removed", func() {
+				_, err := os.Stat(path)
+				So(errors.Is(err, os.ErrNotExist), ShouldBeTrue)
+			})
+		})
 
-	writeFile(t, path, string(block))
-	require.NoError(t, surface.Write(t.Context(), kind.Items{}))
-	require.FileExists(t, path, "a fence-only file is never deleted")
+		Convey("When it was fence-only and desired is empty", func() {
+			writeFile(t, path, string(block))
+			So(surface.Write(t.Context(), kind.Items{}), ShouldBeNil)
 
-	writeFile(t, path, "# body\n")
+			Convey("Then it is kept", func() {
+				_, err := os.Stat(path)
+				So(err, ShouldBeNil)
+			})
+		})
 
-	link := "sibling.md"
-	writeFile(t, filepath.Join(cwd, link), "# else\n")
-	require.NoError(t, os.Remove(path))
-	require.NoError(t, os.Symlink(filepath.Join(cwd, link), path))
-	require.NoError(t, surface.Write(t.Context(), kind.Items{}))
-	require.FileExists(t, filepath.Join(cwd, link), "a symlink is not deleted")
+		Convey("When it is a symlink and desired is empty", func() {
+			writeFile(t, path, "# body\n")
+
+			link := "sibling.md"
+			writeFile(t, filepath.Join(cwd, link), "# else\n")
+			So(os.Remove(path), ShouldBeNil)
+			So(os.Symlink(filepath.Join(cwd, link), path), ShouldBeNil)
+
+			So(surface.Write(t.Context(), kind.Items{}), ShouldBeNil)
+
+			Convey("Then the symlink is not deleted", func() {
+				_, err := os.Stat(filepath.Join(cwd, link))
+				So(err, ShouldBeNil)
+			})
+		})
+	})
 }
 
 func TestProjectSurfaceProject(t *testing.T) {
-	t.Parallel()
+	Convey("Given an active project surface", t, func() {
+		home := t.TempDir()
+		cwd := t.TempDir()
+		So(os.MkdirAll(filepath.Join(cwd, ".git"), 0o750), ShouldBeNil)
 
-	home := t.TempDir()
-	cwd := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(cwd, ".git"), 0o750))
+		surface := projectSurface(t, home, cwd)
+		projector, ok := surface.(agent.Projector)
+		So(ok, ShouldBeTrue)
 
-	surface := projectSurface(t, home, cwd)
-	projector, ok := surface.(agent.Projector)
-	require.True(t, ok)
+		Convey("When its own key is projected", func() {
+			key, value, visible := projector.Project(projectKey(cwd), []byte("# rules\n"))
 
-	key, value, visible := projector.Project(projectKey(cwd), []byte("# rules\n"))
-	require.True(t, visible)
-	require.Equal(t, projectKey(cwd), key)
-	require.Equal(t, "# rules\n", string(value))
+			Convey("Then it is visible unchanged", func() {
+				So(visible, ShouldBeTrue)
+				So(key, ShouldEqual, projectKey(cwd))
+				So(string(value), ShouldEqual, "# rules\n")
 
-	_, _, visible = projector.Project(memory.Slug(t.TempDir())+"/AGENTS.md", []byte("x"))
-	require.False(t, visible, "another project slug is hidden")
+				Convey("And another slug or file is hidden", func() {
+					_, _, visible := projector.Project(memory.Slug(t.TempDir())+"/AGENTS.md", []byte("x"))
+					So(visible, ShouldBeFalse)
 
-	_, _, visible = projector.Project(memory.Slug(cwd)+"/GEMINI.md", []byte("x"))
-	require.False(t, visible, "another file of the same project is hidden")
+					_, _, visible = projector.Project(memory.Slug(cwd)+"/GEMINI.md", []byte("x"))
+					So(visible, ShouldBeFalse)
+				})
+			})
+		})
+	})
 }

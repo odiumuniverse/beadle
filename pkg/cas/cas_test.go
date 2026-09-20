@@ -1,94 +1,124 @@
 package cas_test
 
 import (
+	"errors"
 	"io/fs"
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/cas"
 )
 
 func TestHashOf(t *testing.T) {
-	t.Parallel()
+	Convey("Given the content hash", t, func() {
+		h := cas.HashOf([]byte("hello"))
 
-	h := cas.HashOf([]byte("hello"))
-	require.Len(t, string(h), 64)
-	require.Equal(t, h, cas.HashOf([]byte("hello")))
-	require.NotEqual(t, h, cas.HashOf([]byte("world")))
+		Convey("When the same and different content are hashed", func() {
+			Convey("Then the hash is stable and parseable", func() {
+				So(string(h), ShouldHaveLength, 64)
+				So(cas.HashOf([]byte("hello")), ShouldEqual, h)
+				So(cas.HashOf([]byte("world")), ShouldNotEqual, h)
 
-	_, err := cas.ParseHash(string(h))
-	require.NoError(t, err)
+				_, err := cas.ParseHash(string(h))
+				So(err, ShouldBeNil)
+			})
+		})
+	})
 }
 
 func TestStorePutGet(t *testing.T) {
-	t.Parallel()
+	Convey("Given a content-addressed store", t, func() {
+		store := cas.NewStore(filepath.Join(t.TempDir(), "objects"))
 
-	store := cas.NewStore(filepath.Join(t.TempDir(), "objects"))
+		Convey("When content is put and fetched", func() {
+			h, err := store.Put([]byte("content"))
+			So(err, ShouldBeNil)
 
-	h, err := store.Put([]byte("content"))
-	require.NoError(t, err)
-	require.True(t, store.Has(h))
+			got, err := store.Get(h)
 
-	got, err := store.Get(h)
-	require.NoError(t, err)
-	require.Equal(t, "content", string(got))
+			Convey("Then it round-trips", func() {
+				So(err, ShouldBeNil)
+				So(string(got), ShouldEqual, "content")
+				So(store.Has(h), ShouldBeTrue)
+			})
+		})
+	})
 }
 
 func TestStorePutIdempotent(t *testing.T) {
-	t.Parallel()
+	Convey("Given a content-addressed store", t, func() {
+		dir := t.TempDir()
+		store := cas.NewStore(dir)
 
-	dir := t.TempDir()
-	store := cas.NewStore(dir)
+		h1, err := store.Put([]byte("same"))
+		So(err, ShouldBeNil)
 
-	h1, err := store.Put([]byte("same"))
-	require.NoError(t, err)
+		Convey("When the same content is put again", func() {
+			h2, err := store.Put([]byte("same"))
 
-	h2, err := store.Put([]byte("same"))
-	require.NoError(t, err)
-	require.Equal(t, h1, h2)
+			Convey("Then it deduplicates to one object", func() {
+				So(err, ShouldBeNil)
+				So(h2, ShouldEqual, h1)
 
-	count := 0
+				count := 0
 
-	walkErr := filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
+				walkErr := filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+					if err != nil {
+						return err
+					}
 
-		if !d.IsDir() {
-			count++
-		}
+					if !d.IsDir() {
+						count++
+					}
 
-		return nil
+					return nil
+				})
+
+				So(walkErr, ShouldBeNil)
+				So(count, ShouldEqual, 1)
+			})
+		})
 	})
-	require.NoError(t, walkErr)
-	require.Equal(t, 1, count)
 }
 
 func TestStoreGetMissing(t *testing.T) {
-	t.Parallel()
+	Convey("Given a store without the requested object", t, func() {
+		store := cas.NewStore(t.TempDir())
+		h := cas.HashOf([]byte("absent"))
 
-	store := cas.NewStore(t.TempDir())
-	h := cas.HashOf([]byte("absent"))
+		Convey("When it is fetched", func() {
+			_, err := store.Get(h)
 
-	_, err := store.Get(h)
-	require.ErrorIs(t, err, fs.ErrNotExist)
+			Convey("Then a not-exist error is returned", func() {
+				So(errors.Is(err, fs.ErrNotExist), ShouldBeTrue)
+			})
+		})
+	})
 }
 
 func TestStoreRejectsInvalidHash(t *testing.T) {
-	t.Parallel()
+	Convey("Given a store and a table of invalid hashes", t, func() {
+		store := cas.NewStore(t.TempDir())
 
-	store := cas.NewStore(t.TempDir())
+		shortHash := cas.Hash(string(cas.HashOf([]byte("x")))[:63])
 
-	shortHash := cas.Hash(string(cas.HashOf([]byte("x")))[:63])
+		for _, bad := range []cas.Hash{"", "zz", "../../etc/passwd", shortHash} {
+			Convey("When fetching "+string(bad), func() {
+				_, err := store.Get(bad)
 
-	for _, bad := range []cas.Hash{"", "zz", "../../etc/passwd", shortHash} {
-		_, err := store.Get(bad)
-		require.ErrorIs(t, err, cas.ErrInvalidHash, "hash %q", bad)
+				Convey("Then the hash is rejected", func() {
+					So(errors.Is(err, cas.ErrInvalidHash), ShouldBeTrue)
+					So(store.Has(bad), ShouldBeFalse)
+				})
+			})
+		}
 
-		require.False(t, store.Has(bad))
-	}
-
-	require.False(t, store.Has(cas.Hash("")))
+		Convey("When an empty hash is checked", func() {
+			Convey("Then it is absent", func() {
+				So(store.Has(cas.Hash("")), ShouldBeFalse)
+			})
+		})
+	})
 }

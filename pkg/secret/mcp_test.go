@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/mcp"
 	"github.com/odiumuniverse/beadle/pkg/secret"
@@ -14,226 +14,289 @@ func newStore(t *testing.T) *secret.Store {
 	t.Helper()
 
 	store, err := secret.Load(filepath.Join(t.TempDir(), "secrets.json"))
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("load store: %v", err)
+	}
 
 	return store
 }
 
 func TestExtractEmptyServers(t *testing.T) {
-	t.Parallel()
+	Convey("Given no servers", t, func() {
+		Convey("When extracting secrets", func() {
+			out, replaced, err := secret.Extract(mcp.Servers{}, newStore(t))
 
-	out, replaced, err := secret.Extract(mcp.Servers{}, newStore(t))
-	require.NoError(t, err)
-	require.False(t, replaced)
-	require.Empty(t, out)
+			Convey("Then nothing is replaced", func() {
+				So(err, ShouldBeNil)
+				So(replaced, ShouldBeFalse)
+				So(out, ShouldBeEmpty)
+			})
+		})
+	})
 }
 
 func TestExtractReplacesLiteralsAndLeavesTheRest(t *testing.T) {
-	t.Parallel()
+	Convey("Given a server with a secret header and a harmless one", t, func() {
+		store := newStore(t)
+		servers := mcp.Servers{
+			"context7": {
+				Transport: "http",
+				URL:       "https://mcp.context7.com",
+				Headers:   map[string]string{"CONTEXT7_API_KEY": "ctx7sk-abc123", "Accept": "application/json"},
+			},
+		}
 
-	store := newStore(t)
-	servers := mcp.Servers{
-		"context7": {
-			Transport: "http",
-			URL:       "https://mcp.context7.com",
-			Headers:   map[string]string{"CONTEXT7_API_KEY": "ctx7sk-abc123", "Accept": "application/json"},
-		},
-	}
+		out, replaced, err := secret.Extract(servers, store)
 
-	out, replaced, err := secret.Extract(servers, store)
-	require.NoError(t, err)
-	require.True(t, replaced)
+		Convey("When extracting secrets", func() {
+			name, ok := secret.ParseRef(out["context7"].Headers["CONTEXT7_API_KEY"])
 
-	require.Equal(t, "application/json", out["context7"].Headers["Accept"], "non-secret values pass through untouched")
-	require.NotEqual(t, "ctx7sk-abc123", out["context7"].Headers["CONTEXT7_API_KEY"])
-	require.True(t, secret.IsRef(out["context7"].Headers["CONTEXT7_API_KEY"]))
-	require.Equal(t, "https://mcp.context7.com", out["context7"].URL, "non-secret fields are untouched")
+			Convey("Then only the secret becomes a ref and the value is stored", func() {
+				So(err, ShouldBeNil)
+				So(replaced, ShouldBeTrue)
 
-	name, ok := secret.ParseRef(out["context7"].Headers["CONTEXT7_API_KEY"])
-	require.True(t, ok)
+				So(out["context7"].Headers["Accept"], ShouldEqual, "application/json")
+				So(out["context7"].Headers["CONTEXT7_API_KEY"], ShouldNotEqual, "ctx7sk-abc123")
+				So(secret.IsRef(out["context7"].Headers["CONTEXT7_API_KEY"]), ShouldBeTrue)
+				So(out["context7"].URL, ShouldEqual, "https://mcp.context7.com")
 
-	value, ok := store.Get(name)
-	require.True(t, ok)
-	require.Equal(t, "ctx7sk-abc123", value)
+				So(ok, ShouldBeTrue)
+
+				value, ok := store.Get(name)
+				So(ok, ShouldBeTrue)
+				So(value, ShouldEqual, "ctx7sk-abc123")
+			})
+		})
+	})
 }
 
 func TestExtractIsIdempotent(t *testing.T) {
-	t.Parallel()
+	Convey("Given a server with a bearer header", t, func() {
+		store := newStore(t)
+		servers := mcp.Servers{
+			"web": {Headers: map[string]string{"Authorization": "Bearer c11a1secret"}},
+		}
 
-	store := newStore(t)
-	servers := mcp.Servers{
-		"web": {Headers: map[string]string{"Authorization": "Bearer c11a1secret"}},
-	}
+		once, replaced, err := secret.Extract(servers, store)
+		So(err, ShouldBeNil)
 
-	once, replaced, err := secret.Extract(servers, store)
-	require.NoError(t, err)
-	require.True(t, replaced)
+		Convey("When extracting again", func() {
+			twice, replacedAgain, err := secret.Extract(once, store)
 
-	twice, replacedAgain, err := secret.Extract(once, store)
-	require.NoError(t, err)
-	require.False(t, replacedAgain, "re-extracting an already-ref-ized tree must be a no-op")
-	require.Equal(t, once, twice)
+			Convey("Then the second pass is a no-op", func() {
+				So(err, ShouldBeNil)
+				So(replaced, ShouldBeTrue)
+				So(replacedAgain, ShouldBeFalse)
+				So(twice, ShouldResemble, once)
+			})
+		})
+	})
 }
 
 func TestExtractValueIdentityAcrossServers(t *testing.T) {
-	t.Parallel()
+	Convey("Given a table of two-server value pairs", t, func() {
+		cases := []struct {
+			name      string
+			valueB    string
+			wantEqual bool
+			wantLen   int
+		}{
+			{"identical values share one stored name", "Bearer shared-token", true, 1},
+			{"different values never collapse into one name", "Bearer other-token", false, 2},
+		}
 
-	cases := []struct {
-		name      string
-		valueB    string
-		wantEqual bool
-		wantLen   int
-	}{
-		{"identical values share one stored name", "Bearer shared-token", true, 1},
-		{"different values never collapse into one name", "Bearer other-token", false, 2},
-	}
+		for _, tc := range cases {
+			Convey("When "+tc.name, func() {
+				store := newStore(t)
+				servers := mcp.Servers{
+					"a": {Headers: map[string]string{"Authorization": "Bearer shared-token"}},
+					"b": {Headers: map[string]string{"Authorization": tc.valueB}},
+				}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+				out, _, err := secret.Extract(servers, store)
 
-			store := newStore(t)
-			servers := mcp.Servers{
-				"a": {Headers: map[string]string{"Authorization": "Bearer shared-token"}},
-				"b": {Headers: map[string]string{"Authorization": tc.valueB}},
-			}
+				Convey("Then refs and the store length match", func() {
+					So(err, ShouldBeNil)
 
-			out, _, err := secret.Extract(servers, store)
-			require.NoError(t, err)
+					if tc.wantEqual {
+						So(out["a"].Headers["Authorization"], ShouldEqual, out["b"].Headers["Authorization"])
+					} else {
+						So(out["a"].Headers["Authorization"], ShouldNotEqual, out["b"].Headers["Authorization"])
+					}
 
-			if tc.wantEqual {
-				require.Equal(t, out["a"].Headers["Authorization"], out["b"].Headers["Authorization"])
-			} else {
-				require.NotEqual(t, out["a"].Headers["Authorization"], out["b"].Headers["Authorization"])
-			}
-
-			require.Equal(t, tc.wantLen, store.Len())
-		})
-	}
+					So(store.Len(), ShouldEqual, tc.wantLen)
+				})
+			})
+		}
+	})
 }
 
 func TestExtractLeavesEmbeddedEnvRefUntouched(t *testing.T) {
-	t.Parallel()
+	Convey("Given a header with an embedded env ref", t, func() {
+		store := newStore(t)
+		servers := mcp.Servers{
+			"a": {Headers: map[string]string{"Authorization": "Bearer {env:TOKEN}"}},
+		}
 
-	store := newStore(t)
-	servers := mcp.Servers{
-		"a": {Headers: map[string]string{"Authorization": "Bearer {env:TOKEN}"}},
-	}
+		out, replaced, err := secret.Extract(servers, store)
 
-	out, replaced, err := secret.Extract(servers, store)
-	require.NoError(t, err)
-	require.False(t, replaced)
-	require.Equal(t, "Bearer {env:TOKEN}", out["a"].Headers["Authorization"])
-	require.Zero(t, store.Len(), "an embedded reference must never be stored as a credential")
+		Convey("When extracting secrets", func() {
+			Convey("Then the ref is untouched and nothing is stored", func() {
+				So(err, ShouldBeNil)
+				So(replaced, ShouldBeFalse)
+				So(out["a"].Headers["Authorization"], ShouldEqual, "Bearer {env:TOKEN}")
+				So(store.Len(), ShouldEqual, 0)
+			})
+		})
+	})
 }
 
 func TestExtractPromotesKnownEnvRef(t *testing.T) {
-	t.Parallel()
+	Convey("Given a server with a known and an unknown env ref", t, func() {
+		store := newStore(t)
+		store.Set("KNOWN", "value")
 
-	store := newStore(t)
-	store.Set("KNOWN", "value")
+		servers := mcp.Servers{
+			"a": {Env: map[string]string{"KNOWN": "{env:KNOWN}", "UNKNOWN": "{env:UNKNOWN}"}},
+		}
 
-	servers := mcp.Servers{
-		"a": {Env: map[string]string{"KNOWN": "{env:KNOWN}", "UNKNOWN": "{env:UNKNOWN}"}},
-	}
+		out, replaced, err := secret.Extract(servers, store)
 
-	out, replaced, err := secret.Extract(servers, store)
-	require.NoError(t, err)
-	require.True(t, replaced)
-
-	require.Equal(t, "{secret:KNOWN}", out["a"].Env["KNOWN"], "an env ref matching a stored secret is canonicalized")
-	require.Equal(t, "{env:UNKNOWN}", out["a"].Env["UNKNOWN"], "an env ref with no stored value is left untouched")
+		Convey("When extracting secrets", func() {
+			Convey("Then only the known ref is canonicalized", func() {
+				So(err, ShouldBeNil)
+				So(replaced, ShouldBeTrue)
+				So(out["a"].Env["KNOWN"], ShouldEqual, "{secret:KNOWN}")
+				So(out["a"].Env["UNKNOWN"], ShouldEqual, "{env:UNKNOWN}")
+			})
+		})
+	})
 }
 
 func TestResolveEmptyServers(t *testing.T) {
-	t.Parallel()
+	Convey("Given no servers", t, func() {
+		Convey("When resolving secrets", func() {
+			out, missing, err := secret.Resolve(mcp.Servers{}, newStore(t), secret.ModeLiteral)
 
-	out, missing, err := secret.Resolve(mcp.Servers{}, newStore(t), secret.ModeLiteral)
-	require.NoError(t, err)
-	require.Empty(t, missing)
-	require.Empty(t, out)
+			Convey("Then nothing is resolved", func() {
+				So(err, ShouldBeNil)
+				So(missing, ShouldBeEmpty)
+				So(out, ShouldBeEmpty)
+			})
+		})
+	})
 }
 
+//nolint:dupl // the literal and env modes intentionally mirror each other
 func TestResolveLiteralMode(t *testing.T) {
-	t.Parallel()
+	Convey("Given a server holding a secret ref", t, func() {
+		store := newStore(t)
+		store.Set("TOKEN", "the-value")
 
-	store := newStore(t)
-	store.Set("TOKEN", "the-value")
+		servers := mcp.Servers{"a": {Headers: map[string]string{"Authorization": secret.Ref("TOKEN")}}}
 
-	servers := mcp.Servers{"a": {Headers: map[string]string{"Authorization": secret.Ref("TOKEN")}}}
+		Convey("When resolving in literal mode", func() {
+			out, missing, err := secret.Resolve(servers, store, secret.ModeLiteral)
 
-	out, missing, err := secret.Resolve(servers, store, secret.ModeLiteral)
-	require.NoError(t, err)
-	require.Empty(t, missing)
-	require.Equal(t, "the-value", out["a"].Headers["Authorization"])
+			Convey("Then the literal value is rendered", func() {
+				So(err, ShouldBeNil)
+				So(missing, ShouldBeEmpty)
+				So(out["a"].Headers["Authorization"], ShouldEqual, "the-value")
+			})
+		})
+	})
 }
 
+//nolint:dupl // mirrors the literal-mode case above
 func TestResolveEnvMode(t *testing.T) {
-	t.Parallel()
+	Convey("Given a server holding a secret ref", t, func() {
+		store := newStore(t)
+		store.Set("TOKEN", "the-value")
 
-	store := newStore(t)
-	store.Set("TOKEN", "the-value")
+		servers := mcp.Servers{"a": {Headers: map[string]string{"Authorization": secret.Ref("TOKEN")}}}
 
-	servers := mcp.Servers{"a": {Headers: map[string]string{"Authorization": secret.Ref("TOKEN")}}}
+		Convey("When resolving in env mode", func() {
+			out, missing, err := secret.Resolve(servers, store, secret.ModeEnv)
 
-	out, missing, err := secret.Resolve(servers, store, secret.ModeEnv)
-	require.NoError(t, err)
-	require.Empty(t, missing)
-	require.Equal(t, "{env:TOKEN}", out["a"].Headers["Authorization"], "env mode never renders the literal value")
+			Convey("Then the env ref is rendered, never the literal", func() {
+				So(err, ShouldBeNil)
+				So(missing, ShouldBeEmpty)
+				So(out["a"].Headers["Authorization"], ShouldEqual, "{env:TOKEN}")
+			})
+		})
+	})
 }
 
 func TestResolveReportsMissingAndLeavesRefIntact(t *testing.T) {
-	t.Parallel()
+	Convey("Given a server holding an unknown secret ref", t, func() {
+		store := newStore(t)
+		servers := mcp.Servers{"a": {Headers: map[string]string{"Authorization": secret.Ref("TOKEN")}}}
 
-	store := newStore(t)
+		Convey("When resolving in literal mode", func() {
+			out, missing, err := secret.Resolve(servers, store, secret.ModeLiteral)
 
-	servers := mcp.Servers{"a": {Headers: map[string]string{"Authorization": secret.Ref("TOKEN")}}}
-
-	out, missing, err := secret.Resolve(servers, store, secret.ModeLiteral)
-	require.NoError(t, err)
-	require.Equal(t, []string{"TOKEN"}, missing)
-	require.Equal(t, secret.Ref("TOKEN"), out["a"].Headers["Authorization"],
-		"the caller must not push this value, so it must not silently become a literal")
+			Convey("Then the ref is reported missing and left intact", func() {
+				So(err, ShouldBeNil)
+				So(missing, ShouldResemble, []string{"TOKEN"})
+				So(out["a"].Headers["Authorization"], ShouldEqual, secret.Ref("TOKEN"))
+			})
+		})
+	})
 }
 
 func TestExtractResolveExtractRoundTripIsStable(t *testing.T) {
-	t.Parallel()
+	Convey("Given a server with a bearer header", t, func() {
+		store := newStore(t)
+		original := mcp.Servers{"web": {Headers: map[string]string{"Authorization": "Bearer c11a1secret"}}}
 
-	store := newStore(t)
-	original := mcp.Servers{"web": {Headers: map[string]string{"Authorization": "Bearer c11a1secret"}}}
+		extracted, _, err := secret.Extract(original, store)
+		So(err, ShouldBeNil)
+		So(store.Save(), ShouldBeNil)
 
-	extracted, _, err := secret.Extract(original, store)
-	require.NoError(t, err)
-	require.NoError(t, store.Save())
+		Convey("When resolved back and re-extracted", func() {
+			pushed, missing, err := secret.Resolve(extracted, store, secret.ModeLiteral)
+			So(err, ShouldBeNil)
 
-	pushed, missing, err := secret.Resolve(extracted, store, secret.ModeLiteral)
-	require.NoError(t, err)
-	require.Empty(t, missing)
-	require.Equal(t, original, pushed)
+			reExtracted, replaced, err := secret.Extract(pushed, store)
+			So(err, ShouldBeNil)
 
-	reExtracted, replaced, err := secret.Extract(pushed, store)
-	require.NoError(t, err)
-	require.True(t, replaced)
-	require.Equal(t, extracted, reExtracted, "the canon must not drift across a push/pull cycle")
+			Convey("Then the canon does not drift across a push/pull cycle", func() {
+				So(missing, ShouldBeEmpty)
+				So(pushed, ShouldResemble, original)
+				So(replaced, ShouldBeTrue)
+				So(reExtracted, ShouldResemble, extracted)
+			})
+		})
+	})
 }
 
 func TestRefs(t *testing.T) {
-	t.Parallel()
+	Convey("Given servers with several refs", t, func() {
+		servers := mcp.Servers{
+			"a": {Headers: map[string]string{"Authorization": secret.Ref("TOKEN")}},
+			"b": {Env: map[string]string{"KEY": secret.Ref("TOKEN"), "OTHER": secret.Ref("OTHER_NAME")}},
+		}
 
-	servers := mcp.Servers{
-		"a": {Headers: map[string]string{"Authorization": secret.Ref("TOKEN")}},
-		"b": {Env: map[string]string{"KEY": secret.Ref("TOKEN"), "OTHER": secret.Ref("OTHER_NAME")}},
-	}
+		Convey("When refs are listed", func() {
+			refs, err := secret.Refs(servers)
 
-	refs, err := secret.Refs(servers)
-	require.NoError(t, err)
-	require.Equal(t, []string{"OTHER_NAME", "TOKEN"}, refs)
+			Convey("Then they are sorted and deduplicated", func() {
+				So(err, ShouldBeNil)
+				So(refs, ShouldResemble, []string{"OTHER_NAME", "TOKEN"})
+			})
+		})
+	})
 }
 
 func TestRefsEmptyServers(t *testing.T) {
-	t.Parallel()
+	Convey("Given no servers", t, func() {
+		Convey("When refs are listed", func() {
+			refs, err := secret.Refs(mcp.Servers{})
 
-	refs, err := secret.Refs(mcp.Servers{})
-	require.NoError(t, err)
-	require.Empty(t, refs)
+			Convey("Then the list is empty", func() {
+				So(err, ShouldBeNil)
+				So(refs, ShouldBeEmpty)
+			})
+		})
+	})
 }

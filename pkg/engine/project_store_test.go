@@ -1,101 +1,145 @@
 package engine_test
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/kind"
 )
 
 func TestProjectCanonArbitraryFiles(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a project with arbitrary canon files", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	repo := newRepo(t)
-	f.useRepo(t, repo)
-	f.enableProject(t, "AGENTS.md")
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		repo := newRepo(t)
+		f.useRepo(t, repo)
+		f.enableProject(t, "AGENTS.md")
 
-	id := repoID(repo)
-	canon := func(rel string) string { return filepath.Join(f.vault.ProjectsDir(), id, filepath.FromSlash(rel)) }
+		id := repoID(repo)
+		canon := func(rel string) string { return filepath.Join(f.vault.ProjectsDir(), id, filepath.FromSlash(rel)) }
 
-	write(t, canon("AGENTS.md"), "# rules\n")
-	write(t, canon("deep/nested/.hidden"), "custom\n")
-	write(t, canon("deep/notes.json"), "{}\n")
-	require.NoError(t, os.Symlink(canon("AGENTS.md"), canon("linked.md")))
+		write(t, canon("AGENTS.md"), "# rules\n")
+		write(t, canon("deep/nested/.hidden"), "custom\n")
+		write(t, canon("deep/notes.json"), "{}\n")
+		So(os.Symlink(canon("AGENTS.md"), canon("linked.md")), ShouldBeNil)
 
-	write(t, repoFile(repo), "# rules\n")
+		write(t, repoFile(repo), "# rules\n")
 
-	report := f.sync(t)
-	require.False(t, report.Kind(kind.Projects).VaultChanged, "foreign canon files are not pushed anywhere")
+		report := f.sync(t)
+		So(report.Kind(kind.Projects).VaultChanged, ShouldBeFalse)
 
-	require.FileExists(t, canon("deep/nested/.hidden"), "nested and dotfiles survive")
-	require.FileExists(t, canon("deep/notes.json"))
-	require.FileExists(t, canon("policy.json"), "policy.json is never removed by the saver")
+		info, err := os.Lstat(canon("linked.md"))
+		So(err, ShouldBeNil)
 
-	info, err := os.Lstat(canon("linked.md"))
-	require.NoError(t, err)
-	require.NotEqual(t, os.FileMode(0), info.Mode()&os.ModeSymlink, "symlinks in the canon are left alone")
+		Convey("When an unrelated canon file is removed and the repo changes", func() {
+			So(os.Remove(canon("deep/notes.json")), ShouldBeNil)
+			write(t, repoFile(repo), "# rules v2\n")
 
-	require.NoError(t, os.Remove(canon("deep/notes.json")))
-	write(t, repoFile(repo), "# rules v2\n")
+			report := f.sync(t)
 
-	report = f.sync(t)
-	require.True(t, report.Kind(kind.Projects).VaultChanged)
-	require.NoFileExists(t, canon("deep/notes.json"))
-	require.FileExists(t, canon("deep/nested/.hidden"), "an unrelated canon file survives the saver pass")
-	require.FileExists(t, canon("policy.json"))
-	require.Equal(t, "# rules v2\n", read(t, repoFile(repo)))
+			_, notesErr := os.Stat(canon("deep/notes.json"))
+
+			Convey("Then foreign canon files survive and the repo updates", func() {
+				So(report.Kind(kind.Projects).VaultChanged, ShouldBeTrue)
+				So(errors.Is(notesErr, fs.ErrNotExist), ShouldBeTrue)
+
+				_, hiddenErr := os.Stat(canon("deep/nested/.hidden"))
+				So(hiddenErr, ShouldBeNil)
+
+				_, policyErr := os.Stat(canon("policy.json"))
+				So(policyErr, ShouldBeNil)
+
+				So(read(t, repoFile(repo)), ShouldEqual, "# rules v2\n")
+			})
+		})
+
+		Convey("Then nested, dotfiles and symlinks are preserved", func() {
+			_, hiddenErr := os.Stat(canon("deep/nested/.hidden"))
+			So(hiddenErr, ShouldBeNil)
+
+			_, notesErr := os.Stat(canon("deep/notes.json"))
+			So(notesErr, ShouldBeNil)
+
+			_, policyErr := os.Stat(canon("policy.json"))
+			So(policyErr, ShouldBeNil)
+
+			So(info.Mode()&os.ModeSymlink, ShouldNotEqual, os.FileMode(0))
+		})
+	})
 }
 
 func TestProjectCanonLoaderRejectsTraversal(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a file outside the project canon directory", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	repo := newRepo(t)
-	f.useRepo(t, repo)
-	f.enableProject(t, "AGENTS.md")
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		repo := newRepo(t)
+		f.useRepo(t, repo)
+		f.enableProject(t, "AGENTS.md")
 
-	id := repoID(repo)
-	write(t, filepath.Join(f.vault.ProjectsDir(), id, "AGENTS.md"), "# rules\n")
-	write(t, repoFile(repo), "# rules\n")
+		id := repoID(repo)
+		write(t, filepath.Join(f.vault.ProjectsDir(), id, "AGENTS.md"), "# rules\n")
+		write(t, repoFile(repo), "# rules\n")
 
-	f.sync(t)
+		f.sync(t)
 
-	outside := filepath.Join(f.vault.ProjectsDir(), "escape.md")
-	write(t, outside, "secret\n")
+		outside := filepath.Join(f.vault.ProjectsDir(), "escape.md")
+		write(t, outside, "secret\n")
 
-	report := f.sync(t)
-	require.False(t, report.Kind(kind.Projects).VaultChanged, "nothing outside the project directory is loaded")
-	require.Equal(t, "secret\n", read(t, outside), "the loader never touches sibling paths")
+		Convey("When the next sync runs", func() {
+			report := f.sync(t)
+
+			Convey("Then the loader never touches sibling paths", func() {
+				So(report.Kind(kind.Projects).VaultChanged, ShouldBeFalse)
+				So(read(t, outside), ShouldEqual, "secret\n")
+			})
+		})
+	})
 }
 
 func TestProjectForgetKeepsOtherEntries(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a project with two enabled files", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
-	repo := newRepo(t)
-	f.useRepo(t, repo)
-	f.enableProject(t, "AGENTS.md", ".mcp.json")
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		repo := newRepo(t)
+		f.useRepo(t, repo)
+		f.enableProject(t, "AGENTS.md", ".mcp.json")
 
-	id := repoID(repo)
-	canon := func(rel string) string { return filepath.Join(f.vault.ProjectsDir(), id, filepath.FromSlash(rel)) }
+		id := repoID(repo)
+		canon := func(rel string) string { return filepath.Join(f.vault.ProjectsDir(), id, filepath.FromSlash(rel)) }
 
-	write(t, repoFile(repo), "# rules\n")
-	f.sync(t)
+		write(t, repoFile(repo), "# rules\n")
+		f.sync(t)
 
-	require.FileExists(t, canon("AGENTS.md"))
-	require.FileExists(t, canon(".mcp.json"))
+		_, agentsErr := os.Stat(canon("AGENTS.md"))
+		_, mcpErr := os.Stat(canon(".mcp.json"))
 
-	_, err := f.engine.ProjectForget(t.Context(), ".mcp.json")
-	require.NoError(t, err)
+		Convey("When one file is forgotten", func() {
+			_, err := f.engine.ProjectForget(t.Context(), ".mcp.json")
+			So(err, ShouldBeNil)
 
-	require.NoFileExists(t, canon(".mcp.json"))
-	require.FileExists(t, canon("AGENTS.md"), "other canon entries survive a targeted forget")
-	require.FileExists(t, repoFile(repo))
+			_, goneErr := os.Stat(canon(".mcp.json"))
+			_, keptErr := os.Stat(canon("AGENTS.md"))
+			_, repoErr := os.Stat(repoFile(repo))
+
+			Convey("Then only that entry is removed", func() {
+				So(agentsErr, ShouldBeNil)
+				So(mcpErr, ShouldBeNil)
+
+				So(errors.Is(goneErr, fs.ErrNotExist), ShouldBeTrue)
+				So(keptErr, ShouldBeNil)
+				So(repoErr, ShouldBeNil)
+			})
+		})
+	})
 }

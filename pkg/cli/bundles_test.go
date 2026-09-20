@@ -5,91 +5,115 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func TestBundlesCLIStubEndToEnd(t *testing.T) {
-	home := t.TempDir()
+	Convey("Given a stub claude CLI on PATH", t, func() {
+		home := t.TempDir()
 
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
 
-	binDir := filepath.Join(t.TempDir(), "bin")
-	require.NoError(t, os.MkdirAll(binDir, 0o750))
+		binDir := filepath.Join(t.TempDir(), "bin")
+		So(os.MkdirAll(binDir, 0o750), ShouldBeNil)
 
-	logPath := filepath.Join(t.TempDir(), "claude.log")
-	script := "#!/bin/sh\necho \"$@\" >> " + logPath + "\nexit 0\n"
-	require.NoError(t, os.WriteFile(filepath.Join(binDir, "claude"), []byte(script), 0o700)) //nolint:gosec // G306: the stub must stay executable
+		logPath := filepath.Join(t.TempDir(), "claude.log")
+		script := "#!/bin/sh\necho \"$@\" >> " + logPath + "\nexit 0\n"
+		So(os.WriteFile(filepath.Join(binDir, "claude"), []byte(script), 0o700), ShouldBeNil) //nolint:gosec // G306: the stub must stay executable
 
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	_, err := runCLI(t, "init")
-	require.NoError(t, err)
+		_, err := runCLI(t, "init")
+		So(err, ShouldBeNil)
 
-	out, err := runCLI(t, "bundles", "enable", "--host", "claude")
-	require.NoError(t, err)
-	require.Contains(t, out, "enabled")
-	require.Contains(t, out, "(registered)")
+		Convey("When the bundle is enabled", func() {
+			out, err := runCLI(t, "bundles", "enable", "--host", "claude")
+			So(err, ShouldBeNil)
 
-	calls, err := os.ReadFile(logPath) //nolint:gosec // G304: test reads its own temp file
-	require.NoError(t, err)
-	require.Contains(t, string(calls), "plugin marketplace add "+filepath.Join(home, ".beadle", "bundles", "claude"))
-	require.Contains(t, string(calls), "plugin install beadle-canon@beadle")
+			calls, err := os.ReadFile(logPath) //nolint:gosec // G304: test reads its own temp file
+			So(err, ShouldBeNil)
 
-	config, err := os.ReadFile(filepath.Join(home, ".beadle", "config.json")) //nolint:gosec // G304: test reads its own temp file
-	require.NoError(t, err)
-	require.Contains(t, string(config), `"off"`)
+			config, err := os.ReadFile(filepath.Join(home, ".beadle", "config.json")) //nolint:gosec // G304: test reads its own temp file
+			So(err, ShouldBeNil)
 
-	out, err = runCLI(t, "bundles", "disable", "--host", "claude")
-	require.NoError(t, err)
-	require.Contains(t, out, "disabled")
+			Convey("Then it registers through the CLI and disables kinds", func() {
+				So(out, ShouldContainSubstring, "enabled")
+				So(out, ShouldContainSubstring, "(registered)")
 
-	calls, err = os.ReadFile(logPath) //nolint:gosec // G304: test reads its own temp file
-	require.NoError(t, err)
-	require.Contains(t, string(calls), "plugin uninstall beadle-canon@beadle")
-	require.Contains(t, string(calls), "plugin marketplace rm beadle")
+				So(string(calls), ShouldContainSubstring, "plugin marketplace add "+filepath.Join(home, ".beadle", "bundles", "claude"))
+				So(string(calls), ShouldContainSubstring, "plugin install beadle-canon@beadle")
+				So(string(config), ShouldContainSubstring, `"off"`)
 
-	config, err = os.ReadFile(filepath.Join(home, ".beadle", "config.json")) //nolint:gosec // G304: test reads its own temp file
-	require.NoError(t, err)
-	require.NotContains(t, string(config), `"off"`)
+				Convey("And disabling unregisters and restores modes", func() {
+					out, err := runCLI(t, "bundles", "disable", "--host", "claude")
+					So(err, ShouldBeNil)
+
+					So(out, ShouldContainSubstring, "disabled")
+
+					calls, err := os.ReadFile(logPath) //nolint:gosec // G304: test reads its own temp file
+					So(err, ShouldBeNil)
+					So(string(calls), ShouldContainSubstring, "plugin uninstall beadle-canon@beadle")
+					So(string(calls), ShouldContainSubstring, "plugin marketplace rm beadle")
+
+					config, err := os.ReadFile(filepath.Join(home, ".beadle", "config.json")) //nolint:gosec // G304: test reads its own temp file
+					So(err, ShouldBeNil)
+					So(string(config), ShouldNotContainSubstring, `"off"`)
+				})
+			})
+		})
+	})
 }
 
 func TestBundlesCommands(t *testing.T) {
-	home := t.TempDir()
+	Convey("Given an initialized vault", t, func() {
+		home := t.TempDir()
 
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
 
-	_, err := runCLI(t, "init")
-	require.NoError(t, err)
+		_, err := runCLI(t, "init")
+		So(err, ShouldBeNil)
 
-	out, err := runCLI(t, "bundles", "status")
-	require.NoError(t, err)
-	require.Contains(t, out, "host")
-	require.Contains(t, out, "claude")
-	require.Contains(t, out, "gemini")
-	require.Contains(t, out, "antigravity")
+		out, err := runCLI(t, "bundles", "status")
+		So(err, ShouldBeNil)
 
-	out, err = runCLI(t, "bundles", "enable", "--host", "antigravity")
-	require.NoError(t, err)
-	require.Contains(t, out, "generated")
-	require.Contains(t, out, "ln -s")
+		Convey("When the status and antigravity enable are requested", func() {
+			So(out, ShouldContainSubstring, "host")
+			So(out, ShouldContainSubstring, "claude")
+			So(out, ShouldContainSubstring, "gemini")
+			So(out, ShouldContainSubstring, "antigravity")
 
-	out, err = runCLI(t, "bundles", "status")
-	require.NoError(t, err)
-	require.Contains(t, out, "yes")
+			out, err = runCLI(t, "bundles", "enable", "--host", "antigravity")
+			So(err, ShouldBeNil)
+			So(out, ShouldContainSubstring, "generated")
+			So(out, ShouldContainSubstring, "ln -s")
 
-	_, err = runCLI(t, "bundles", "enable")
-	require.ErrorContains(t, err, "--host is required")
+			out, err = runCLI(t, "bundles", "status")
+			So(err, ShouldBeNil)
+			So(out, ShouldContainSubstring, "yes")
 
-	_, err = runCLI(t, "bundles", "enable", "--host", "cursor")
-	require.ErrorContains(t, err, "unknown bundle host")
+			_, err = runCLI(t, "bundles", "enable")
+			So(err, ShouldBeError)
+			So(err.Error(), ShouldContainSubstring, "--host is required")
 
-	out, err = runCLI(t, "bundles", "disable", "--host", "antigravity")
-	require.NoError(t, err)
-	require.Contains(t, out, "disabled")
+			_, err = runCLI(t, "bundles", "enable", "--host", "cursor")
+			So(err, ShouldBeError)
+			So(err.Error(), ShouldContainSubstring, "unknown bundle host")
 
-	require.FileExists(t, filepath.Join(home, ".beadle", "bundles", "antigravity", "plugin.json"))
+			Convey("When antigravity is disabled", func() {
+				out, err := runCLI(t, "bundles", "disable", "--host", "antigravity")
+				So(err, ShouldBeNil)
+
+				Convey("Then it disables and keeps the generated plugin", func() {
+					So(out, ShouldContainSubstring, "disabled")
+
+					_, statErr := os.Stat(filepath.Join(home, ".beadle", "bundles", "antigravity", "plugin.json"))
+					So(statErr, ShouldBeNil)
+				})
+			})
+		})
+	})
 }

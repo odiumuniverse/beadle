@@ -6,38 +6,42 @@ import (
 	"testing"
 	"testing/synctest"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 	"github.com/vmkteam/embedlog"
 )
 
 func TestSerializeCoalescesConcurrentCalls(t *testing.T) {
-	t.Parallel()
-
 	synctest.Test(t, func(t *testing.T) {
-		release := make(chan struct{})
+		Convey("Given a serialized runner with one call in flight", t, func() {
+			release := make(chan struct{})
 
-		var calls atomic.Int32
+			var calls atomic.Int32
 
-		run := serialize(t.Context(), func(context.Context) error {
-			if calls.Add(1) == 1 {
-				<-release
-			}
+			run := serialize(t.Context(), func(context.Context) error {
+				if calls.Add(1) == 1 {
+					<-release
+				}
 
-			return nil
-		}, embedlog.Logger{})
+				return nil
+			}, embedlog.Logger{})
 
-		go run()
+			go run()
 
-		synctest.Wait()
+			synctest.Wait()
 
-		run()
-		run()
+			Convey("When two more calls arrive while it is busy", func() {
+				run()
+				run()
 
-		require.Equal(t, int32(1), calls.Load())
+				So(calls.Load(), ShouldEqual, int32(1))
 
-		close(release)
-		synctest.Wait()
+				Convey("Then they coalesce into one follow-up call", func() {
+					close(release)
+					synctest.Wait()
 
-		require.Equal(t, int32(2), calls.Load())
+					So(calls.Load(), ShouldEqual, int32(2))
+				})
+			})
+		})
 	})
 }

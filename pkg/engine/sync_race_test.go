@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
 )
@@ -25,54 +25,61 @@ const (
 var errWriterStale = errors.New("writer state is stale")
 
 func TestSyncKeepsConcurrentAgentWrites(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a fixture with an agent writing concurrently with sync", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
+		f := newFixture(t)
 
-	write(t, f.claudeConfig(), `{"mcpServers": {}, "agentBookkeeping":   {"kept":  true}}`)
-	write(t, f.openCodeConfig(), `{"mcp": {"alpha": {"type": "local", "command": ["a"], "environment": {"KEY": "v1"}}}}`)
-	write(t, f.claudeRules(), "# shared\n")
-	write(t, f.openCodeRules(), "# shared\n")
+		write(t, f.claudeConfig(), `{"mcpServers": {}, "agentBookkeeping":   {"kept":  true}}`)
+		write(t, f.openCodeConfig(), `{"mcp": {"alpha": {"type": "local", "command": ["a"], "environment": {"KEY": "v1"}}}}`)
+		write(t, f.claudeRules(), "# shared\n")
+		write(t, f.openCodeRules(), "# shared\n")
 
-	f.sync(t)
+		f.sync(t)
 
-	claude := read(t, f.claudeConfig())
-	require.Contains(t, claude, `"alpha"`)
-	require.Contains(t, claude, `"agentBookkeeping":   {"kept":  true}`, "the untouched parts keep their bytes")
+		claude := read(t, f.claudeConfig())
+		So(claude, ShouldContainSubstring, `"alpha"`)
+		So(claude, ShouldContainSubstring, `"agentBookkeeping":   {"kept":  true}`)
 
-	write(t, f.openCodeConfig(), `{"mcp": {"alpha": {"type": "local", "command": ["a"], "environment": {"KEY": "v2"}}}}`)
+		write(t, f.openCodeConfig(), `{"mcp": {"alpha": {"type": "local", "command": ["a"], "environment": {"KEY": "v2"}}}}`)
 
-	stop := make(chan struct{})
+		stop := make(chan struct{})
 
-	var (
-		stopOnce sync.Once
-		wg       sync.WaitGroup
-	)
+		var (
+			stopOnce sync.Once
+			wg       sync.WaitGroup
+		)
 
-	stopWriter := func() {
-		stopOnce.Do(func() { close(stop) })
+		stopWriter := func() {
+			stopOnce.Do(func() { close(stop) })
 
-		wg.Wait()
-	}
+			wg.Wait()
+		}
 
-	t.Cleanup(stopWriter)
+		t.Cleanup(stopWriter)
 
-	wg.Go(func() {
-		runConcurrentAgent(f, stop)
+		wg.Go(func() {
+			runConcurrentAgent(f, stop)
+		})
+
+		f.sync(t)
+
+		stopWriter()
+
+		f.sync(t)
+
+		doc := readClaudeDoc(t, f.claudeConfig())
+		env := nestedMap(t, doc, "mcpServers", "alpha", "env")
+
+		Convey("When both writers finish", func() {
+			Convey("Then both the pulled change and the agent key survive with no temp files", func() {
+				So(env["KEY"], ShouldEqual, "v2")
+				So(doc, ShouldContainKey, "writerCounter")
+				So(doc, ShouldContainKey, "agentBookkeeping")
+				So(claudeTempFiles(t, f.home), ShouldBeEmpty)
+			})
+		})
 	})
-
-	f.sync(t)
-
-	stopWriter()
-
-	f.sync(t)
-
-	doc := readClaudeDoc(t, f.claudeConfig())
-	env := nestedMap(t, doc, "mcpServers", "alpha", "env")
-	require.Equal(t, "v2", env["KEY"], "the pulled change survives the race")
-	require.Contains(t, doc, "writerCounter", "the concurrent agent key survives too")
-	require.Contains(t, doc, "agentBookkeeping")
-	require.Empty(t, claudeTempFiles(t, f.home), "no temp files are left behind")
 }
 
 func runConcurrentAgent(f *fixture, stop <-chan struct{}) {
@@ -189,10 +196,14 @@ func readClaudeDoc(t *testing.T, path string) map[string]any {
 	t.Helper()
 
 	data, err := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
 
 	var doc map[string]any
-	require.NoError(t, json.Unmarshal(data, &doc))
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("unmarshal %s: %v", path, err)
+	}
 
 	return doc
 }
@@ -204,7 +215,9 @@ func nestedMap(t *testing.T, doc map[string]any, keys ...string) map[string]any 
 
 	for _, key := range keys {
 		child, ok := current[key].(map[string]any)
-		require.True(t, ok, "key %q must be an object", key)
+		if !ok {
+			t.Fatalf("key %q must be an object", key)
+		}
 
 		current = child
 	}
@@ -216,7 +229,9 @@ func claudeTempFiles(t *testing.T, home string) []string {
 	t.Helper()
 
 	entries, err := os.ReadDir(home)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("readdir %s: %v", home, err)
+	}
 
 	var names []string
 

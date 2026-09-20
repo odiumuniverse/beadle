@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/secret"
 )
@@ -73,15 +73,22 @@ func (f *fakeKeyring) Delete(account string) (bool, error) {
 func write(t *testing.T, path, content string) {
 	t.Helper()
 
-	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
 }
 
 func read(t *testing.T, path string) string {
 	t.Helper()
 
 	data, err := os.ReadFile(path) //nolint:gosec // G304: tests read their own temp files
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
 
 	return string(data)
 }
@@ -96,7 +103,9 @@ func keyringIndex(t *testing.T, path string, names ...string) {
 	}
 
 	encoded, err := json.Marshal(map[string]any{"version": 2, "backend": "keyring", "secrets": secrets})
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("marshal index: %v", err)
+	}
 
 	write(t, path, string(encoded)+"\n")
 }
@@ -108,261 +117,335 @@ func keyringStore(t *testing.T, fake secret.Keyring, names ...string) (string, *
 	keyringIndex(t, path, names...)
 
 	store, err := secret.Load(path, secret.WithKeyring(fake))
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("load store: %v", err)
+	}
 
 	return path, store
 }
 
 func TestKeyringStorePrefetch(t *testing.T) {
-	t.Parallel()
+	Convey("Given a keyring index with one prefetched secret", t, func() {
+		fake := newFakeKeyring(map[string]string{"ALPHA": "s3cr3t"})
+		_, store := keyringStore(t, fake, "ALPHA")
 
-	fake := newFakeKeyring(map[string]string{"ALPHA": "s3cr3t"})
-	_, store := keyringStore(t, fake, "ALPHA")
+		Convey("When the store is used", func() {
+			value, ok := store.Get("ALPHA")
 
-	require.Equal(t, secret.BackendKeyring, store.Backend())
-	require.Equal(t, 1, fake.gets)
-	require.NoError(t, store.KeyringErr())
-	require.NoError(t, store.Probe())
+			Convey("Then the keyring backend is active and the value is available", func() {
+				So(store.Backend(), ShouldEqual, secret.BackendKeyring)
+				So(fake.gets, ShouldEqual, 1)
+				So(store.KeyringErr(), ShouldBeNil)
+				So(store.Probe(), ShouldBeNil)
 
-	value, ok := store.Get("ALPHA")
-	require.True(t, ok)
-	require.Equal(t, "s3cr3t", value)
+				So(ok, ShouldBeTrue)
+				So(value, ShouldEqual, "s3cr3t")
+			})
+		})
+	})
 }
 
 func TestKeyringStorePrefetchFailure(t *testing.T) {
-	t.Parallel()
+	Convey("Given a keyring that fails to preload", t, func() {
+		fake := newFakeKeyring(nil)
+		fake.failGet = errors.New("keyring is locked")
 
-	fake := newFakeKeyring(nil)
-	fake.failGet = errors.New("keyring is locked")
+		_, store := keyringStore(t, fake, "ALPHA")
 
-	_, store := keyringStore(t, fake, "ALPHA")
+		Convey("When the store is used", func() {
+			value, ok := store.Get("ALPHA")
 
-	require.ErrorIs(t, store.KeyringErr(), fake.failGet)
-	require.ErrorIs(t, store.Probe(), fake.failGet)
+			Convey("Then the failure surfaces and the store stays empty", func() {
+				So(errors.Is(store.KeyringErr(), fake.failGet), ShouldBeTrue)
+				So(errors.Is(store.Probe(), fake.failGet), ShouldBeTrue)
 
-	_, ok := store.Get("ALPHA")
-	require.False(t, ok)
-	require.Empty(t, store.Names())
+				So(ok, ShouldBeFalse)
+				So(value, ShouldBeEmpty)
+				So(store.Names(), ShouldBeEmpty)
+			})
+		})
+	})
 }
 
 func TestKeyringStoreV1BackCompat(t *testing.T) {
-	t.Parallel()
+	Convey("Given a v1 secrets document", t, func() {
+		path := filepath.Join(t.TempDir(), "mcp", "secrets.json")
+		write(t, path, `{"version": 1, "secrets": {"ALPHA": "s3cr3t"}}`)
 
-	path := filepath.Join(t.TempDir(), "mcp", "secrets.json")
-	write(t, path, `{"version": 1, "secrets": {"ALPHA": "s3cr3t"}}`)
+		fake := newFakeKeyring(nil)
 
-	fake := newFakeKeyring(nil)
+		store, err := secret.Load(path, secret.WithKeyring(fake))
+		So(err, ShouldBeNil)
 
-	store, err := secret.Load(path, secret.WithKeyring(fake))
-	require.NoError(t, err)
-	require.Equal(t, secret.BackendFile, store.Backend())
-	require.Zero(t, fake.gets, "the file backend never touches the keyring")
-	require.NoError(t, store.Probe())
+		Convey("When a value is added and saved", func() {
+			store.Set("BETA", "fresh")
+			So(store.Save(), ShouldBeNil)
 
-	store.Set("BETA", "fresh")
-	require.NoError(t, store.Save())
+			raw := read(t, path)
 
-	raw := read(t, path)
-	require.Contains(t, raw, `"version": 1`, "the file backend keeps writing the v1 document")
-	require.Contains(t, raw, "s3cr3t")
-	require.NotContains(t, raw, `"backend"`)
+			Convey("Then the file backend stays active and keeps writing v1", func() {
+				So(store.Backend(), ShouldEqual, secret.BackendFile)
+				So(fake.gets, ShouldEqual, 0)
+				So(store.Probe(), ShouldBeNil)
+
+				So(raw, ShouldContainSubstring, `"version": 1`)
+				So(raw, ShouldContainSubstring, "s3cr3t")
+				So(raw, ShouldNotContainSubstring, `"backend"`)
+			})
+		})
+	})
 }
 
 func TestKeyringStoreUnknownBackend(t *testing.T) {
-	t.Parallel()
+	Convey("Given a secrets document with an unknown backend", t, func() {
+		path := filepath.Join(t.TempDir(), "mcp", "secrets.json")
+		write(t, path, `{"version": 2, "backend": "gpg", "secrets": {}}`)
 
-	path := filepath.Join(t.TempDir(), "mcp", "secrets.json")
-	write(t, path, `{"version": 2, "backend": "gpg", "secrets": {}}`)
+		Convey("When it is loaded", func() {
+			_, err := secret.Load(path)
 
-	_, err := secret.Load(path)
-	require.ErrorContains(t, err, "unknown backend")
+			Convey("Then it is rejected", func() {
+				So(err, ShouldBeError)
+				So(err.Error(), ShouldContainSubstring, "unknown backend")
+			})
+		})
+	})
 }
 
 func TestKeyringStoreBuffersUntilSave(t *testing.T) {
-	t.Parallel()
+	Convey("Given a keyring-backed store", t, func() {
+		fake := newFakeKeyring(map[string]string{"ALPHA": "s3cr3t"})
+		path, store := keyringStore(t, fake, "ALPHA")
 
-	fake := newFakeKeyring(map[string]string{"ALPHA": "s3cr3t"})
-	path, store := keyringStore(t, fake, "ALPHA")
+		store.Set("BETA", "fresh")
 
-	store.Set("BETA", "fresh")
+		Convey("When the store is saved", func() {
+			So(fake.sets, ShouldEqual, 0)
+			So(store.Changed(), ShouldBeTrue)
 
-	require.Zero(t, fake.sets, "values are buffered in memory until Save")
-	require.True(t, store.Changed())
+			So(store.Save(), ShouldBeNil)
 
-	require.NoError(t, store.Save())
-	require.Equal(t, 1, fake.sets)
-	require.Equal(t, "fresh", fake.values["BETA"])
+			raw := read(t, path)
+			So(raw, ShouldNotContainSubstring, "fresh")
+			So(raw, ShouldNotContainSubstring, "s3cr3t")
 
-	raw := read(t, path)
-	require.NotContains(t, raw, "fresh")
-	require.NotContains(t, raw, "s3cr3t")
-	require.Contains(t, raw, `"backend": "keyring"`)
-	require.Contains(t, raw, `"ALPHA": ""`)
-	require.Contains(t, raw, `"BETA": ""`)
-	require.False(t, store.Changed())
+			reloaded, err := secret.Load(path, secret.WithKeyring(fake))
+			So(err, ShouldBeNil)
 
-	reloaded, err := secret.Load(path, secret.WithKeyring(fake))
-	require.NoError(t, err)
+			value, ok := reloaded.Get("BETA")
 
-	value, ok := reloaded.Get("BETA")
-	require.True(t, ok)
-	require.Equal(t, "fresh", value)
+			Convey("Then values reach the keyring, the index holds names only and reload sees the value", func() {
+				So(fake.sets, ShouldEqual, 1)
+				So(fake.values["BETA"], ShouldEqual, "fresh")
+				So(raw, ShouldContainSubstring, `"backend": "keyring"`)
+				So(raw, ShouldContainSubstring, `"ALPHA": ""`)
+				So(raw, ShouldContainSubstring, `"BETA": ""`)
+				So(store.Changed(), ShouldBeFalse)
+
+				So(ok, ShouldBeTrue)
+				So(value, ShouldEqual, "fresh")
+			})
+		})
+	})
 }
 
 func TestKeyringStoreDeleteOnSave(t *testing.T) {
-	t.Parallel()
+	Convey("Given a keyring-backed store with two secrets", t, func() {
+		fake := newFakeKeyring(map[string]string{"ALPHA": "s3cr3t", "BETA": "other"})
+		path, store := keyringStore(t, fake, "ALPHA", "BETA")
 
-	fake := newFakeKeyring(map[string]string{"ALPHA": "s3cr3t", "BETA": "other"})
-	path, store := keyringStore(t, fake, "ALPHA", "BETA")
+		So(store.Delete("ALPHA"), ShouldBeTrue)
 
-	require.True(t, store.Delete("ALPHA"))
-	require.Zero(t, fake.deletes, "deleting is buffered in memory until Save")
+		Convey("When the store is saved", func() {
+			So(fake.deletes, ShouldEqual, 0)
 
-	require.NoError(t, store.Save())
-	require.Equal(t, 1, fake.deletes)
+			So(store.Save(), ShouldBeNil)
 
-	_, ok := fake.values["ALPHA"]
-	require.False(t, ok)
+			_, ok := fake.values["ALPHA"]
 
-	raw := read(t, path)
-	require.NotContains(t, raw, `"ALPHA"`)
-	require.Contains(t, raw, `"BETA"`)
+			raw := read(t, path)
+
+			Convey("Then the keyring entry is removed and the index drops the name", func() {
+				So(fake.deletes, ShouldEqual, 1)
+				So(ok, ShouldBeFalse)
+				So(raw, ShouldNotContainSubstring, `"ALPHA"`)
+				So(raw, ShouldContainSubstring, `"BETA"`)
+			})
+		})
+	})
 }
 
 func TestKeyringStoreDeleteFailureKeepsIndex(t *testing.T) {
-	t.Parallel()
+	Convey("Given a keyring whose delete fails", t, func() {
+		fake := newFakeKeyring(map[string]string{"ALPHA": "s3cr3t"})
+		path, store := keyringStore(t, fake, "ALPHA")
 
-	fake := newFakeKeyring(map[string]string{"ALPHA": "s3cr3t"})
-	path, store := keyringStore(t, fake, "ALPHA")
+		So(store.Delete("ALPHA"), ShouldBeTrue)
 
-	require.True(t, store.Delete("ALPHA"))
+		fake.failDelete = errors.New("delete denied")
 
-	fake.failDelete = errors.New("delete denied")
+		before := read(t, path)
 
-	before := read(t, path)
+		Convey("When save fails and then the keyring heals", func() {
+			err := store.Save()
+			So(err, ShouldBeError)
+			So(err.Error(), ShouldContainSubstring, "remove secrets from the keyring")
+			So(read(t, path), ShouldEqual, before)
 
-	require.ErrorContains(t, store.Save(), "remove secrets from the keyring")
-	require.Equal(t, before, read(t, path), "the index is not rewritten")
+			fake.failDelete = nil
 
-	fake.failDelete = nil
-
-	require.NoError(t, store.Save(), "retrying after the keyring heals is idempotent")
-	require.NotContains(t, read(t, path), `"ALPHA"`)
+			Convey("Then retrying is idempotent and drops the name", func() {
+				So(store.Save(), ShouldBeNil)
+				So(read(t, path), ShouldNotContainSubstring, `"ALPHA"`)
+			})
+		})
+	})
 }
 
 func TestKeyringStoreSaveFailureKeepsIndex(t *testing.T) {
-	t.Parallel()
+	Convey("Given a keyring whose write fails", t, func() {
+		fake := newFakeKeyring(map[string]string{"ALPHA": "s3cr3t"})
+		path, store := keyringStore(t, fake, "ALPHA")
 
-	fake := newFakeKeyring(map[string]string{"ALPHA": "s3cr3t"})
-	path, store := keyringStore(t, fake, "ALPHA")
+		store.Set("BETA", "fresh")
 
-	store.Set("BETA", "fresh")
+		fake.failSet = errors.New("write denied")
 
-	fake.failSet = errors.New("write denied")
+		before := read(t, path)
 
-	before := read(t, path)
+		Convey("When save fails and then the keyring heals", func() {
+			err := store.Save()
+			So(err, ShouldBeError)
+			So(err.Error(), ShouldContainSubstring, "save secrets to the keyring")
+			So(read(t, path), ShouldEqual, before)
+			So(store.Changed(), ShouldBeTrue)
 
-	require.ErrorContains(t, store.Save(), "save secrets to the keyring")
-	require.Equal(t, before, read(t, path), "the index is not rewritten")
-	require.True(t, store.Changed())
+			fake.failSet = nil
 
-	fake.failSet = nil
-
-	require.NoError(t, store.Save())
-	require.Equal(t, "fresh", fake.values["BETA"])
+			Convey("Then retrying stores the value", func() {
+				So(store.Save(), ShouldBeNil)
+				So(fake.values["BETA"], ShouldEqual, "fresh")
+			})
+		})
+	})
 }
 
 func TestKeyringStoreSaveRefusedAfterPrefetchFailure(t *testing.T) {
-	t.Parallel()
+	Convey("Given a store whose prefetch failed", t, func() {
+		fake := newFakeKeyring(nil)
+		fake.failGet = errors.New("keyring is locked")
 
-	fake := newFakeKeyring(nil)
-	fake.failGet = errors.New("keyring is locked")
+		path, store := keyringStore(t, fake, "ALPHA", "BETA")
 
-	path, store := keyringStore(t, fake, "ALPHA", "BETA")
+		before := read(t, path)
 
-	before := read(t, path)
+		store.Set("GAMMA", "fresh")
 
-	store.Set("GAMMA", "fresh")
+		Convey("When it is saved", func() {
+			err := store.Save()
 
-	require.ErrorContains(t, store.Save(), "save secrets to the keyring")
-	require.Equal(t, before, read(t, path), "the index is never rewritten from a truncated map")
-	require.Contains(t, read(t, path), `"ALPHA"`)
+			Convey("Then the save is refused and the index is never truncated", func() {
+				So(err, ShouldBeError)
+				So(err.Error(), ShouldContainSubstring, "save secrets to the keyring")
+				So(read(t, path), ShouldEqual, before)
+				So(read(t, path), ShouldContainSubstring, `"ALPHA"`)
+			})
+		})
+	})
 }
 
 func TestKeyringStoreMigratesBothWays(t *testing.T) {
-	t.Parallel()
+	Convey("Given a v1 file-backed secrets document", t, func() {
+		path := filepath.Join(t.TempDir(), "mcp", "secrets.json")
+		write(t, path, `{"version": 1, "secrets": {"ALPHA": "s3cr3t"}}`)
 
-	path := filepath.Join(t.TempDir(), "mcp", "secrets.json")
-	write(t, path, `{"version": 1, "secrets": {"ALPHA": "s3cr3t"}}`)
+		fake := newFakeKeyring(nil)
 
-	fake := newFakeKeyring(nil)
+		store, err := secret.Load(path, secret.WithKeyring(fake))
+		So(err, ShouldBeNil)
 
-	store, err := secret.Load(path, secret.WithKeyring(fake))
-	require.NoError(t, err)
+		Convey("When it migrates to keyring and back to file", func() {
+			So(store.SetBackend(secret.BackendKeyring), ShouldBeNil)
+			So(store.Probe(), ShouldBeNil)
+			So(store.Save(), ShouldBeNil)
 
-	require.NoError(t, store.SetBackend(secret.BackendKeyring))
-	require.NoError(t, store.Probe())
-	require.NoError(t, store.Save())
+			So(fake.values["ALPHA"], ShouldEqual, "s3cr3t")
 
-	require.Equal(t, "s3cr3t", fake.values["ALPHA"])
+			raw := read(t, path)
+			So(raw, ShouldContainSubstring, `"backend": "keyring"`)
+			So(raw, ShouldNotContainSubstring, "s3cr3t")
 
-	raw := read(t, path)
-	require.Contains(t, raw, `"backend": "keyring"`)
-	require.NotContains(t, raw, "s3cr3t", "the keyring index holds names only")
+			So(store.SetBackend(secret.BackendFile), ShouldBeNil)
+			So(store.Save(), ShouldBeNil)
 
-	require.NoError(t, store.SetBackend(secret.BackendFile))
-	require.NoError(t, store.Save())
+			raw = read(t, path)
 
-	raw = read(t, path)
-	require.Contains(t, raw, "s3cr3t", "the plaintext moves back into the file")
-	require.NotContains(t, raw, `"backend"`)
+			Convey("Then values move back and unknown backends are rejected", func() {
+				So(raw, ShouldContainSubstring, "s3cr3t")
+				So(raw, ShouldNotContainSubstring, `"backend"`)
 
-	require.NoError(t, store.SetBackend(secret.BackendFile), "migrating to the current backend is a no-op")
-	require.ErrorContains(t, store.SetBackend("gpg"), "unknown secrets backend")
+				So(store.SetBackend(secret.BackendFile), ShouldBeNil)
+
+				err := store.SetBackend("gpg")
+				So(err, ShouldBeError)
+				So(err.Error(), ShouldContainSubstring, "unknown secrets backend")
+			})
+		})
+	})
 }
 
 func TestKeyringStoreNameForStaysStable(t *testing.T) {
-	t.Parallel()
+	Convey("Given a keyring-backed store with a value", t, func() {
+		fake := newFakeKeyring(map[string]string{"TOKEN": "v1"})
+		_, store := keyringStore(t, fake, "TOKEN")
 
-	fake := newFakeKeyring(map[string]string{"TOKEN": "v1"})
-	_, store := keyringStore(t, fake, "TOKEN")
+		name := store.NameFor("token", "v1")
+		So(name, ShouldEqual, "TOKEN")
 
-	name := store.NameFor("token", "v1")
-	require.Equal(t, "TOKEN", name)
+		store.Set(name, "v1")
+		So(store.Save(), ShouldBeNil)
 
-	store.Set(name, "v1")
-	require.NoError(t, store.Save())
+		Convey("When names are queried again", func() {
+			second := store.NameFor("token", "v2")
 
-	require.Equal(t, []string{"TOKEN"}, store.Names())
-	require.Equal(t, "TOKEN", store.NameFor("token", "v1"), "no duplicate entry appears after a save")
-
-	second := store.NameFor("token", "v2")
-	require.Equal(t, "TOKEN_"+secret.Fingerprint("v2"), second)
+			Convey("Then the first name is stable and the collision is fingerprinted", func() {
+				So(store.Names(), ShouldResemble, []string{"TOKEN"})
+				So(store.NameFor("token", "v1"), ShouldEqual, "TOKEN")
+				So(second, ShouldEqual, "TOKEN_"+secret.Fingerprint("v2"))
+			})
+		})
+	})
 }
 
 func TestKeyringStoreExtractionRoundTrip(t *testing.T) {
-	t.Parallel()
+	Convey("Given an empty keyring-backed store", t, func() {
+		fake := newFakeKeyring(nil)
+		path, store := keyringStore(t, fake)
 
-	fake := newFakeKeyring(nil)
-	path, store := keyringStore(t, fake)
+		source := []byte("token=s3cr3tvalue123\n")
 
-	source := []byte("token=s3cr3tvalue123\n")
+		extracted, names, changed, err := secret.ExtractText(source, store)
+		So(err, ShouldBeNil)
 
-	extracted, names, changed, err := secret.ExtractText(source, store)
-	require.NoError(t, err)
-	require.True(t, changed)
-	require.Len(t, names, 1)
-	require.Contains(t, string(extracted), secret.Ref(names[0]))
-	require.Zero(t, fake.sets, "extraction is buffered")
+		Convey("When the extraction is saved and resolved back", func() {
+			So(changed, ShouldBeTrue)
+			So(names, ShouldHaveLength, 1)
+			So(string(extracted), ShouldContainSubstring, secret.Ref(names[0]))
+			So(fake.sets, ShouldEqual, 0)
 
-	require.NoError(t, store.Save())
-	require.Equal(t, 1, fake.sets)
-	require.Equal(t, "s3cr3tvalue123", fake.values[names[0]])
+			So(store.Save(), ShouldBeNil)
+			So(fake.sets, ShouldEqual, 1)
+			So(fake.values[names[0]], ShouldEqual, "s3cr3tvalue123")
 
-	reloaded, err := secret.Load(path, secret.WithKeyring(fake))
-	require.NoError(t, err)
+			reloaded, err := secret.Load(path, secret.WithKeyring(fake))
+			So(err, ShouldBeNil)
 
-	resolved, missing := secret.ResolveText(extracted, reloaded)
-	require.Empty(t, missing)
-	require.Equal(t, source, resolved)
+			resolved, missing := secret.ResolveText(extracted, reloaded)
+
+			Convey("Then the source round-trips", func() {
+				So(missing, ShouldBeEmpty)
+				So(string(resolved), ShouldEqual, string(source))
+			})
+		})
+	})
 }

@@ -2,11 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func runCLI(t *testing.T, args ...string) (string, error) {
@@ -29,108 +31,141 @@ func runCLI(t *testing.T, args ...string) (string, error) {
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 
-	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o750))
-	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("mkdir %s: %v", path, err)
+	}
+
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
 }
 
 func TestFirstRunFlow(t *testing.T) {
-	home := t.TempDir()
+	Convey("Given a home with two detected agents", t, func() {
+		home := t.TempDir()
 
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
 
-	writeFile(t, filepath.Join(home, ".claude.json"), `{"mcpServers": {"alpha": {"type": "stdio", "command": "a"}}}`)
-	writeFile(t, filepath.Join(home, ".claude", "CLAUDE.md"), "# claude rules\n")
-	writeFile(t, filepath.Join(home, ".config", "opencode", "opencode.json"), `{"mcp": {"beta": {"type": "local", "command": ["b"]}}}`)
-	writeFile(t, filepath.Join(home, ".config", "opencode", "AGENTS.md"), "# opencode rules\n")
+		writeFile(t, filepath.Join(home, ".claude.json"), `{"mcpServers": {"alpha": {"type": "stdio", "command": "a"}}}`)
+		writeFile(t, filepath.Join(home, ".claude", "CLAUDE.md"), "# claude rules\n")
+		writeFile(t, filepath.Join(home, ".config", "opencode", "opencode.json"), `{"mcp": {"beta": {"type": "local", "command": ["b"]}}}`)
+		writeFile(t, filepath.Join(home, ".config", "opencode", "AGENTS.md"), "# opencode rules\n")
 
-	out, err := runCLI(t, "init")
-	require.NoError(t, err)
-	require.Contains(t, out, "[x] Claude Code")
-	require.Contains(t, out, "[x] OpenCode")
-	require.Contains(t, out, "[ ] Gemini CLI")
-	require.Contains(t, out, "beadle sync --dry-run")
+		Convey("When init runs", func() {
+			out, err := runCLI(t, "init")
 
-	out, err = runCLI(t, "sync", "--dry-run")
-	require.NoError(t, err)
-	require.Contains(t, out, "dry run: nothing was written")
-	require.NoFileExists(t, filepath.Join(home, ".beadle", "mcp", "servers.json"))
+			Convey("Then it enables the detected agents", func() {
+				So(err, ShouldBeNil)
+				So(out, ShouldContainSubstring, "[x] Claude Code")
+				So(out, ShouldContainSubstring, "[x] OpenCode")
+				So(out, ShouldContainSubstring, "[ ] Gemini CLI")
+				So(out, ShouldContainSubstring, "beadle sync --dry-run")
 
-	out, err = runCLI(t, "sync")
-	require.NoError(t, err)
-	require.Contains(t, out, "1 open conflict(s)", "the two rules files disagree")
+				Convey("And a dry run writes nothing", func() {
+					out, err := runCLI(t, "sync", "--dry-run")
+					So(err, ShouldBeNil)
+					So(out, ShouldContainSubstring, "dry run: nothing was written")
 
-	out, err = runCLI(t, "conflicts")
-	require.NoError(t, err)
-	require.Contains(t, out, "rules")
-	require.Contains(t, out, "opencode")
+					_, statErr := os.Stat(filepath.Join(home, ".beadle", "mcp", "servers.json"))
+					So(errors.Is(statErr, fs.ErrNotExist), ShouldBeTrue)
 
-	out, err = runCLI(t, "resolve", "--all", "--take", "vault")
-	require.NoError(t, err)
-	require.Contains(t, out, "resolved 1 conflict(s)")
+					Convey("And a real sync reports the rules conflict", func() {
+						out, err := runCLI(t, "sync")
+						So(err, ShouldBeNil)
+						So(out, ShouldContainSubstring, "1 open conflict(s)")
 
-	rules, err := os.ReadFile(filepath.Join(home, ".config", "opencode", "AGENTS.md")) //nolint:gosec // G304: test reads its own temp file
-	require.NoError(t, err)
-	require.Equal(t, "# claude rules\n", string(rules))
+						out, err = runCLI(t, "conflicts")
+						So(err, ShouldBeNil)
+						So(out, ShouldContainSubstring, "rules")
+						So(out, ShouldContainSubstring, "opencode")
 
-	out, err = runCLI(t, "status")
-	require.NoError(t, err)
-	require.Contains(t, out, "conflicts: none")
+						out, err = runCLI(t, "resolve", "--all", "--take", "vault")
+						So(err, ShouldBeNil)
+						So(out, ShouldContainSubstring, "resolved 1 conflict(s)")
 
-	_, err = runCLI(t, "doctor")
-	require.NoError(t, err)
+						rules, err := os.ReadFile(filepath.Join(home, ".config", "opencode", "AGENTS.md")) //nolint:gosec // G304: test reads its own temp file
+						So(err, ShouldBeNil)
+						So(string(rules), ShouldEqual, "# claude rules\n")
 
-	out, err = runCLI(t, "agents", "mode", "opencode", "mcp", "pull")
-	require.NoError(t, err)
-	require.Contains(t, out, "opencode mcp: pull")
+						out, err = runCLI(t, "status")
+						So(err, ShouldBeNil)
+						So(out, ShouldContainSubstring, "conflicts: none")
 
-	_, err = runCLI(t, "agents", "mode", "cursor", "rules", "sync")
-	require.Error(t, err, "Cursor has no rules file")
+						_, err = runCLI(t, "doctor")
+						So(err, ShouldBeNil)
 
-	out, err = runCLI(t, "kinds", "disable", "skills")
-	require.NoError(t, err)
-	require.Contains(t, out, "saved")
+						out, err = runCLI(t, "agents", "mode", "opencode", "mcp", "pull")
+						So(err, ShouldBeNil)
+						So(out, ShouldContainSubstring, "opencode mcp: pull")
 
-	out, err = runCLI(t, "history", "rules")
-	require.NoError(t, err)
-	require.Contains(t, out, "(current)")
+						_, err = runCLI(t, "agents", "mode", "cursor", "rules", "sync")
+						So(err, ShouldBeError)
+
+						out, err = runCLI(t, "kinds", "disable", "skills")
+						So(err, ShouldBeNil)
+						So(out, ShouldContainSubstring, "saved")
+
+						out, err = runCLI(t, "history", "rules")
+						So(err, ShouldBeNil)
+						So(out, ShouldContainSubstring, "(current)")
+					})
+				})
+			})
+		})
+	})
 }
 
 func TestResolveNeedsADecision(t *testing.T) {
-	home := t.TempDir()
+	Convey("Given an initialized vault", t, func() {
+		home := t.TempDir()
 
-	t.Setenv("HOME", home)
-	t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
+		t.Setenv("HOME", home)
+		t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
 
-	_, err := runCLI(t, "init")
-	require.NoError(t, err)
+		_, err := runCLI(t, "init")
+		So(err, ShouldBeNil)
 
-	_, err = runCLI(t, "resolve", "deadbeef")
-	require.ErrorContains(t, err, "--take")
+		Convey("When resolve is called without a decision", func() {
+			_, err := runCLI(t, "resolve", "deadbeef")
+
+			Convey("Then it asks for --take", func() {
+				So(err, ShouldBeError)
+				So(err.Error(), ShouldContainSubstring, "--take")
+			})
+		})
+	})
 }
 
 func TestReloadHintOutput(t *testing.T) {
-	home := t.TempDir()
+	Convey("Given two agents with a shared MCP server", t, func() {
+		home := t.TempDir()
 
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
 
-	writeFile(t, filepath.Join(home, ".claude.json"), `{"mcpServers": {"alpha": {"type": "stdio", "command": "a"}}}`)
-	writeFile(t, filepath.Join(home, ".claude", "CLAUDE.md"), "# rules\n")
-	writeFile(t, filepath.Join(home, ".config", "opencode", "opencode.json"), `{"mcp": {"beta": {"type": "local", "command": ["b"]}}}`)
-	writeFile(t, filepath.Join(home, ".config", "opencode", "AGENTS.md"), "# rules\n")
+		writeFile(t, filepath.Join(home, ".claude.json"), `{"mcpServers": {"alpha": {"type": "stdio", "command": "a"}}}`)
+		writeFile(t, filepath.Join(home, ".claude", "CLAUDE.md"), "# rules\n")
+		writeFile(t, filepath.Join(home, ".config", "opencode", "opencode.json"), `{"mcp": {"beta": {"type": "local", "command": ["b"]}}}`)
+		writeFile(t, filepath.Join(home, ".config", "opencode", "AGENTS.md"), "# rules\n")
 
-	_, err := runCLI(t, "init")
-	require.NoError(t, err)
+		_, err := runCLI(t, "init")
+		So(err, ShouldBeNil)
 
-	out, err := runCLI(t, "sync")
-	require.NoError(t, err)
-	require.Contains(t, out, "↻ new Claude Code sessions load MCP changes")
-	require.Contains(t, out, "↻ OpenCode reads its config at startup: restart OpenCode to load the changes")
+		Convey("When the first sync pushes changes", func() {
+			out, err := runCLI(t, "sync")
 
-	out, err = runCLI(t, "sync")
-	require.NoError(t, err)
-	require.NotContains(t, out, "↻")
+			Convey("Then reload hints are shown once", func() {
+				So(err, ShouldBeNil)
+				So(out, ShouldContainSubstring, "↻ new Claude Code sessions load MCP changes")
+				So(out, ShouldContainSubstring, "↻ OpenCode reads its config at startup: restart OpenCode to load the changes")
+
+				out, err = runCLI(t, "sync")
+				So(err, ShouldBeNil)
+				So(out, ShouldNotContainSubstring, "↻")
+			})
+		})
+	})
 }

@@ -1,13 +1,14 @@
 package fsutil
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 func stubSymlinkLinker(t *testing.T, link func(oldname, newname string) error) {
@@ -20,99 +21,120 @@ func stubSymlinkLinker(t *testing.T, link func(oldname, newname string) error) {
 }
 
 func TestUnsupportedSymlinkFS(t *testing.T) {
-	t.Parallel()
+	Convey("Given a table of filesystem types", t, func() {
+		tests := map[string]bool{
+			"exfat": true,
+			"EXFAT": true,
+			"msdos": true,
+			"vfat":  true,
+			"smb":   false,
+			"cifs":  false,
+			"apfs":  false,
+			"ext4":  false,
+		}
 
-	tests := map[string]bool{
-		"exfat": true,
-		"EXFAT": true,
-		"msdos": true,
-		"vfat":  true,
-		"smb":   false,
-		"cifs":  false,
-		"apfs":  false,
-		"ext4":  false,
-	}
-
-	for fsType, want := range tests {
-		t.Run(fsType, func(t *testing.T) {
-			t.Parallel()
-
-			require.Equal(t, want, UnsupportedSymlinkFS(fsType))
-		})
-	}
+		for fsType, want := range tests {
+			Convey("When checking "+fsType, func() {
+				Convey("Then support matches", func() {
+					So(UnsupportedSymlinkFS(fsType), ShouldEqual, want)
+				})
+			})
+		}
+	})
 }
 
 func TestClassifySymlinkErr(t *testing.T) {
-	t.Parallel()
+	Convey("Given unsupported symlink errors", t, func() {
+		unsupported := map[string]error{
+			"EPERM":      syscall.EPERM,
+			"EOPNOTSUPP": syscall.EOPNOTSUPP,
+			"ENOTSUP":    syscall.ENOTSUP,
+			"ENOSYS":     syscall.ENOSYS,
+		}
 
-	unsupported := map[string]error{
-		"EPERM":      syscall.EPERM,
-		"EOPNOTSUPP": syscall.EOPNOTSUPP,
-		"ENOTSUP":    syscall.ENOTSUP,
-		"ENOSYS":     syscall.ENOSYS,
-	}
+		for name, err := range unsupported {
+			Convey("When classifying "+name, func() {
+				wrapped := fmt.Errorf("symlink: %w", &os.PathError{Op: "symlink", Path: "x", Err: err})
 
-	for name, err := range unsupported {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
+				Convey("Then it maps to ErrSymlinksUnsupported", func() {
+					So(errors.Is(classifySymlinkErr(wrapped), ErrSymlinksUnsupported), ShouldBeTrue)
+				})
+			})
+		}
+	})
 
-			wrapped := fmt.Errorf("symlink: %w", &os.PathError{Op: "symlink", Path: "x", Err: err})
-			require.ErrorIs(t, classifySymlinkErr(wrapped), ErrSymlinksUnsupported)
-		})
-	}
+	Convey("Given unrelated symlink errors", t, func() {
+		damage := map[string]error{
+			"EACCES":  syscall.EACCES,
+			"EEXIST":  syscall.EEXIST,
+			"ENOENT":  syscall.ENOENT,
+			"ENOTDIR": syscall.ENOTDIR,
+		}
 
-	damage := map[string]error{
-		"EACCES":  syscall.EACCES,
-		"EEXIST":  syscall.EEXIST,
-		"ENOENT":  syscall.ENOENT,
-		"ENOTDIR": syscall.ENOTDIR,
-	}
+		for name, err := range damage {
+			Convey("When classifying "+name, func() {
+				classified := classifySymlinkErr(&os.PathError{Op: "symlink", Path: "x", Err: err})
 
-	for name, err := range damage {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
-			classified := classifySymlinkErr(&os.PathError{Op: "symlink", Path: "x", Err: err})
-			require.NotErrorIs(t, classified, ErrSymlinksUnsupported)
-			require.ErrorIs(t, classified, err)
-		})
-	}
+				Convey("Then it stays unrelated to unsupported", func() {
+					So(errors.Is(classified, ErrSymlinksUnsupported), ShouldBeFalse)
+					So(errors.Is(classified, err), ShouldBeTrue)
+				})
+			})
+		}
+	})
 }
 
-//nolint:paralleltest // the test swaps the package-level linker seam
 func TestReplaceSymlinkClassifiesUnsupported(t *testing.T) {
-	dir := t.TempDir()
+	Convey("Given a linker that denies symlinks", t, func() {
+		dir := t.TempDir()
 
-	for _, denied := range []error{syscall.EPERM, syscall.EOPNOTSUPP, syscall.ENOTSUP, syscall.ENOSYS} {
-		stubSymlinkLinker(t, func(_, _ string) error { return denied })
+		Convey("When the link error is unsupported", func() {
+			for _, denied := range []error{syscall.EPERM, syscall.EOPNOTSUPP, syscall.ENOTSUP, syscall.ENOSYS} {
+				Convey("With "+denied.Error(), func() {
+					stubSymlinkLinker(t, func(_, _ string) error { return denied })
 
-		require.ErrorIs(t, ReplaceSymlink(filepath.Join(dir, "alpha"), "target"), ErrSymlinksUnsupported)
-	}
+					Convey("Then it is classified as unsupported", func() {
+						So(errors.Is(ReplaceSymlink(filepath.Join(dir, "alpha"), "target"), ErrSymlinksUnsupported), ShouldBeTrue)
+					})
+				})
+			}
+		})
 
-	stubSymlinkLinker(t, func(_, _ string) error { return syscall.EACCES })
+		Convey("When the link error is unrelated", func() {
+			stubSymlinkLinker(t, func(_, _ string) error { return syscall.EACCES })
 
-	err := ReplaceSymlink(filepath.Join(dir, "alpha"), "target")
-	require.NotErrorIs(t, err, ErrSymlinksUnsupported)
-	require.ErrorIs(t, err, syscall.EACCES)
+			err := ReplaceSymlink(filepath.Join(dir, "alpha"), "target")
 
-	entries, readErr := os.ReadDir(dir)
-	require.NoError(t, readErr)
-	require.Empty(t, entries, "a failed link must leave no temp artifacts")
+			entries, readErr := os.ReadDir(dir)
+
+			Convey("Then the original error is kept and no temp artifacts remain", func() {
+				So(errors.Is(err, ErrSymlinksUnsupported), ShouldBeFalse)
+				So(errors.Is(err, syscall.EACCES), ShouldBeTrue)
+				So(readErr, ShouldBeNil)
+				So(entries, ShouldBeEmpty)
+			})
+		})
+	})
 }
 
 func TestReplaceSymlinkReal(t *testing.T) {
-	t.Parallel()
+	Convey("Given a real filesystem", t, func() {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "alpha")
 
-	dir := t.TempDir()
-	path := filepath.Join(dir, "alpha")
+		Convey("When a symlink is created", func() {
+			So(ReplaceSymlink(path, "target"), ShouldBeNil)
 
-	require.NoError(t, ReplaceSymlink(path, "target"))
+			link, err := os.Readlink(path)
+			So(err, ShouldBeNil)
 
-	link, err := os.Readlink(path)
-	require.NoError(t, err)
-	require.Equal(t, "target", link)
+			entries, err := os.ReadDir(dir)
 
-	entries, err := os.ReadDir(dir)
-	require.NoError(t, err)
-	require.Len(t, entries, 1, "the temp link must not survive")
+			Convey("Then it points at the target with no temp link left", func() {
+				So(err, ShouldBeNil)
+				So(link, ShouldEqual, "target")
+				So(entries, ShouldHaveLength, 1)
+			})
+		})
+	})
 }

@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -8,7 +9,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/config"
@@ -40,7 +41,9 @@ func farmLink(t *testing.T, dir, name string) string {
 	t.Helper()
 
 	link, err := os.Readlink(filepath.Join(dir, name))
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("readlink %s/%s: %v", dir, name, err)
+	}
 
 	return link
 }
@@ -49,377 +52,16 @@ func inode(t *testing.T, path string) uint64 {
 	t.Helper()
 
 	info, err := os.Lstat(path)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("lstat %s: %v", path, err)
+	}
 
 	stat, ok := info.Sys().(*syscall.Stat_t)
-	require.True(t, ok)
+	if !ok {
+		t.Fatal("not a Stat_t")
+	}
 
 	return stat.Ino
-}
-
-func TestPluginFarmPresentsSkills(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := newFixture(t)
-	f.emptyConfigs(t)
-
-	plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-	writeSkill(t, plugin, "alpha", "# alpha\n")
-	writeSkill(t, plugin, "beta", "# beta\n")
-
-	report := f.sync(t)
-
-	wantAlpha := filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current", "skills", "alpha")
-	wantBeta := filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current", "skills", "beta")
-
-	for _, dir := range []string{claudeSkillsDir(f.home), openCodeSkillsDir(f.home)} {
-		require.Equal(t, wantAlpha, farmLink(t, dir, "alpha"))
-		require.Equal(t, wantBeta, farmLink(t, dir, "beta"))
-
-		content, err := os.ReadFile(filepath.Join(dir, "alpha", "SKILL.md")) //nolint:gosec // G304: test reads its own temp file
-		require.NoError(t, err)
-		require.Equal(t, "# alpha\n", string(content))
-	}
-
-	require.Len(t, report.Farm, 2)
-
-	for _, result := range report.Farm {
-		require.Equal(t, engine.FarmLinked, result.Action)
-		require.Equal(t, "acme/tool", result.Plugin)
-		require.Equal(t, 2, result.Count)
-	}
-
-	entries, err := os.ReadDir(f.vault.SkillsDir())
-	require.NoError(t, err)
-	require.Empty(t, entries, "the farm must not touch the vault canon")
-}
-
-func TestPluginFarmInvisibleToSync(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := newFixture(t)
-	f.emptyConfigs(t)
-
-	plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-	writeSkill(t, plugin, "alpha", "# alpha\n")
-
-	f.sync(t)
-
-	ledger := read(t, f.vault.PluginsLedgerPath())
-
-	report := f.sync(t)
-	require.Empty(t, report.Farm)
-	require.Equal(t, engine.ActionNoop, report.Action(kind.Skills, agent.ClaudeCodeID))
-	require.Equal(t, ledger, read(t, f.vault.PluginsLedgerPath()))
-	require.NoFileExists(t, filepath.Join(f.vault.SkillsDir(), "alpha"))
-}
-
-func TestPluginFarmSurvivesUpgrade(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := newFixture(t)
-	f.emptyConfigs(t)
-
-	plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-	writeSkill(t, plugin, "alpha", "# alpha v1\n")
-
-	f.sync(t)
-
-	linkBefore := farmLink(t, claudeSkillsDir(f.home), "alpha")
-
-	upgraded := pluginTree(t, f.home, "acme", "tool", "2.0.0")
-	writeSkill(t, upgraded, "alpha", "# alpha v2\n")
-
-	report := f.sync(t)
-	require.Empty(t, report.Farm)
-	require.Equal(t, linkBefore, farmLink(t, claudeSkillsDir(f.home), "alpha"))
-	require.Equal(t, linkBefore, farmLink(t, openCodeSkillsDir(f.home), "alpha"))
-	require.Equal(t, "# alpha v2\n", read(t, filepath.Join(claudeSkillsDir(f.home), "alpha", "SKILL.md")))
-}
-
-func TestPluginFarmPrunesDroppedSkill(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := newFixture(t)
-	f.emptyConfigs(t)
-
-	plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-	writeSkill(t, plugin, "alpha", "# alpha\n")
-	writeSkill(t, plugin, "beta", "# beta\n")
-
-	f.sync(t)
-
-	upgraded := pluginTree(t, f.home, "acme", "tool", "2.0.0")
-	writeSkill(t, upgraded, "beta", "# beta\n")
-
-	report := f.sync(t)
-
-	require.NoFileExists(t, filepath.Join(claudeSkillsDir(f.home), "alpha"))
-	require.NoFileExists(t, filepath.Join(openCodeSkillsDir(f.home), "alpha"))
-	require.Equal(t, filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current", "skills", "beta"), farmLink(t, claudeSkillsDir(f.home), "beta"))
-
-	require.Len(t, report.Farm, 2)
-
-	for _, result := range report.Farm {
-		require.Equal(t, engine.FarmPruned, result.Action)
-		require.Equal(t, 1, result.Count)
-	}
-}
-
-func TestPluginFarmCollisions(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	t.Run("the first plugin by key wins", func(t *testing.T) {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
-		f := newFixture(t)
-		f.emptyConfigs(t)
-
-		first := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-		writeSkill(t, first, "alpha", "# first\n")
-
-		second := pluginTree(t, f.home, "beta", "other", "1.0.0")
-		writeSkill(t, second, "alpha", "# second\n")
-
-		report := f.sync(t)
-
-		require.Equal(t,
-			filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current", "skills", "alpha"),
-			farmLink(t, claudeSkillsDir(f.home), "alpha"))
-
-		warned := containsWarning(report.Warnings, "already provided by acme/tool")
-		require.True(t, warned, "warnings: %v", report.Warnings)
-	})
-
-	t.Run("the canon wins and lands in the same sync", func(t *testing.T) {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
-		f := newFixture(t)
-		f.emptyConfigs(t)
-
-		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-		writeSkill(t, plugin, "alpha", "# plugin\n")
-
-		f.sync(t)
-		require.Equal(t,
-			filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current", "skills", "alpha"),
-			farmLink(t, claudeSkillsDir(f.home), "alpha"))
-
-		write(t, filepath.Join(f.vault.SkillsDir(), "alpha", "SKILL.md"), "# canon\n")
-
-		report := f.sync(t)
-
-		info, err := os.Lstat(filepath.Join(claudeSkillsDir(f.home), "alpha"))
-		require.NoError(t, err)
-		require.Zero(t, info.Mode()&fs.ModeSymlink, "the canon must land as a real directory")
-		require.Equal(t, "# canon\n", read(t, filepath.Join(claudeSkillsDir(f.home), "alpha", "SKILL.md")))
-
-		var pruned []engine.FarmResult
-
-		for _, result := range report.Farm {
-			if result.Action == engine.FarmPruned {
-				pruned = append(pruned, result)
-			}
-		}
-
-		require.Len(t, pruned, 2)
-	})
-
-	t.Run("the canon blocks the farm before the first sync", func(t *testing.T) {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
-		f := newFixture(t)
-		f.emptyConfigs(t)
-
-		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-		writeSkill(t, plugin, "alpha", "# plugin\n")
-
-		write(t, filepath.Join(f.vault.SkillsDir(), "alpha", "SKILL.md"), "# canon\n")
-
-		report := f.sync(t)
-
-		info, err := os.Lstat(filepath.Join(claudeSkillsDir(f.home), "alpha"))
-		require.NoError(t, err)
-		require.Zero(t, info.Mode()&fs.ModeSymlink)
-		require.Equal(t, "# canon\n", read(t, filepath.Join(claudeSkillsDir(f.home), "alpha", "SKILL.md")))
-		require.Empty(t, report.Farm)
-
-		require.True(t, containsWarning(report.Warnings, "shadowed by the vault canon"), "warnings: %v", report.Warnings)
-	})
-
-	t.Run("foreign entries are never touched", func(t *testing.T) {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
-		f := newFixture(t)
-		f.emptyConfigs(t)
-
-		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-		writeSkill(t, plugin, "alpha", "# plugin alpha\n")
-		writeSkill(t, plugin, "beta", "# plugin beta\n")
-
-		claudeDir := claudeSkillsDir(f.home)
-		require.NoError(t, os.MkdirAll(claudeDir, 0o700))
-
-		foreignTarget := filepath.Join(f.home, "elsewhere", "alpha")
-		write(t, filepath.Join(foreignTarget, "SKILL.md"), "# foreign\n")
-		require.NoError(t, os.Symlink(foreignTarget, filepath.Join(claudeDir, "alpha")))
-
-		realDir := filepath.Join(claudeDir, "beta")
-		write(t, filepath.Join(realDir, "SKILL.md"), "# real\n")
-
-		realInode := inode(t, realDir)
-
-		report := f.sync(t)
-
-		link, err := os.Readlink(filepath.Join(claudeDir, "alpha"))
-		require.NoError(t, err)
-		require.Equal(t, foreignTarget, link)
-		require.Equal(t, realInode, inode(t, realDir))
-
-		var skipped []engine.FarmResult
-
-		for _, result := range report.Farm {
-			if result.Action == engine.FarmSkipped {
-				skipped = append(skipped, result)
-			}
-		}
-
-		require.Len(t, skipped, 1)
-		require.Equal(t, "alpha, beta", skipped[0].Note)
-	})
-}
-
-func TestPluginFarmStubsOnQuarantine(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := newFixture(t)
-	f.emptyConfigs(t)
-
-	plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-	writeSkill(t, plugin, "alpha", "# alpha\n")
-
-	f.sync(t)
-
-	foreignDir := filepath.Join(claudeSkillsDir(f.home), "Foreign")
-	write(t, filepath.Join(foreignDir, "SKILL.md"), "# foreign\n")
-
-	foreignTarget := filepath.Join(f.home, "elsewhere", "helper")
-	write(t, filepath.Join(foreignTarget, "SKILL.md"), "# helper\n")
-	require.NoError(t, os.Symlink(foreignTarget, filepath.Join(claudeSkillsDir(f.home), "Helper")))
-
-	removeFromRegistry(t, f.home, "acme", "tool")
-	require.NoError(t, os.RemoveAll(plugin))
-
-	report := f.sync(t)
-
-	require.Len(t, report.Farm, 2, "one stub per farmed host: %v", report.Farm)
-
-	for _, result := range report.Farm {
-		require.Equal(t, engine.FarmStubbed, result.Action)
-		require.Equal(t, "acme/tool", result.Plugin)
-		require.Equal(t, 1, result.Count)
-	}
-
-	for _, dir := range []string{claudeSkillsDir(f.home), openCodeSkillsDir(f.home)} {
-		key, ok := skill.IsStubDir(filepath.Join(dir, "alpha"))
-		require.True(t, ok, "a stub must stand where the link was: %s", dir)
-		require.Equal(t, "acme/tool", key)
-	}
-
-	require.Equal(t, "# foreign\n", read(t, filepath.Join(foreignDir, "SKILL.md")))
-
-	link, err := os.Readlink(filepath.Join(claudeSkillsDir(f.home), "Helper"))
-	require.NoError(t, err)
-	require.Equal(t, foreignTarget, link)
-
-	entries, err := os.ReadDir(f.vault.SkillsDir())
-	require.NoError(t, err)
-	require.Empty(t, entries, "a stub must never leak into the canon")
-
-	before := read(t, f.vault.PluginsLedgerPath())
-
-	report = f.sync(t)
-	require.Empty(t, report.Farm)
-	require.Equal(t, before, read(t, f.vault.PluginsLedgerPath()), "a repeated sync must not touch the ledger")
-}
-
-func TestPluginFarmReplacesStubOnReinstall(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := newFixture(t)
-	f.emptyConfigs(t)
-
-	plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-	writeSkill(t, plugin, "alpha", "# alpha\n")
-
-	f.sync(t)
-
-	removeFromRegistry(t, f.home, "acme", "tool")
-	require.NoError(t, os.RemoveAll(plugin))
-
-	f.sync(t)
-
-	require.True(t, isStub(t, filepath.Join(claudeSkillsDir(f.home), "alpha")))
-
-	reinstalled := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-	writeSkill(t, reinstalled, "alpha", "# alpha\n")
-
-	report := f.sync(t)
-
-	for _, result := range report.Farm {
-		require.NotEqual(t, engine.FarmStubbed, result.Action)
-	}
-
-	want := filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current", "skills", "alpha")
-
-	for _, dir := range []string{claudeSkillsDir(f.home), openCodeSkillsDir(f.home)} {
-		require.False(t, isStub(t, filepath.Join(dir, "alpha")), "the stub is replaced by a fresh link")
-		require.Equal(t, want, farmLink(t, dir, "alpha"))
-	}
-
-	entries, err := os.ReadDir(f.vault.SkillsDir())
-	require.NoError(t, err)
-	require.Empty(t, entries, "the reinstalled content must not leak into the canon")
-}
-
-func TestPluginFarmPrunesOrphanStub(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := newFixture(t)
-	f.emptyConfigs(t)
-
-	plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-	writeSkill(t, plugin, "alpha", "# alpha\n")
-	writeSkill(t, plugin, "beta", "# beta\n")
-
-	f.sync(t)
-
-	removeFromRegistry(t, f.home, "acme", "tool")
-	require.NoError(t, os.RemoveAll(plugin))
-
-	f.sync(t)
-
-	require.True(t, isStub(t, filepath.Join(claudeSkillsDir(f.home), "alpha")))
-
-	upgraded := pluginTree(t, f.home, "acme", "tool", "2.0.0")
-	writeSkill(t, upgraded, "beta", "# beta\n")
-
-	report := f.sync(t)
-
-	require.NoFileExists(t, filepath.Join(claudeSkillsDir(f.home), "alpha"), "a dropped skill leaves no stub behind")
-	require.NoFileExists(t, filepath.Join(openCodeSkillsDir(f.home), "alpha"))
-	require.Equal(t, filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current", "skills", "beta"), farmLink(t, claudeSkillsDir(f.home), "beta"))
-	require.Equal(t, filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current", "skills", "beta"), farmLink(t, openCodeSkillsDir(f.home), "beta"))
-
-	var pruned int
-
-	for _, result := range report.Farm {
-		if result.Action == engine.FarmPruned {
-			pruned++
-		}
-	}
-
-	require.Equal(t, 2, pruned, "each host prunes its orphan stub: %v", report.Farm)
 }
 
 func isStub(t *testing.T, path string) bool {
@@ -430,346 +72,6 @@ func isStub(t *testing.T, path string) bool {
 	return ok
 }
 
-func TestPluginFarmStubSkipsShadowedName(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	t.Run("another parked plugin owns the name", func(t *testing.T) {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
-		f := newFixture(t)
-		f.emptyConfigs(t)
-
-		loser := pluginTree(t, f.home, "aaa", "loser", "1.0.0")
-		writeSkill(t, loser, "shared", "# loser\n")
-
-		winner := pluginTree(t, f.home, "bbb", "winner", "1.0.0")
-		writeSkill(t, winner, "shared", "# winner\n")
-
-		f.sync(t)
-
-		require.Equal(t,
-			filepath.Join(f.vault.PluginsDir(), "aaa", "loser", "current", "skills", "shared"),
-			farmLink(t, claudeSkillsDir(f.home), "shared"))
-
-		removeFromRegistry(t, f.home, "aaa", "loser")
-		require.NoError(t, os.RemoveAll(loser))
-
-		report := f.sync(t)
-
-		require.False(t, isStub(t, filepath.Join(claudeSkillsDir(f.home), "shared")), "the winner takes the name instead of a stub: %v", report.Farm)
-		require.Equal(t, "# winner\n", read(t, filepath.Join(claudeSkillsDir(f.home), "shared", "SKILL.md")))
-
-		for _, result := range report.Farm {
-			require.NotEqual(t, engine.FarmStubbed, result.Action)
-		}
-	})
-
-	t.Run("the canon owns the name", func(t *testing.T) {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
-		f := newFixture(t)
-		f.emptyConfigs(t)
-
-		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-		writeSkill(t, plugin, "alpha", "# plugin\n")
-
-		f.sync(t)
-
-		write(t, filepath.Join(f.vault.SkillsDir(), "alpha", "SKILL.md"), "# canon\n")
-
-		removeFromRegistry(t, f.home, "acme", "tool")
-		require.NoError(t, os.RemoveAll(plugin))
-
-		report := f.sync(t)
-
-		require.False(t, isStub(t, filepath.Join(claudeSkillsDir(f.home), "alpha")))
-		require.Equal(t, "# canon\n", read(t, filepath.Join(claudeSkillsDir(f.home), "alpha", "SKILL.md")), "the canon lands in the same sync")
-
-		for _, result := range report.Farm {
-			require.NotEqual(t, engine.FarmStubbed, result.Action)
-		}
-	})
-}
-
-func TestPluginFarmStubSymlinkNotReadAsSkill(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := newFixture(t)
-	f.emptyConfigs(t)
-
-	plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-	writeSkill(t, plugin, "alpha", "# alpha\n")
-
-	f.sync(t)
-
-	removeFromRegistry(t, f.home, "acme", "tool")
-	require.NoError(t, os.RemoveAll(plugin))
-
-	f.sync(t)
-
-	stub := filepath.Join(claudeSkillsDir(f.home), "alpha")
-	require.True(t, isStub(t, stub))
-
-	require.NoError(t, os.Symlink(stub, filepath.Join(claudeSkillsDir(f.home), "helper")))
-
-	f.sync(t)
-
-	require.NoFileExists(t, filepath.Join(f.vault.SkillsDir(), "helper", "SKILL.md"))
-
-	entries, err := os.ReadDir(f.vault.SkillsDir())
-	require.NoError(t, err)
-	require.Empty(t, entries, "a symlink to a stub must not leak into the canon")
-}
-
-func TestPluginFarmRemoval(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := newFixture(t)
-	f.emptyConfigs(t)
-
-	plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-	writeSkill(t, plugin, "alpha", "# alpha\n")
-
-	f.sync(t)
-
-	want := filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current", "skills", "alpha")
-
-	removeFromRegistry(t, f.home, "acme", "tool")
-
-	report := f.sync(t)
-	require.Empty(t, report.Farm)
-	require.Equal(t, want, farmLink(t, claudeSkillsDir(f.home), "alpha"))
-	require.True(t, fsutil.Exists(filepath.Join(claudeSkillsDir(f.home), "alpha")), "the cached target still resolves")
-
-	require.NoError(t, os.RemoveAll(plugin))
-
-	report = f.sync(t)
-
-	require.Len(t, report.Farm, 2, "both farmed hosts receive a stub: %v", report.Farm)
-
-	for _, result := range report.Farm {
-		require.Equal(t, engine.FarmStubbed, result.Action)
-		require.Equal(t, "acme/tool", result.Plugin)
-		require.Equal(t, 1, result.Count)
-	}
-
-	for _, dir := range []string{claudeSkillsDir(f.home), openCodeSkillsDir(f.home)} {
-		stub := filepath.Join(dir, "alpha")
-
-		info, err := os.Lstat(stub)
-		require.NoError(t, err)
-		require.Zero(t, info.Mode()&fs.ModeSymlink, "the dangling link becomes a real directory")
-		require.True(t, isStub(t, stub))
-	}
-
-	issues, err := f.engine.Doctor(t.Context())
-	require.NoError(t, err)
-	require.True(t, hasIssue(issues, engine.SeverityError, "is quarantined"), "issues: %v", issues)
-	require.False(t, hasIssue(issues, engine.SeverityError, "broken symlink"), "a stub is not a broken symlink: %v", issues)
-}
-
-func TestPluginFarmDryRun(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := newFixture(t)
-	f.emptyConfigs(t)
-
-	plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-	writeSkill(t, plugin, "alpha", "# alpha\n")
-
-	report := f.run(t, engine.SyncOptions{DryRun: true})
-	require.Empty(t, report.Farm)
-	require.NoDirExists(t, claudeSkillsDir(f.home))
-	require.NoDirExists(t, openCodeSkillsDir(f.home))
-}
-
-func TestPluginFarmSkipsOffAndDisabled(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	t.Run("a host with skills off is not farmed", func(t *testing.T) {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
-		f := newFixture(t)
-		f.emptyConfigs(t)
-
-		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-		writeSkill(t, plugin, "alpha", "# alpha\n")
-
-		f.config.SetMode(agent.OpenCodeID, kind.Skills, config.ModeOff)
-
-		f.sync(t)
-
-		require.Equal(t,
-			filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current", "skills", "alpha"),
-			farmLink(t, claudeSkillsDir(f.home), "alpha"))
-		require.NoDirExists(t, openCodeSkillsDir(f.home))
-	})
-
-	t.Run("a disabled skills kind is not farmed", func(t *testing.T) {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
-		f := newFixture(t)
-		f.emptyConfigs(t)
-
-		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-		writeSkill(t, plugin, "alpha", "# alpha\n")
-
-		f.config.SetKind(kind.Skills, config.ModeOff)
-
-		report := f.sync(t)
-		require.Empty(t, report.Farm)
-		require.NoDirExists(t, claudeSkillsDir(f.home))
-		require.NoDirExists(t, openCodeSkillsDir(f.home))
-	})
-
-	t.Run("an opt-in host that is not enabled is not farmed", func(t *testing.T) {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
-		f := newFixture(t)
-		f.emptyConfigs(t)
-
-		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-		writeSkill(t, plugin, "alpha", "# alpha\n")
-
-		f.sync(t)
-
-		require.NoDirExists(t, sharedSkillsDir(f.home))
-	})
-}
-
-func TestPluginFarmNoPruneOnLedgerError(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := newFixture(t)
-	f.emptyConfigs(t)
-
-	plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-	writeSkill(t, plugin, "alpha", "# alpha\n")
-
-	f.sync(t)
-
-	linkBefore := farmLink(t, claudeSkillsDir(f.home), "alpha")
-
-	require.NoError(t, os.Remove(f.vault.PluginsLedgerPath()))
-	require.NoError(t, os.MkdirAll(f.vault.PluginsLedgerPath(), 0o700))
-
-	report := f.sync(t)
-
-	require.Equal(t, linkBefore, farmLink(t, claudeSkillsDir(f.home), "alpha"))
-	require.Equal(t, linkBefore, farmLink(t, openCodeSkillsDir(f.home), "alpha"))
-	require.Empty(t, report.Farm)
-	require.True(t, containsWarning(report.Warnings, "ledger"), "warnings: %v", report.Warnings)
-}
-
-func TestPluginFarmSkipsTargetOutsideCache(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := newFixture(t)
-	f.emptyConfigs(t)
-
-	outside := filepath.Join(f.home, "elsewhere", "tool")
-	write(t, filepath.Join(outside, "skills", "alpha", "SKILL.md"), "# outside\n")
-	write(t, filepath.Join(outside, ".claude-plugin", "plugin.json"), `{"name": "tool", "version": "1.0.0"}`)
-
-	writeRegistry(t, f.home, map[string][]map[string]any{"tool@acme": {{
-		"scope": "user", "installPath": outside, "version": "1.0.0",
-	}}})
-
-	report := f.sync(t)
-
-	require.NoDirExists(t, claudeSkillsDir(f.home))
-	require.NoDirExists(t, openCodeSkillsDir(f.home))
-	require.True(t, containsWarning(report.Warnings, "outside the plugin cache"), "warnings: %v", report.Warnings)
-
-	entries, err := os.ReadDir(f.vault.SkillsDir())
-	require.NoError(t, err)
-	require.Empty(t, entries, "the plugin content must not leak into the canon")
-}
-
-func TestPluginFarmSkipsSkillSymlinkedOutsideCache(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := newFixture(t)
-	f.emptyConfigs(t)
-
-	plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-	writeSkill(t, plugin, "alpha", "# alpha\n")
-
-	outside := filepath.Join(f.home, "notes", "helper")
-	write(t, filepath.Join(outside, "SKILL.md"), "# outside\n")
-
-	require.NoError(t, os.MkdirAll(filepath.Join(plugin, "skills"), 0o700))
-	require.NoError(t, os.Symlink(outside, filepath.Join(plugin, "skills", "helper")))
-
-	report := f.sync(t)
-
-	require.Len(t, report.Farm, 2, "only the regular skill is farmed: %v", report.Farm)
-
-	for _, result := range report.Farm {
-		require.Equal(t, engine.FarmLinked, result.Action)
-		require.Equal(t, 1, result.Count)
-	}
-
-	require.NoFileExists(t, filepath.Join(claudeSkillsDir(f.home), "helper"))
-	require.True(t, containsWarning(report.Warnings, "resolves outside the plugin cache"), "warnings: %v", report.Warnings)
-
-	entries, err := os.ReadDir(f.vault.SkillsDir())
-	require.NoError(t, err)
-	require.Empty(t, entries, "the linked-out content must not leak into the canon")
-}
-
-func TestPluginFarmNoPruneOnUnreadableSkills(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := newFixture(t)
-	f.emptyConfigs(t)
-
-	plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-	writeSkill(t, plugin, "alpha", "# alpha\n")
-
-	f.sync(t)
-
-	linkBefore := farmLink(t, claudeSkillsDir(f.home), "alpha")
-
-	skillsPath := filepath.Join(plugin, "skills")
-	require.NoError(t, os.Chmod(skillsPath, 0o000))
-
-	t.Cleanup(func() {
-		_ = os.Chmod(skillsPath, 0o700) //nolint:gosec // G302: restoring the directory mode needs the execute bit
-	})
-
-	report := f.sync(t)
-
-	require.Empty(t, report.Farm)
-	require.Equal(t, linkBefore, farmLink(t, claudeSkillsDir(f.home), "alpha"))
-	require.Equal(t, linkBefore, farmLink(t, openCodeSkillsDir(f.home), "alpha"))
-	require.True(t, containsWarning(report.Warnings, "skills cannot be read"), "warnings: %v", report.Warnings)
-}
-
-func TestPluginFarmGatesDirectionAndKinds(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
-
-	f := newFixture(t)
-	f.emptyConfigs(t)
-
-	plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-	writeSkill(t, plugin, "alpha", "# alpha\n")
-
-	f.sync(t)
-
-	linkBefore := farmLink(t, claudeSkillsDir(f.home), "alpha")
-
-	pluginTree(t, f.home, "acme", "tool", "2.0.0")
-
-	_, err := f.engine.Sync(t.Context(), engine.SyncOptions{Direction: config.ModePull})
-	require.NoError(t, err)
-	require.Equal(t, linkBefore, farmLink(t, claudeSkillsDir(f.home), "alpha"), "pull must not touch the farm")
-
-	report := f.run(t, engine.SyncOptions{Kinds: []kind.ID{kind.MCP}})
-	require.Empty(t, report.Farm)
-	require.Equal(t, linkBefore, farmLink(t, claudeSkillsDir(f.home), "alpha"), "a narrowed kind set must not prune the farm")
-}
-
 func containsWarning(warnings []string, substr string) bool {
 	for _, warning := range warnings {
 		if strings.Contains(warning, substr) {
@@ -778,4 +80,817 @@ func containsWarning(warnings []string, substr string) bool {
 	}
 
 	return false
+}
+
+func pluginCurrentSkill(f *fixture, name string) string {
+	return filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current", "skills", name)
+}
+
+func TestPluginFarmPresentsSkills(t *testing.T) {
+	Convey("Given a plugin with two skills", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeSkill(t, plugin, "alpha", "# alpha\n")
+		writeSkill(t, plugin, "beta", "# beta\n")
+
+		report := f.sync(t)
+
+		wantAlpha := pluginCurrentSkill(f, "alpha")
+		wantBeta := pluginCurrentSkill(f, "beta")
+
+		entries, err := os.ReadDir(f.vault.SkillsDir())
+		So(err, ShouldBeNil)
+
+		Convey("When the farm runs", func() {
+			Convey("Then each host links the skills and the canon is untouched", func() {
+				for _, dir := range []string{claudeSkillsDir(f.home), openCodeSkillsDir(f.home)} {
+					So(farmLink(t, dir, "alpha"), ShouldEqual, wantAlpha)
+					So(farmLink(t, dir, "beta"), ShouldEqual, wantBeta)
+					So(read(t, filepath.Join(dir, "alpha", "SKILL.md")), ShouldEqual, "# alpha\n")
+				}
+
+				So(report.Farm, ShouldHaveLength, 2)
+
+				for _, result := range report.Farm {
+					So(result.Action, ShouldEqual, engine.FarmLinked)
+					So(result.Plugin, ShouldEqual, "acme/tool")
+					So(result.Count, ShouldEqual, 2)
+				}
+
+				So(entries, ShouldBeEmpty)
+			})
+		})
+	})
+}
+
+func TestPluginFarmInvisibleToSync(t *testing.T) {
+	Convey("Given a farmed plugin", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeSkill(t, plugin, "alpha", "# alpha\n")
+
+		f.sync(t)
+
+		ledger := read(t, f.vault.PluginsLedgerPath())
+
+		report := f.sync(t)
+
+		Convey("When sync runs again", func() {
+			_, canonErr := os.Stat(filepath.Join(f.vault.SkillsDir(), "alpha"))
+
+			Convey("Then it is a noop and never reaches the canon", func() {
+				So(report.Farm, ShouldBeEmpty)
+				So(report.Action(kind.Skills, agent.ClaudeCodeID), ShouldEqual, engine.ActionNoop)
+				So(read(t, f.vault.PluginsLedgerPath()), ShouldEqual, ledger)
+				So(errors.Is(canonErr, fs.ErrNotExist), ShouldBeTrue)
+			})
+		})
+	})
+}
+
+func TestPluginFarmSurvivesUpgrade(t *testing.T) {
+	Convey("Given a plugin that is upgraded", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeSkill(t, plugin, "alpha", "# alpha v1\n")
+
+		f.sync(t)
+
+		linkBefore := farmLink(t, claudeSkillsDir(f.home), "alpha")
+
+		upgraded := pluginTree(t, f.home, "acme", "tool", "2.0.0")
+		writeSkill(t, upgraded, "alpha", "# alpha v2\n")
+
+		report := f.sync(t)
+
+		Convey("When it upgrades", func() {
+			Convey("Then the link is stable and content updates", func() {
+				So(report.Farm, ShouldBeEmpty)
+				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, linkBefore)
+				So(farmLink(t, openCodeSkillsDir(f.home), "alpha"), ShouldEqual, linkBefore)
+				So(read(t, filepath.Join(claudeSkillsDir(f.home), "alpha", "SKILL.md")), ShouldEqual, "# alpha v2\n")
+			})
+		})
+	})
+}
+
+func TestPluginFarmPrunesDroppedSkill(t *testing.T) {
+	Convey("Given a skill dropped by an upgrade", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeSkill(t, plugin, "alpha", "# alpha\n")
+		writeSkill(t, plugin, "beta", "# beta\n")
+
+		f.sync(t)
+
+		upgraded := pluginTree(t, f.home, "acme", "tool", "2.0.0")
+		writeSkill(t, upgraded, "beta", "# beta\n")
+
+		report := f.sync(t)
+
+		_, alphaClaude := os.Stat(filepath.Join(claudeSkillsDir(f.home), "alpha"))
+		_, alphaOpen := os.Stat(filepath.Join(openCodeSkillsDir(f.home), "alpha"))
+
+		Convey("When the farm reconciles", func() {
+			Convey("Then the dropped skill is pruned on both hosts", func() {
+				So(errors.Is(alphaClaude, fs.ErrNotExist), ShouldBeTrue)
+				So(errors.Is(alphaOpen, fs.ErrNotExist), ShouldBeTrue)
+				So(farmLink(t, claudeSkillsDir(f.home), "beta"), ShouldEqual, pluginCurrentSkill(f, "beta"))
+
+				So(report.Farm, ShouldHaveLength, 2)
+
+				for _, result := range report.Farm {
+					So(result.Action, ShouldEqual, engine.FarmPruned)
+					So(result.Count, ShouldEqual, 1)
+				}
+			})
+		})
+	})
+}
+
+func TestPluginFarmCollisions(t *testing.T) {
+	Convey("Given colliding farmed skills", t, func() {
+		Convey("When two plugins provide the same skill, the first by key wins", func() {
+			t.Setenv("XDG_CONFIG_HOME", "")
+
+			f := newFixture(t)
+			f.emptyConfigs(t)
+
+			first := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+			writeSkill(t, first, "alpha", "# first\n")
+
+			second := pluginTree(t, f.home, "beta", "other", "1.0.0")
+			writeSkill(t, second, "alpha", "# second\n")
+
+			report := f.sync(t)
+
+			So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, pluginCurrentSkill(f, "alpha"))
+			So(containsWarning(report.Warnings, "already provided by acme/tool"), ShouldBeTrue)
+		})
+
+		Convey("When the canon also owns the name, the canon wins in the same sync", func() {
+			t.Setenv("XDG_CONFIG_HOME", "")
+
+			f := newFixture(t)
+			f.emptyConfigs(t)
+
+			plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+			writeSkill(t, plugin, "alpha", "# plugin\n")
+
+			f.sync(t)
+			So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, pluginCurrentSkill(f, "alpha"))
+
+			write(t, filepath.Join(f.vault.SkillsDir(), "alpha", "SKILL.md"), "# canon\n")
+
+			report := f.sync(t)
+
+			info, err := os.Lstat(filepath.Join(claudeSkillsDir(f.home), "alpha"))
+			So(err, ShouldBeNil)
+
+			var pruned []engine.FarmResult
+
+			for _, result := range report.Farm {
+				if result.Action == engine.FarmPruned {
+					pruned = append(pruned, result)
+				}
+			}
+
+			So(info.Mode()&fs.ModeSymlink, ShouldEqual, fs.FileMode(0))
+			So(read(t, filepath.Join(claudeSkillsDir(f.home), "alpha", "SKILL.md")), ShouldEqual, "# canon\n")
+			So(pruned, ShouldHaveLength, 2)
+		})
+
+		Convey("When the canon blocks the farm before the first sync", func() {
+			t.Setenv("XDG_CONFIG_HOME", "")
+
+			f := newFixture(t)
+			f.emptyConfigs(t)
+
+			plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+			writeSkill(t, plugin, "alpha", "# plugin\n")
+
+			write(t, filepath.Join(f.vault.SkillsDir(), "alpha", "SKILL.md"), "# canon\n")
+
+			report := f.sync(t)
+
+			info, err := os.Lstat(filepath.Join(claudeSkillsDir(f.home), "alpha"))
+			So(err, ShouldBeNil)
+
+			So(info.Mode()&fs.ModeSymlink, ShouldEqual, fs.FileMode(0))
+			So(read(t, filepath.Join(claudeSkillsDir(f.home), "alpha", "SKILL.md")), ShouldEqual, "# canon\n")
+			So(report.Farm, ShouldBeEmpty)
+			So(containsWarning(report.Warnings, "shadowed by the vault canon"), ShouldBeTrue)
+		})
+
+		Convey("When foreign entries exist in the target dir, they are never touched", func() {
+			t.Setenv("XDG_CONFIG_HOME", "")
+
+			f := newFixture(t)
+			f.emptyConfigs(t)
+
+			plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+			writeSkill(t, plugin, "alpha", "# plugin alpha\n")
+			writeSkill(t, plugin, "beta", "# plugin beta\n")
+
+			claudeDir := claudeSkillsDir(f.home)
+			So(os.MkdirAll(claudeDir, 0o700), ShouldBeNil)
+
+			foreignTarget := filepath.Join(f.home, "elsewhere", "alpha")
+			write(t, filepath.Join(foreignTarget, "SKILL.md"), "# foreign\n")
+			So(os.Symlink(foreignTarget, filepath.Join(claudeDir, "alpha")), ShouldBeNil)
+
+			realDir := filepath.Join(claudeDir, "beta")
+			write(t, filepath.Join(realDir, "SKILL.md"), "# real\n")
+
+			realInode := inode(t, realDir)
+
+			report := f.sync(t)
+
+			link, err := os.Readlink(filepath.Join(claudeDir, "alpha"))
+			So(err, ShouldBeNil)
+
+			var skipped []engine.FarmResult
+
+			for _, result := range report.Farm {
+				if result.Action == engine.FarmSkipped {
+					skipped = append(skipped, result)
+				}
+			}
+
+			So(link, ShouldEqual, foreignTarget)
+			So(inode(t, realDir), ShouldEqual, realInode)
+			So(skipped, ShouldHaveLength, 1)
+			So(skipped[0].Note, ShouldEqual, "alpha, beta")
+		})
+	})
+}
+
+func TestPluginFarmStubsOnQuarantine(t *testing.T) {
+	Convey("Given a quarantined plugin alongside foreign entries", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeSkill(t, plugin, "alpha", "# alpha\n")
+
+		f.sync(t)
+
+		foreignDir := filepath.Join(claudeSkillsDir(f.home), "Foreign")
+		write(t, filepath.Join(foreignDir, "SKILL.md"), "# foreign\n")
+
+		foreignTarget := filepath.Join(f.home, "elsewhere", "helper")
+		write(t, filepath.Join(foreignTarget, "SKILL.md"), "# helper\n")
+		So(os.Symlink(foreignTarget, filepath.Join(claudeSkillsDir(f.home), "Helper")), ShouldBeNil)
+
+		removeFromRegistry(t, f.home, "acme", "tool")
+		So(os.RemoveAll(plugin), ShouldBeNil)
+
+		report := f.sync(t)
+
+		Convey("When sync stubs the hosts", func() {
+			So(report.Farm, ShouldHaveLength, 2)
+
+			for _, result := range report.Farm {
+				So(result.Action, ShouldEqual, engine.FarmStubbed)
+				So(result.Plugin, ShouldEqual, "acme/tool")
+				So(result.Count, ShouldEqual, 1)
+			}
+
+			for _, dir := range []string{claudeSkillsDir(f.home), openCodeSkillsDir(f.home)} {
+				key, ok := skill.IsStubDir(filepath.Join(dir, "alpha"))
+				So(ok, ShouldBeTrue)
+				So(key, ShouldEqual, "acme/tool")
+			}
+
+			So(read(t, filepath.Join(foreignDir, "SKILL.md")), ShouldEqual, "# foreign\n")
+
+			link, err := os.Readlink(filepath.Join(claudeSkillsDir(f.home), "Helper"))
+			So(err, ShouldBeNil)
+			So(link, ShouldEqual, foreignTarget)
+
+			entries, err := os.ReadDir(f.vault.SkillsDir())
+			So(err, ShouldBeNil)
+
+			before := read(t, f.vault.PluginsLedgerPath())
+
+			report = f.sync(t)
+
+			Convey("Then a repeated sync is quiet and leaves the ledger alone", func() {
+				So(report.Farm, ShouldBeEmpty)
+				So(read(t, f.vault.PluginsLedgerPath()), ShouldEqual, before)
+				So(entries, ShouldBeEmpty)
+			})
+		})
+	})
+}
+
+func TestPluginFarmReplacesStubOnReinstall(t *testing.T) {
+	Convey("Given a stub left by a quarantine", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeSkill(t, plugin, "alpha", "# alpha\n")
+
+		f.sync(t)
+
+		removeFromRegistry(t, f.home, "acme", "tool")
+		So(os.RemoveAll(plugin), ShouldBeNil)
+
+		f.sync(t)
+		So(isStub(t, filepath.Join(claudeSkillsDir(f.home), "alpha")), ShouldBeTrue)
+
+		reinstalled := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeSkill(t, reinstalled, "alpha", "# alpha\n")
+
+		report := f.sync(t)
+
+		entries, err := os.ReadDir(f.vault.SkillsDir())
+		So(err, ShouldBeNil)
+
+		Convey("When it is reinstalled", func() {
+			Convey("Then the stub is replaced by a fresh link", func() {
+				for _, result := range report.Farm {
+					So(result.Action, ShouldNotEqual, engine.FarmStubbed)
+				}
+
+				for _, dir := range []string{claudeSkillsDir(f.home), openCodeSkillsDir(f.home)} {
+					So(isStub(t, filepath.Join(dir, "alpha")), ShouldBeFalse)
+					So(farmLink(t, dir, "alpha"), ShouldEqual, pluginCurrentSkill(f, "alpha"))
+				}
+
+				So(entries, ShouldBeEmpty)
+			})
+		})
+	})
+}
+
+func TestPluginFarmPrunesOrphanStub(t *testing.T) {
+	Convey("Given an orphan stub after an upgrade drops the skill", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeSkill(t, plugin, "alpha", "# alpha\n")
+		writeSkill(t, plugin, "beta", "# beta\n")
+
+		f.sync(t)
+
+		removeFromRegistry(t, f.home, "acme", "tool")
+		So(os.RemoveAll(plugin), ShouldBeNil)
+
+		f.sync(t)
+		So(isStub(t, filepath.Join(claudeSkillsDir(f.home), "alpha")), ShouldBeTrue)
+
+		upgraded := pluginTree(t, f.home, "acme", "tool", "2.0.0")
+		writeSkill(t, upgraded, "beta", "# beta\n")
+
+		report := f.sync(t)
+
+		_, alphaClaude := os.Stat(filepath.Join(claudeSkillsDir(f.home), "alpha"))
+		_, alphaOpen := os.Stat(filepath.Join(openCodeSkillsDir(f.home), "alpha"))
+
+		var pruned int
+
+		for _, result := range report.Farm {
+			if result.Action == engine.FarmPruned {
+				pruned++
+			}
+		}
+
+		Convey("When the farm reconciles", func() {
+			Convey("Then the orphan stub is pruned on both hosts", func() {
+				So(errors.Is(alphaClaude, fs.ErrNotExist), ShouldBeTrue)
+				So(errors.Is(alphaOpen, fs.ErrNotExist), ShouldBeTrue)
+				So(farmLink(t, claudeSkillsDir(f.home), "beta"), ShouldEqual, pluginCurrentSkill(f, "beta"))
+				So(farmLink(t, openCodeSkillsDir(f.home), "beta"), ShouldEqual, pluginCurrentSkill(f, "beta"))
+				So(pruned, ShouldEqual, 2)
+			})
+		})
+	})
+}
+
+func TestPluginFarmStubSkipsShadowedName(t *testing.T) {
+	Convey("Given a name shadowed at stub time", t, func() {
+		Convey("When another parked plugin owns the name, the winner takes it instead of a stub", func() {
+			t.Setenv("XDG_CONFIG_HOME", "")
+
+			f := newFixture(t)
+			f.emptyConfigs(t)
+
+			loser := pluginTree(t, f.home, "aaa", "loser", "1.0.0")
+			writeSkill(t, loser, "shared", "# loser\n")
+
+			winner := pluginTree(t, f.home, "bbb", "winner", "1.0.0")
+			writeSkill(t, winner, "shared", "# winner\n")
+
+			f.sync(t)
+
+			So(farmLink(t, claudeSkillsDir(f.home), "shared"), ShouldEqual, filepath.Join(f.vault.PluginsDir(), "aaa", "loser", "current", "skills", "shared"))
+
+			removeFromRegistry(t, f.home, "aaa", "loser")
+			So(os.RemoveAll(loser), ShouldBeNil)
+
+			report := f.sync(t)
+
+			So(isStub(t, filepath.Join(claudeSkillsDir(f.home), "shared")), ShouldBeFalse)
+			So(read(t, filepath.Join(claudeSkillsDir(f.home), "shared", "SKILL.md")), ShouldEqual, "# winner\n")
+
+			for _, result := range report.Farm {
+				So(result.Action, ShouldNotEqual, engine.FarmStubbed)
+			}
+		})
+
+		Convey("When the canon owns the name, the canon lands instead of a stub", func() {
+			t.Setenv("XDG_CONFIG_HOME", "")
+
+			f := newFixture(t)
+			f.emptyConfigs(t)
+
+			plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+			writeSkill(t, plugin, "alpha", "# plugin\n")
+
+			f.sync(t)
+
+			write(t, filepath.Join(f.vault.SkillsDir(), "alpha", "SKILL.md"), "# canon\n")
+
+			removeFromRegistry(t, f.home, "acme", "tool")
+			So(os.RemoveAll(plugin), ShouldBeNil)
+
+			report := f.sync(t)
+
+			So(isStub(t, filepath.Join(claudeSkillsDir(f.home), "alpha")), ShouldBeFalse)
+			So(read(t, filepath.Join(claudeSkillsDir(f.home), "alpha", "SKILL.md")), ShouldEqual, "# canon\n")
+
+			for _, result := range report.Farm {
+				So(result.Action, ShouldNotEqual, engine.FarmStubbed)
+			}
+		})
+	})
+}
+
+func TestPluginFarmStubSymlinkNotReadAsSkill(t *testing.T) {
+	Convey("Given a symlink pointing at a stub", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeSkill(t, plugin, "alpha", "# alpha\n")
+
+		f.sync(t)
+
+		removeFromRegistry(t, f.home, "acme", "tool")
+		So(os.RemoveAll(plugin), ShouldBeNil)
+
+		f.sync(t)
+
+		stub := filepath.Join(claudeSkillsDir(f.home), "alpha")
+		So(isStub(t, stub), ShouldBeTrue)
+
+		So(os.Symlink(stub, filepath.Join(claudeSkillsDir(f.home), "helper")), ShouldBeNil)
+
+		f.sync(t)
+
+		entries, err := os.ReadDir(f.vault.SkillsDir())
+		So(err, ShouldBeNil)
+
+		Convey("When sync runs", func() {
+			_, helperErr := os.Stat(filepath.Join(f.vault.SkillsDir(), "helper", "SKILL.md"))
+
+			Convey("Then it never leaks into the canon", func() {
+				So(errors.Is(helperErr, fs.ErrNotExist), ShouldBeTrue)
+				So(entries, ShouldBeEmpty)
+			})
+		})
+	})
+}
+
+func TestPluginFarmRemoval(t *testing.T) {
+	Convey("Given a plugin whose cache is removed", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeSkill(t, plugin, "alpha", "# alpha\n")
+
+		f.sync(t)
+
+		want := pluginCurrentSkill(f, "alpha")
+
+		removeFromRegistry(t, f.home, "acme", "tool")
+
+		report := f.sync(t)
+
+		So(report.Farm, ShouldBeEmpty)
+		So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, want)
+		So(fsutil.Exists(filepath.Join(claudeSkillsDir(f.home), "alpha")), ShouldBeTrue)
+
+		So(os.RemoveAll(plugin), ShouldBeNil)
+
+		report = f.sync(t)
+
+		issues, err := f.engine.Doctor(t.Context())
+		So(err, ShouldBeNil)
+
+		Convey("When the cache disappears", func() {
+			Convey("Then each host gets a stub and doctor reports quarantine, not a broken link", func() {
+				So(report.Farm, ShouldHaveLength, 2)
+
+				for _, result := range report.Farm {
+					So(result.Action, ShouldEqual, engine.FarmStubbed)
+					So(result.Plugin, ShouldEqual, "acme/tool")
+					So(result.Count, ShouldEqual, 1)
+				}
+
+				for _, dir := range []string{claudeSkillsDir(f.home), openCodeSkillsDir(f.home)} {
+					info, err := os.Lstat(filepath.Join(dir, "alpha"))
+					So(err, ShouldBeNil)
+					So(info.Mode()&fs.ModeSymlink, ShouldEqual, fs.FileMode(0))
+					So(isStub(t, filepath.Join(dir, "alpha")), ShouldBeTrue)
+				}
+
+				So(hasIssue(issues, engine.SeverityError, "is quarantined"), ShouldBeTrue)
+				So(hasIssue(issues, engine.SeverityError, "broken symlink"), ShouldBeFalse)
+			})
+		})
+	})
+}
+
+func TestPluginFarmDryRun(t *testing.T) {
+	Convey("Given a dry run", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeSkill(t, plugin, "alpha", "# alpha\n")
+
+		report := f.run(t, engine.SyncOptions{DryRun: true})
+
+		_, claudeErr := os.Stat(claudeSkillsDir(f.home))
+		_, openErr := os.Stat(openCodeSkillsDir(f.home))
+
+		Convey("When it previews", func() {
+			Convey("Then no host dir is created", func() {
+				So(report.Farm, ShouldBeEmpty)
+				So(errors.Is(claudeErr, fs.ErrNotExist), ShouldBeTrue)
+				So(errors.Is(openErr, fs.ErrNotExist), ShouldBeTrue)
+			})
+		})
+	})
+}
+
+func TestPluginFarmSkipsOffAndDisabled(t *testing.T) {
+	Convey("Given farm gating", t, func() {
+		Convey("When a host has skills off, it is not farmed", func() {
+			t.Setenv("XDG_CONFIG_HOME", "")
+
+			f := newFixture(t)
+			f.emptyConfigs(t)
+
+			plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+			writeSkill(t, plugin, "alpha", "# alpha\n")
+
+			f.config.SetMode(agent.OpenCodeID, kind.Skills, config.ModeOff)
+
+			f.sync(t)
+
+			So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, pluginCurrentSkill(f, "alpha"))
+
+			_, openErr := os.Stat(openCodeSkillsDir(f.home))
+			So(errors.Is(openErr, fs.ErrNotExist), ShouldBeTrue)
+		})
+
+		Convey("When the skills kind is disabled, nothing is farmed", func() {
+			t.Setenv("XDG_CONFIG_HOME", "")
+
+			f := newFixture(t)
+			f.emptyConfigs(t)
+
+			plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+			writeSkill(t, plugin, "alpha", "# alpha\n")
+
+			f.config.SetKind(kind.Skills, config.ModeOff)
+
+			report := f.sync(t)
+
+			_, claudeErr := os.Stat(claudeSkillsDir(f.home))
+			_, openErr := os.Stat(openCodeSkillsDir(f.home))
+
+			So(report.Farm, ShouldBeEmpty)
+			So(errors.Is(claudeErr, fs.ErrNotExist), ShouldBeTrue)
+			So(errors.Is(openErr, fs.ErrNotExist), ShouldBeTrue)
+		})
+
+		Convey("When an opt-in host is not enabled, it is not farmed", func() {
+			t.Setenv("XDG_CONFIG_HOME", "")
+
+			f := newFixture(t)
+			f.emptyConfigs(t)
+
+			plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+			writeSkill(t, plugin, "alpha", "# alpha\n")
+
+			f.sync(t)
+
+			_, sharedErr := os.Stat(sharedSkillsDir(f.home))
+			So(errors.Is(sharedErr, fs.ErrNotExist), ShouldBeTrue)
+		})
+	})
+}
+
+func TestPluginFarmNoPruneOnLedgerError(t *testing.T) {
+	Convey("Given a broken ledger", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeSkill(t, plugin, "alpha", "# alpha\n")
+
+		f.sync(t)
+
+		linkBefore := farmLink(t, claudeSkillsDir(f.home), "alpha")
+
+		So(os.Remove(f.vault.PluginsLedgerPath()), ShouldBeNil)
+		So(os.MkdirAll(f.vault.PluginsLedgerPath(), 0o700), ShouldBeNil)
+
+		report := f.sync(t)
+
+		Convey("When sync runs", func() {
+			Convey("Then the farm does not prune and warns about the ledger", func() {
+				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, linkBefore)
+				So(farmLink(t, openCodeSkillsDir(f.home), "alpha"), ShouldEqual, linkBefore)
+				So(report.Farm, ShouldBeEmpty)
+				So(containsWarning(report.Warnings, "ledger"), ShouldBeTrue)
+			})
+		})
+	})
+}
+
+func TestPluginFarmSkipsTargetOutsideCache(t *testing.T) {
+	Convey("Given a plugin installed outside the cache", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		outside := filepath.Join(f.home, "elsewhere", "tool")
+		write(t, filepath.Join(outside, "skills", "alpha", "SKILL.md"), "# outside\n")
+		write(t, filepath.Join(outside, ".claude-plugin", "plugin.json"), `{"name": "tool", "version": "1.0.0"}`)
+
+		writeRegistry(t, f.home, map[string][]map[string]any{"tool@acme": {{
+			"scope": "user", "installPath": outside, "version": "1.0.0",
+		}}})
+
+		report := f.sync(t)
+
+		_, claudeErr := os.Stat(claudeSkillsDir(f.home))
+		_, openErr := os.Stat(openCodeSkillsDir(f.home))
+
+		entries, err := os.ReadDir(f.vault.SkillsDir())
+		So(err, ShouldBeNil)
+
+		Convey("When sync runs", func() {
+			Convey("Then the farm refuses outside-cache targets and leaks nothing", func() {
+				So(errors.Is(claudeErr, fs.ErrNotExist), ShouldBeTrue)
+				So(errors.Is(openErr, fs.ErrNotExist), ShouldBeTrue)
+				So(containsWarning(report.Warnings, "outside the plugin cache"), ShouldBeTrue)
+				So(entries, ShouldBeEmpty)
+			})
+		})
+	})
+}
+
+func TestPluginFarmSkipsSkillSymlinkedOutsideCache(t *testing.T) {
+	Convey("Given a plugin skill symlinked outside the cache", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeSkill(t, plugin, "alpha", "# alpha\n")
+
+		outside := filepath.Join(f.home, "notes", "helper")
+		write(t, filepath.Join(outside, "SKILL.md"), "# outside\n")
+
+		So(os.MkdirAll(filepath.Join(plugin, "skills"), 0o700), ShouldBeNil)
+		So(os.Symlink(outside, filepath.Join(plugin, "skills", "helper")), ShouldBeNil)
+
+		report := f.sync(t)
+
+		entries, err := os.ReadDir(f.vault.SkillsDir())
+		So(err, ShouldBeNil)
+
+		_, helperErr := os.Stat(filepath.Join(claudeSkillsDir(f.home), "helper"))
+
+		Convey("When sync runs", func() {
+			Convey("Then only the regular skill is farmed", func() {
+				So(report.Farm, ShouldHaveLength, 2)
+
+				for _, result := range report.Farm {
+					So(result.Action, ShouldEqual, engine.FarmLinked)
+					So(result.Count, ShouldEqual, 1)
+				}
+
+				So(errors.Is(helperErr, fs.ErrNotExist), ShouldBeTrue)
+				So(containsWarning(report.Warnings, "resolves outside the plugin cache"), ShouldBeTrue)
+				So(entries, ShouldBeEmpty)
+			})
+		})
+	})
+}
+
+func TestPluginFarmNoPruneOnUnreadableSkills(t *testing.T) {
+	Convey("Given unreadable plugin skills", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeSkill(t, plugin, "alpha", "# alpha\n")
+
+		f.sync(t)
+
+		linkBefore := farmLink(t, claudeSkillsDir(f.home), "alpha")
+
+		skillsPath := filepath.Join(plugin, "skills")
+		So(os.Chmod(skillsPath, 0o000), ShouldBeNil)
+
+		t.Cleanup(func() {
+			_ = os.Chmod(skillsPath, 0o700) //nolint:gosec // G302: restoring the directory mode needs the execute bit
+		})
+
+		report := f.sync(t)
+
+		Convey("When sync runs", func() {
+			Convey("Then it does not prune and warns", func() {
+				So(report.Farm, ShouldBeEmpty)
+				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, linkBefore)
+				So(farmLink(t, openCodeSkillsDir(f.home), "alpha"), ShouldEqual, linkBefore)
+				So(containsWarning(report.Warnings, "skills cannot be read"), ShouldBeTrue)
+			})
+		})
+	})
+}
+
+func TestPluginFarmGatesDirectionAndKinds(t *testing.T) {
+	Convey("Given a farmed plugin and a newer cache", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeSkill(t, plugin, "alpha", "# alpha\n")
+
+		f.sync(t)
+
+		linkBefore := farmLink(t, claudeSkillsDir(f.home), "alpha")
+
+		pluginTree(t, f.home, "acme", "tool", "2.0.0")
+
+		_, err := f.engine.Sync(t.Context(), engine.SyncOptions{Direction: config.ModePull})
+		So(err, ShouldBeNil)
+
+		report := f.run(t, engine.SyncOptions{Kinds: []kind.ID{kind.MCP}})
+
+		Convey("When pull and a narrowed kind set run", func() {
+			Convey("Then neither touches the farm", func() {
+				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, linkBefore)
+				So(report.Farm, ShouldBeEmpty)
+				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, linkBefore)
+			})
+		})
+	})
 }

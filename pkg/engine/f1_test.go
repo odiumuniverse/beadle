@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/config"
@@ -40,8 +40,13 @@ func bareFarmEngine(t *testing.T) *Engine {
 
 	v := vault.New(filepath.Join(t.TempDir(), "vault"))
 
-	require.NoError(t, os.MkdirAll(v.SkillsDir(), 0o700))
-	require.NoError(t, os.MkdirAll(v.PluginsDir(), 0o700))
+	if err := os.MkdirAll(v.SkillsDir(), 0o700); err != nil {
+		t.Fatalf("mkdir skills: %v", err)
+	}
+
+	if err := os.MkdirAll(v.PluginsDir(), 0o700); err != nil {
+		t.Fatalf("mkdir plugins: %v", err)
+	}
 
 	return &Engine{vault: v, config: config.Default()}
 }
@@ -64,176 +69,13 @@ func farmPlanFor(skills ...string) farmPlan {
 	}
 }
 
-//nolint:paralleltest // the test swaps a package-level seam
-func TestFarmReportsUnsupportedSymlinks(t *testing.T) {
-	e := bareFarmEngine(t)
-
-	failingDir := filepath.Join(t.TempDir(), "claude", "skills")
-	otherDir := filepath.Join(t.TempDir(), "opencode", "skills")
-
-	require.NoError(t, os.MkdirAll(failingDir, 0o700))
-	require.NoError(t, os.MkdirAll(otherDir, 0o700))
-
-	prunable := filepath.Join(e.vault.PluginsDir(), "acme", "tool", "current", "skills", "gone")
-	require.NoError(t, os.Symlink(prunable, filepath.Join(failingDir, "gone")))
-
-	calls := map[string]int{}
-
-	stubReplaceSymlink(t, func(path, target string) error {
-		dir := filepath.Dir(path)
-		calls[dir]++
-
-		if dir == failingDir {
-			return fmt.Errorf("create temp symlink: %w", fsutil.ErrSymlinksUnsupported)
-		}
-
-		return os.Symlink(target, path)
-	})
-
-	plan := farmPlanFor("alpha", "beta")
-
-	results, warns := e.farmAgentSkills(agent.ClaudeCodeID, failingDir, plan)
-	require.Empty(t, warns)
-	require.Equal(t, []FarmResult{{
-		Agent:  agent.ClaudeCodeID,
-		Action: FarmSkipped,
-		Note:   "symlinks are not supported in " + failingDir + "; a copy fallback is intentionally not performed",
-	}}, results)
-	require.Equal(t, 1, calls[failingDir], "the farm must stop after the first unsupported link")
-
-	entries, err := os.ReadDir(failingDir)
-	require.NoError(t, err)
-	require.Len(t, entries, 1, "no farm entries may be created in an unsupported directory")
-	require.Equal(t, "gone", entries[0].Name())
-
-	link, err := os.Readlink(filepath.Join(failingDir, "gone"))
-	require.NoError(t, err)
-	require.Equal(t, prunable, link, "prune must not run in an unsupported directory")
-
-	probes, err := filepath.Glob(filepath.Join(failingDir, ".beadle-probe*"))
-	require.NoError(t, err)
-	require.Empty(t, probes, "the farm must leave no temp artifacts")
-
-	otherResults, otherWarns := e.farmAgentSkills(agent.OpenCodeID, otherDir, plan)
-	require.Empty(t, otherWarns)
-	require.Equal(t, []FarmResult{{
-		Agent:  agent.OpenCodeID,
-		Plugin: "acme/tool",
-		Action: FarmLinked,
-		Count:  2,
-	}}, otherResults)
-
-	canon, err := os.ReadDir(e.vault.SkillsDir())
-	require.NoError(t, err)
-	require.Empty(t, canon, "the vault canon must not be touched")
-}
-
-//nolint:paralleltest // the test swaps a package-level seam
-func TestFarmOrdinaryErrorsStayWarnings(t *testing.T) {
-	e := bareFarmEngine(t)
-
-	dir := filepath.Join(t.TempDir(), "claude", "skills")
-	require.NoError(t, os.MkdirAll(dir, 0o700))
-
-	calls := 0
-
-	stubReplaceSymlink(t, func(_, _ string) error {
-		calls++
-
-		return fmt.Errorf("create temp symlink: %w", fs.ErrPermission)
-	})
-
-	results, warns := e.farmAgentSkills(agent.ClaudeCodeID, dir, farmPlanFor("alpha", "beta"))
-
-	require.Empty(t, results)
-	require.Len(t, warns, 2)
-	require.Equal(t, 2, calls)
-	require.NotContains(t, strings.Join(warns, " "), "symlinks are not supported")
-	require.Contains(t, warns[0], "plugin farm: ")
-
-	entries, err := os.ReadDir(dir)
-	require.NoError(t, err)
-	require.Empty(t, entries)
-}
-
-func TestFarmQuietWithoutWork(t *testing.T) {
-	t.Parallel()
-
-	e := bareFarmEngine(t)
-
-	results, warns := e.farmAgentSkills(agent.ClaudeCodeID, filepath.Join(t.TempDir(), "missing", "skills"), farmPlanFor())
-	require.Empty(t, results)
-	require.Empty(t, warns)
-}
-
-//nolint:paralleltest // the test swaps a package-level seam
-func TestDoctorReportsUnsupportedSymlinks(t *testing.T) {
-	home := t.TempDir()
-	v := vault.New(filepath.Join(t.TempDir(), "vault"))
-	require.NoError(t, v.Init())
-
-	cfg, err := config.Load(v.ConfigPath())
-	require.NoError(t, err)
-	cfg.Enable(agent.ClaudeCodeID)
-	require.NoError(t, cfg.Save(v.ConfigPath()))
-
-	e, err := New(v, cfg, agent.All(home, t.TempDir()), WithHome(home))
-	require.NoError(t, err)
-
-	cache := filepath.Join(home, ".claude", "plugins", "cache", "acme", "tool", "1.0.0")
-	skillDir := filepath.Join(cache, farmSkillsDir, "alpha")
-	require.NoError(t, os.MkdirAll(skillDir, 0o700))
-	require.NoError(t, fsutil.WriteFileAtomic(filepath.Join(skillDir, farmSkillFile), []byte("# alpha\n"), 0o600))
-
-	claude := agent.ByID(e.Agents(), agent.ClaudeCodeID)
-	require.NotNil(t, claude)
-
-	skillsDir := claude.Surface(kind.Skills).Path()
-	require.NoError(t, os.MkdirAll(skillsDir, 0o700))
-
-	require.NoError(t, os.MkdirAll(v.PluginsDir(), 0o700))
-
-	ledger := pluginLedger{Version: pluginLedgerVersion, Plugins: map[string]pluginLedgerRec{
-		"acme/tool": {Version: "1.0.0", Target: cache},
-	}}
-	require.NoError(t, ledger.save(v.PluginsLedgerPath()))
-
-	stubHostFSType(t, func(string) (string, error) { return "exfat", nil })
-
-	issues, err := e.Doctor(t.Context())
-	require.NoError(t, err)
-
-	var warned []Issue
-
-	for _, issue := range issues {
-		if strings.Contains(issue.Message, "symlinks are not supported") {
-			warned = append(warned, issue)
-		}
-	}
-
-	require.Len(t, warned, 1)
-	require.Equal(t, SeverityWarn, warned[0].Severity)
-	require.Equal(t, agent.ClaudeCodeID, warned[0].Agent)
-	require.Equal(t, kind.Skills, warned[0].Kind)
-	require.Contains(t, warned[0].Message, "symlinks are not supported in ~/.claude/skills; 1 plugin skill(s) are not presented")
-
-	stubHostFSType(t, func(string) (string, error) { return "smb", nil })
-	require.NotContains(t, issueMessages(t, e), "symlinks are not supported")
-
-	stubHostFSType(t, func(string) (string, error) { return "", fs.ErrPermission })
-	require.NotContains(t, issueMessages(t, e), "symlinks are not supported")
-
-	require.NoError(t, os.RemoveAll(skillsDir))
-
-	stubHostFSType(t, func(string) (string, error) { return "exfat", nil })
-	require.NotContains(t, issueMessages(t, e), "symlinks are not supported")
-}
-
 func issueMessages(t *testing.T, e *Engine) string {
 	t.Helper()
 
 	issues, err := e.Doctor(t.Context())
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
 
 	messages := make([]string, 0, len(issues))
 
@@ -242,4 +84,198 @@ func issueMessages(t *testing.T, e *Engine) string {
 	}
 
 	return strings.Join(messages, "\n")
+}
+
+//nolint:paralleltest // the test swaps a package-level seam
+func TestFarmReportsUnsupportedSymlinks(t *testing.T) {
+	Convey("Given a farm directory where symlinks are unsupported", t, func() {
+		e := bareFarmEngine(t)
+
+		failingDir := filepath.Join(t.TempDir(), "claude", "skills")
+		otherDir := filepath.Join(t.TempDir(), "opencode", "skills")
+
+		So(os.MkdirAll(failingDir, 0o700), ShouldBeNil)
+		So(os.MkdirAll(otherDir, 0o700), ShouldBeNil)
+
+		prunable := filepath.Join(e.vault.PluginsDir(), "acme", "tool", "current", "skills", "gone")
+		So(os.Symlink(prunable, filepath.Join(failingDir, "gone")), ShouldBeNil)
+
+		calls := map[string]int{}
+
+		stubReplaceSymlink(t, func(path, target string) error {
+			dir := filepath.Dir(path)
+			calls[dir]++
+
+			if dir == failingDir {
+				return fmt.Errorf("create temp symlink: %w", fsutil.ErrSymlinksUnsupported)
+			}
+
+			return os.Symlink(target, path)
+		})
+
+		plan := farmPlanFor("alpha", "beta")
+
+		results, warns := e.farmAgentSkills(agent.ClaudeCodeID, failingDir, plan)
+
+		entries, err := os.ReadDir(failingDir)
+		So(err, ShouldBeNil)
+
+		link, linkErr := os.Readlink(filepath.Join(failingDir, "gone"))
+		So(linkErr, ShouldBeNil)
+
+		probes, err := filepath.Glob(filepath.Join(failingDir, ".beadle-probe*"))
+		So(err, ShouldBeNil)
+
+		otherResults, otherWarns := e.farmAgentSkills(agent.OpenCodeID, otherDir, plan)
+
+		canon, err := os.ReadDir(e.vault.SkillsDir())
+		So(err, ShouldBeNil)
+
+		Convey("When the farm runs on both directories", func() {
+			Convey("Then the unsupported dir is skipped once, prunes nothing and the other dir links", func() {
+				So(warns, ShouldBeEmpty)
+				So(results, ShouldResemble, []FarmResult{{
+					Agent:  agent.ClaudeCodeID,
+					Action: FarmSkipped,
+					Note:   "symlinks are not supported in " + failingDir + "; a copy fallback is intentionally not performed",
+				}})
+				So(calls[failingDir], ShouldEqual, 1)
+
+				So(entries, ShouldHaveLength, 1)
+				So(entries[0].Name(), ShouldEqual, "gone")
+				So(link, ShouldEqual, prunable)
+				So(probes, ShouldBeEmpty)
+
+				So(otherWarns, ShouldBeEmpty)
+				So(otherResults, ShouldResemble, []FarmResult{{
+					Agent:  agent.OpenCodeID,
+					Plugin: "acme/tool",
+					Action: FarmLinked,
+					Count:  2,
+				}})
+
+				So(canon, ShouldBeEmpty)
+			})
+		})
+	})
+}
+
+//nolint:paralleltest // the test swaps a package-level seam
+func TestFarmOrdinaryErrorsStayWarnings(t *testing.T) {
+	Convey("Given a farm directory with an ordinary link error", t, func() {
+		e := bareFarmEngine(t)
+
+		dir := filepath.Join(t.TempDir(), "claude", "skills")
+		So(os.MkdirAll(dir, 0o700), ShouldBeNil)
+
+		calls := 0
+
+		stubReplaceSymlink(t, func(_, _ string) error {
+			calls++
+
+			return fmt.Errorf("create temp symlink: %w", fs.ErrPermission)
+		})
+
+		results, warns := e.farmAgentSkills(agent.ClaudeCodeID, dir, farmPlanFor("alpha", "beta"))
+
+		entries, err := os.ReadDir(dir)
+		So(err, ShouldBeNil)
+
+		Convey("When the farm runs", func() {
+			Convey("Then both failures are warnings and nothing is created", func() {
+				So(results, ShouldBeEmpty)
+				So(warns, ShouldHaveLength, 2)
+				So(calls, ShouldEqual, 2)
+				So(strings.Join(warns, " "), ShouldNotContainSubstring, "symlinks are not supported")
+				So(warns[0], ShouldContainSubstring, "plugin farm: ")
+
+				So(entries, ShouldBeEmpty)
+			})
+		})
+	})
+}
+
+func TestFarmQuietWithoutWork(t *testing.T) {
+	Convey("Given a farm with no work", t, func() {
+		e := bareFarmEngine(t)
+
+		Convey("When it runs against a missing directory", func() {
+			results, warns := e.farmAgentSkills(agent.ClaudeCodeID, filepath.Join(t.TempDir(), "missing", "skills"), farmPlanFor())
+
+			Convey("Then it is quiet", func() {
+				So(results, ShouldBeEmpty)
+				So(warns, ShouldBeEmpty)
+			})
+		})
+	})
+}
+
+//nolint:paralleltest // the test swaps a package-level seam
+func TestDoctorReportsUnsupportedSymlinks(t *testing.T) {
+	Convey("Given a vault with a plugin skill on a foreign filesystem", t, func() {
+		home := t.TempDir()
+		v := vault.New(filepath.Join(t.TempDir(), "vault"))
+		So(v.Init(), ShouldBeNil)
+
+		cfg, err := config.Load(v.ConfigPath())
+		So(err, ShouldBeNil)
+
+		cfg.Enable(agent.ClaudeCodeID)
+		So(cfg.Save(v.ConfigPath()), ShouldBeNil)
+
+		e, err := New(v, cfg, agent.All(home, t.TempDir()), WithHome(home))
+		So(err, ShouldBeNil)
+
+		cache := filepath.Join(home, ".claude", "plugins", "cache", "acme", "tool", "1.0.0")
+		skillDir := filepath.Join(cache, farmSkillsDir, "alpha")
+		So(os.MkdirAll(skillDir, 0o700), ShouldBeNil)
+		So(fsutil.WriteFileAtomic(filepath.Join(skillDir, farmSkillFile), []byte("# alpha\n"), 0o600), ShouldBeNil)
+
+		claude := agent.ByID(e.Agents(), agent.ClaudeCodeID)
+		So(claude, ShouldNotBeNil)
+
+		skillsDir := claude.Surface(kind.Skills).Path()
+		So(os.MkdirAll(skillsDir, 0o700), ShouldBeNil)
+
+		So(os.MkdirAll(v.PluginsDir(), 0o700), ShouldBeNil)
+
+		ledger := pluginLedger{Version: pluginLedgerVersion, Plugins: map[string]pluginLedgerRec{
+			"acme/tool": {Version: "1.0.0", Target: cache},
+		}}
+		So(ledger.save(v.PluginsLedgerPath()), ShouldBeNil)
+
+		stubHostFSType(t, func(string) (string, error) { return "exfat", nil })
+
+		issues, err := e.Doctor(t.Context())
+		So(err, ShouldBeNil)
+
+		var warned []Issue
+
+		for _, issue := range issues {
+			if strings.Contains(issue.Message, "symlinks are not supported") {
+				warned = append(warned, issue)
+			}
+		}
+
+		Convey("When doctor runs on different filesystem types", func() {
+			Convey("Then only exfat warns, and only while the skills dir exists", func() {
+				So(warned, ShouldHaveLength, 1)
+				So(warned[0].Severity, ShouldEqual, SeverityWarn)
+				So(warned[0].Agent, ShouldEqual, agent.ClaudeCodeID)
+				So(warned[0].Kind, ShouldEqual, kind.Skills)
+				So(warned[0].Message, ShouldContainSubstring, "symlinks are not supported in ~/.claude/skills; 1 plugin skill(s) are not presented")
+
+				stubHostFSType(t, func(string) (string, error) { return "smb", nil })
+				So(issueMessages(t, e), ShouldNotContainSubstring, "symlinks are not supported")
+
+				stubHostFSType(t, func(string) (string, error) { return "", fs.ErrPermission })
+				So(issueMessages(t, e), ShouldNotContainSubstring, "symlinks are not supported")
+
+				So(os.RemoveAll(skillsDir), ShouldBeNil)
+
+				stubHostFSType(t, func(string) (string, error) { return "exfat", nil })
+				So(issueMessages(t, e), ShouldNotContainSubstring, "symlinks are not supported")
+			})
+		})
+	})
 }

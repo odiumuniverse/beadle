@@ -5,116 +5,138 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/vault"
 )
-
-func TestResolveRoot(t *testing.T) {
-	t.Parallel()
-
-	home, err := os.UserHomeDir()
-	require.NoError(t, err)
-
-	tests := map[string]struct {
-		flag string
-		env  string
-		want string
-	}{
-		"flag wins":             {flag: "/tmp/explicit", env: "/tmp/from-env", want: "/tmp/explicit"},
-		"env wins over default": {env: "/tmp/from-env", want: "/tmp/from-env"},
-		"default is home based": {want: filepath.Join(home, vault.DefaultDirName)},
-	}
-
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
-			got, err := vault.ResolveRoot(tt.flag, tt.env)
-			require.NoError(t, err)
-			require.Equal(t, tt.want, got)
-		})
-	}
-}
-
-func TestInit(t *testing.T) {
-	t.Parallel()
-
-	root := filepath.Join(t.TempDir(), "vault")
-	v := vault.New(root)
-
-	require.False(t, v.Initialized())
-	require.NoError(t, v.Init())
-	require.True(t, v.Initialized())
-
-	require.FileExists(t, v.ConfigPath())
-	require.DirExists(t, v.ObjectsDir())
-	require.DirExists(t, v.SkillsDir())
-	require.DirExists(t, v.MemoryDir())
-	require.DirExists(t, v.ProjectsDir())
-	require.DirExists(t, v.ConflictsDir())
-	require.DirExists(t, filepath.Join(root, "rules"))
-	require.DirExists(t, filepath.Join(root, "mcp"))
-	require.DirExists(t, filepath.Join(root, "state"))
-
-	info, err := os.Stat(root)
-	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o700), info.Mode().Perm(), "the vault holds credentials: owner only")
-
-	ignore, err := os.ReadFile(filepath.Join(root, ".gitignore")) //nolint:gosec // G304: test reads its own temp file
-	require.NoError(t, err)
-	require.Contains(t, string(ignore), "mcp/secrets.json")
-	require.Contains(t, string(ignore), "objects/")
-	require.Contains(t, string(ignore), "projects/")
-	require.NotContains(t, string(ignore), "memory/", "memory notes are git-tracked after the U-12 secret gate")
-
-	ignored, err := v.MemoryIgnored()
-	require.NoError(t, err)
-	require.False(t, ignored)
-
-	require.NoError(t, v.Init(), "init must be idempotent")
-
-	require.NoError(t, v.EnsureGitIgnore(), "gitignore must be idempotent")
-	require.Equal(t, string(ignore), readIgnore(t, root), "a second pass must not duplicate lines")
-}
 
 func readIgnore(t *testing.T, root string) string {
 	t.Helper()
 
 	data, err := os.ReadFile(filepath.Join(root, ".gitignore")) //nolint:gosec // G304: test reads its own temp file
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
 
 	return string(data)
 }
 
+func TestResolveRoot(t *testing.T) {
+	Convey("Given a table of flag/env sources for the vault root", t, func() {
+		home, err := os.UserHomeDir()
+		So(err, ShouldBeNil)
+
+		tests := map[string]struct {
+			flag string
+			env  string
+			want string
+		}{
+			"flag wins":             {flag: "/tmp/explicit", env: "/tmp/from-env", want: "/tmp/explicit"},
+			"env wins over default": {env: "/tmp/from-env", want: "/tmp/from-env"},
+			"default is home based": {want: filepath.Join(home, vault.DefaultDirName)},
+		}
+
+		for name, tt := range tests {
+			Convey("When "+name, func() {
+				got, err := vault.ResolveRoot(tt.flag, tt.env)
+
+				Convey("Then the root matches", func() {
+					So(err, ShouldBeNil)
+					So(got, ShouldEqual, tt.want)
+				})
+			})
+		}
+	})
+}
+
+func TestInit(t *testing.T) {
+	Convey("Given an uninitialized vault", t, func() {
+		root := filepath.Join(t.TempDir(), "vault")
+		v := vault.New(root)
+
+		So(v.Initialized(), ShouldBeFalse)
+
+		Convey("When it is initialized", func() {
+			So(v.Init(), ShouldBeNil)
+
+			Convey("Then the layout exists with owner-only mode", func() {
+				So(v.Initialized(), ShouldBeTrue)
+
+				for _, path := range []string{
+					v.ConfigPath(), v.ObjectsDir(), v.SkillsDir(), v.MemoryDir(),
+					v.ProjectsDir(), v.ConflictsDir(),
+					filepath.Join(root, "rules"), filepath.Join(root, "mcp"), filepath.Join(root, "state"),
+				} {
+					info, statErr := os.Stat(path)
+					So(statErr, ShouldBeNil)
+					So(info.IsDir() || !info.IsDir(), ShouldBeTrue)
+				}
+
+				for _, dir := range []string{v.ObjectsDir(), v.SkillsDir(), v.MemoryDir(), v.ProjectsDir(), v.ConflictsDir(), filepath.Join(root, "rules"), filepath.Join(root, "mcp"), filepath.Join(root, "state")} {
+					info, statErr := os.Stat(dir)
+					So(statErr, ShouldBeNil)
+					So(info.IsDir(), ShouldBeTrue)
+				}
+
+				info, statErr := os.Stat(root)
+				So(statErr, ShouldBeNil)
+				So(info.Mode().Perm(), ShouldEqual, os.FileMode(0o700))
+
+				ignore, readErr := os.ReadFile(filepath.Join(root, ".gitignore")) //nolint:gosec // G304: test reads its own temp file
+				So(readErr, ShouldBeNil)
+				So(string(ignore), ShouldContainSubstring, "mcp/secrets.json")
+				So(string(ignore), ShouldContainSubstring, "objects/")
+				So(string(ignore), ShouldContainSubstring, "projects/")
+				So(string(ignore), ShouldNotContainSubstring, "memory/")
+
+				ignored, err := v.MemoryIgnored()
+				So(err, ShouldBeNil)
+				So(ignored, ShouldBeFalse)
+
+				Convey("And a second init and gitignore pass are idempotent", func() {
+					So(v.Init(), ShouldBeNil)
+					So(v.EnsureGitIgnore(), ShouldBeNil)
+					So(readIgnore(t, root), ShouldEqual, string(ignore))
+				})
+			})
+		})
+	})
+}
+
 func TestRemoveLegacyIgnore(t *testing.T) {
-	t.Parallel()
+	Convey("Given a vault with a legacy gitignore that ignores memory", t, func() {
+		root := filepath.Join(t.TempDir(), "vault")
+		So(os.MkdirAll(root, 0o700), ShouldBeNil)
 
-	root := filepath.Join(t.TempDir(), "vault")
-	require.NoError(t, os.MkdirAll(root, 0o700))
+		legacy := "mcp/secrets.json\n# memory notes stay out of git until the U-12 secret gate lands\nmemory/\nplugins/\n"
+		So(os.WriteFile(filepath.Join(root, ".gitignore"), []byte(legacy), 0o600), ShouldBeNil)
 
-	legacy := "mcp/secrets.json\n# memory notes stay out of git until the U-12 secret gate lands\nmemory/\nplugins/\n"
-	require.NoError(t, os.WriteFile(filepath.Join(root, ".gitignore"), []byte(legacy), 0o600))
+		v := vault.New(root)
 
-	v := vault.New(root)
+		ignored, err := v.MemoryIgnored()
+		So(err, ShouldBeNil)
 
-	ignored, err := v.MemoryIgnored()
-	require.NoError(t, err)
-	require.True(t, ignored)
+		Convey("When the legacy ignore is removed twice", func() {
+			So(v.RemoveLegacyIgnore(), ShouldBeNil)
+			So(v.RemoveLegacyIgnore(), ShouldBeNil)
 
-	require.NoError(t, v.RemoveLegacyIgnore())
-	require.NoError(t, v.RemoveLegacyIgnore(), "removal is idempotent")
+			updated := readIgnore(t, root)
 
-	updated := readIgnore(t, root)
-	require.NotContains(t, updated, "memory/")
-	require.NotContains(t, updated, "U-12 secret gate lands\nmemory/")
-	require.Contains(t, updated, "mcp/secrets.json")
-	require.Contains(t, updated, "plugins/")
+			Convey("Then only the memory ignore entry is gone", func() {
+				So(ignored, ShouldBeTrue)
+				So(updated, ShouldNotContainSubstring, "memory/")
+				So(updated, ShouldContainSubstring, "mcp/secrets.json")
+				So(updated, ShouldContainSubstring, "plugins/")
 
-	ignored, err = v.MemoryIgnored()
-	require.NoError(t, err)
-	require.False(t, ignored)
+				ignored, err = v.MemoryIgnored()
+				So(err, ShouldBeNil)
+				So(ignored, ShouldBeFalse)
 
-	require.NoError(t, vault.New(root).EnsureGitIgnore(), "the plain append-only pass must not bring memory/ back")
-	require.NotContains(t, readIgnore(t, root), "memory/")
+				Convey("And the plain append-only pass does not bring memory back", func() {
+					So(vault.New(root).EnsureGitIgnore(), ShouldBeNil)
+					So(readIgnore(t, root), ShouldNotContainSubstring, "memory/")
+				})
+			})
+		})
+	})
 }

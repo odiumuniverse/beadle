@@ -1,11 +1,13 @@
 package engine_test
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/engine"
 	"github.com/odiumuniverse/beadle/pkg/kind"
@@ -21,223 +23,292 @@ func quarantinePlugin(t *testing.T, f *fixture) {
 	plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
 	writeSkill(t, plugin, "alpha", "# alpha\n")
 
-	require.Len(t, f.sync(t).Farm, 2)
+	if len(f.sync(t).Farm) != 2 {
+		t.Fatal("expected two farm results")
+	}
 
 	removeFromRegistry(t, f.home, "acme", "tool")
-	require.NoError(t, os.RemoveAll(plugin))
+
+	if err := os.RemoveAll(plugin); err != nil {
+		t.Fatalf("remove plugin: %v", err)
+	}
 
 	f.sync(t)
 
-	require.True(t, isStub(t, filepath.Join(claudeSkillsDir(f.home), "alpha")))
+	if !isStub(t, filepath.Join(claudeSkillsDir(f.home), "alpha")) {
+		t.Fatal("expected a stub after quarantine")
+	}
 }
 
 func TestHealRemovesQuarantine(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a quarantined plugin", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
+		f := newFixture(t)
+		f.emptyConfigs(t)
 
-	quarantinePlugin(t, f)
+		quarantinePlugin(t, f)
 
-	results, err := f.engine.Heal(t.Context(), false)
-	require.NoError(t, err)
-	require.Len(t, results, 1)
-	require.Equal(t, "acme/tool", results[0].Key)
-	require.Equal(t, 2, results[0].Stubs)
-	require.Equal(t, 1, results[0].Retired)
-	require.Empty(t, results[0].Note)
+		Convey("When heal runs twice", func() {
+			results, err := f.engine.Heal(t.Context(), false)
+			So(err, ShouldBeNil)
 
-	require.NoDirExists(t, filepath.Join(claudeSkillsDir(f.home), "alpha"))
-	require.NoDirExists(t, filepath.Join(openCodeSkillsDir(f.home), "alpha"))
-	require.NoDirExists(t, filepath.Join(f.vault.PluginsDir(), "quarantine"))
+			before := read(t, f.vault.PluginsLedgerPath())
 
-	rec := ledgerRecord(t, f, "acme/tool")
-	require.True(t, rec.QuarantinedAt.IsZero())
-	require.False(t, rec.RetiredAt.IsZero())
-	require.Empty(t, rec.Target)
+			resultsAgain, err := f.engine.Heal(t.Context(), false)
+			So(err, ShouldBeNil)
 
-	results, err = f.engine.Heal(t.Context(), false)
-	require.NoError(t, err)
-	require.Empty(t, results)
+			report := f.sync(t)
 
-	before := read(t, f.vault.PluginsLedgerPath())
+			rec := ledgerRecord(t, f, "acme/tool")
 
-	report := f.sync(t)
-	require.Empty(t, report.Farm)
-	require.Empty(t, report.Plugins, "a retired record is silent")
-	require.Equal(t, before, read(t, f.vault.PluginsLedgerPath()), "a retired record stays retired")
-	require.NoDirExists(t, filepath.Join(f.vault.PluginsDir(), "quarantine"))
+			Convey("Then the stubs and quarantine are removed and the record retired", func() {
+				So(results, ShouldHaveLength, 1)
+				So(results[0].Key, ShouldEqual, "acme/tool")
+				So(results[0].Stubs, ShouldEqual, 2)
+				So(results[0].Retired, ShouldEqual, 1)
+				So(results[0].Note, ShouldBeEmpty)
+
+				for _, dir := range []string{
+					filepath.Join(claudeSkillsDir(f.home), "alpha"),
+					filepath.Join(openCodeSkillsDir(f.home), "alpha"),
+					filepath.Join(f.vault.PluginsDir(), "quarantine"),
+				} {
+					_, statErr := os.Stat(dir)
+					So(errors.Is(statErr, fs.ErrNotExist), ShouldBeTrue)
+				}
+
+				So(rec.QuarantinedAt.IsZero(), ShouldBeTrue)
+				So(rec.RetiredAt.IsZero(), ShouldBeFalse)
+				So(rec.Target, ShouldBeEmpty)
+
+				So(resultsAgain, ShouldBeEmpty)
+				So(report.Farm, ShouldBeEmpty)
+				So(report.Plugins, ShouldBeEmpty)
+				So(read(t, f.vault.PluginsLedgerPath()), ShouldEqual, before)
+			})
+		})
+	})
 }
 
 func TestHealReportsCleanedArtifactOnly(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a quarantined plugin whose stubs are already gone", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
+		f := newFixture(t)
+		f.emptyConfigs(t)
 
-	quarantinePlugin(t, f)
+		quarantinePlugin(t, f)
 
-	require.NoError(t, os.RemoveAll(filepath.Join(claudeSkillsDir(f.home), "alpha")))
-	require.NoError(t, os.RemoveAll(filepath.Join(openCodeSkillsDir(f.home), "alpha")))
+		So(os.RemoveAll(filepath.Join(claudeSkillsDir(f.home), "alpha")), ShouldBeNil)
+		So(os.RemoveAll(filepath.Join(openCodeSkillsDir(f.home), "alpha")), ShouldBeNil)
 
-	results, err := f.engine.Heal(t.Context(), false)
-	require.NoError(t, err)
-	require.Len(t, results, 1)
-	require.Equal(t, "acme/tool", results[0].Key)
-	require.Zero(t, results[0].Stubs)
-	require.Equal(t, 1, results[0].Cleaned, "dropping the quarantine artifact is real work")
+		Convey("When heal runs", func() {
+			results, err := f.engine.Heal(t.Context(), false)
+			So(err, ShouldBeNil)
 
-	results, err = f.engine.Heal(t.Context(), false)
-	require.NoError(t, err)
-	require.Empty(t, results)
+			resultsAgain, err := f.engine.Heal(t.Context(), false)
+			So(err, ShouldBeNil)
+
+			Convey("Then only the cleaned artifact counts as work", func() {
+				So(results, ShouldHaveLength, 1)
+				So(results[0].Key, ShouldEqual, "acme/tool")
+				So(results[0].Stubs, ShouldEqual, 0)
+				So(results[0].Cleaned, ShouldEqual, 1)
+
+				So(resultsAgain, ShouldBeEmpty)
+			})
+		})
+	})
 }
 
 func TestHealRetiresCleanRecord(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a quarantined plugin with no stubs and no artifact", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
+		f := newFixture(t)
+		f.emptyConfigs(t)
 
-	quarantinePlugin(t, f)
+		quarantinePlugin(t, f)
 
-	require.NoError(t, os.RemoveAll(filepath.Join(claudeSkillsDir(f.home), "alpha")))
-	require.NoError(t, os.RemoveAll(filepath.Join(openCodeSkillsDir(f.home), "alpha")))
+		So(os.RemoveAll(filepath.Join(claudeSkillsDir(f.home), "alpha")), ShouldBeNil)
+		So(os.RemoveAll(filepath.Join(openCodeSkillsDir(f.home), "alpha")), ShouldBeNil)
+		So(os.Remove(quarantineCurrent(f, "acme", "tool")), ShouldBeNil)
 
-	quarantine := quarantineCurrent(f, "acme", "tool")
-	require.NoError(t, os.Remove(quarantine))
+		before := read(t, f.vault.PluginsLedgerPath())
 
-	before := read(t, f.vault.PluginsLedgerPath())
+		Convey("When heal runs dry then real", func() {
+			results, err := f.engine.Heal(t.Context(), true)
+			So(err, ShouldBeNil)
 
-	results, err := f.engine.Heal(t.Context(), true)
-	require.NoError(t, err)
-	require.Len(t, results, 1)
-	require.Equal(t, 1, results[0].Retired, "a dry run predicts the retire")
-	require.Zero(t, results[0].Stubs)
-	require.Zero(t, results[0].Cleaned)
-	require.Equal(t, before, read(t, f.vault.PluginsLedgerPath()), "a dry run writes nothing")
+			So(results, ShouldHaveLength, 1)
+			So(results[0].Retired, ShouldEqual, 1)
+			So(results[0].Stubs, ShouldEqual, 0)
+			So(results[0].Cleaned, ShouldEqual, 0)
+			So(read(t, f.vault.PluginsLedgerPath()), ShouldEqual, before)
+			resultsReal, err := f.engine.Heal(t.Context(), false)
+			So(err, ShouldBeNil)
 
-	results, err = f.engine.Heal(t.Context(), false)
-	require.NoError(t, err)
-	require.Len(t, results, 1)
-	require.Equal(t, 1, results[0].Retired, "retiring a clean record is real work")
+			rec := ledgerRecord(t, f, "acme/tool")
 
-	rec := ledgerRecord(t, f, "acme/tool")
-	require.True(t, rec.QuarantinedAt.IsZero())
-	require.False(t, rec.RetiredAt.IsZero())
+			resultsAgain, err := f.engine.Heal(t.Context(), false)
+			So(err, ShouldBeNil)
 
-	results, err = f.engine.Heal(t.Context(), false)
-	require.NoError(t, err)
-	require.Empty(t, results, "a retired record is silent")
+			Convey("Then the real run retires the clean record and a retired record is silent", func() {
+				So(resultsReal, ShouldHaveLength, 1)
+				So(resultsReal[0].Retired, ShouldEqual, 1)
+
+				So(rec.QuarantinedAt.IsZero(), ShouldBeTrue)
+				So(rec.RetiredAt.IsZero(), ShouldBeFalse)
+
+				So(resultsAgain, ShouldBeEmpty)
+			})
+		})
+	})
 }
 
 func TestHealDryRun(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a quarantined plugin", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
+		f := newFixture(t)
+		f.emptyConfigs(t)
 
-	quarantinePlugin(t, f)
+		quarantinePlugin(t, f)
 
-	before := read(t, f.vault.PluginsLedgerPath())
+		before := read(t, f.vault.PluginsLedgerPath())
 
-	results, err := f.engine.Heal(t.Context(), true)
-	require.NoError(t, err)
-	require.Len(t, results, 1)
-	require.Equal(t, 2, results[0].Stubs)
-	require.Equal(t, 1, results[0].Retired, "a dry run predicts the retire")
+		Convey("When heal runs as a dry run", func() {
+			results, err := f.engine.Heal(t.Context(), true)
+			So(err, ShouldBeNil)
 
-	require.True(t, isStub(t, filepath.Join(claudeSkillsDir(f.home), "alpha")))
-	require.True(t, isStub(t, filepath.Join(openCodeSkillsDir(f.home), "alpha")))
+			link, linkErr := os.Readlink(quarantineCurrent(f, "acme", "tool"))
+			So(linkErr, ShouldBeNil)
 
-	link, err := os.Readlink(quarantineCurrent(f, "acme", "tool"))
-	require.NoError(t, err)
-	require.NotEmpty(t, link)
-	require.Equal(t, before, read(t, f.vault.PluginsLedgerPath()), "a dry run writes nothing")
+			Convey("Then it predicts the work and writes nothing", func() {
+				So(results, ShouldHaveLength, 1)
+				So(results[0].Stubs, ShouldEqual, 2)
+				So(results[0].Retired, ShouldEqual, 1)
+
+				So(isStub(t, filepath.Join(claudeSkillsDir(f.home), "alpha")), ShouldBeTrue)
+				So(isStub(t, filepath.Join(openCodeSkillsDir(f.home), "alpha")), ShouldBeTrue)
+
+				So(link, ShouldNotBeEmpty)
+				So(read(t, f.vault.PluginsLedgerPath()), ShouldEqual, before)
+			})
+		})
+	})
 }
 
 func TestHealKeepsForeign(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a quarantine directory and a foreign skill", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
+		f := newFixture(t)
+		f.emptyConfigs(t)
 
-	quarantinePlugin(t, f)
+		quarantinePlugin(t, f)
 
-	foreignNote := filepath.Join(f.vault.PluginsDir(), "quarantine", "acme", "tool", "README")
-	write(t, foreignNote, "not ours\n")
+		foreignNote := filepath.Join(f.vault.PluginsDir(), "quarantine", "acme", "tool", "README")
+		write(t, foreignNote, "not ours\n")
 
-	foreignSkill := filepath.Join(claudeSkillsDir(f.home), "Foreign")
-	write(t, filepath.Join(foreignSkill, "SKILL.md"), "# foreign\n")
+		foreignSkill := filepath.Join(claudeSkillsDir(f.home), "Foreign")
+		write(t, filepath.Join(foreignSkill, "SKILL.md"), "# foreign\n")
 
-	results, err := f.engine.Heal(t.Context(), false)
-	require.NoError(t, err)
-	require.Len(t, results, 1)
-	require.Contains(t, results[0].Note, "is not empty")
-	require.Equal(t, 2, results[0].Stubs)
+		Convey("When heal runs", func() {
+			results, err := f.engine.Heal(t.Context(), false)
+			So(err, ShouldBeNil)
 
-	require.Equal(t, "not ours\n", read(t, foreignNote))
-	require.NoFileExists(t, quarantineCurrent(f, "acme", "tool"))
-	require.Equal(t, "# foreign\n", read(t, filepath.Join(foreignSkill, "SKILL.md")))
-	require.False(t, isStub(t, filepath.Join(claudeSkillsDir(f.home), "alpha")))
+			_, quarantineErr := os.Stat(quarantineCurrent(f, "acme", "tool"))
 
-	rec := ledgerRecord(t, f, "acme/tool")
-	require.False(t, rec.RetiredAt.IsZero())
+			rec := ledgerRecord(t, f, "acme/tool")
+
+			Convey("Then foreign files survive and the record is retired", func() {
+				So(results, ShouldHaveLength, 1)
+				So(results[0].Note, ShouldContainSubstring, "is not empty")
+				So(results[0].Stubs, ShouldEqual, 2)
+
+				So(read(t, foreignNote), ShouldEqual, "not ours\n")
+				So(errors.Is(quarantineErr, fs.ErrNotExist), ShouldBeTrue)
+				So(read(t, filepath.Join(foreignSkill, "SKILL.md")), ShouldEqual, "# foreign\n")
+				So(isStub(t, filepath.Join(claudeSkillsDir(f.home), "alpha")), ShouldBeFalse)
+
+				So(rec.RetiredAt.IsZero(), ShouldBeFalse)
+			})
+		})
+	})
 }
 
 func TestHealKeepsOwnership(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a quarantined plugin that owned an MCP server", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
+		f := newFixture(t)
+		f.emptyConfigs(t)
 
-	plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-	writeSkill(t, plugin, "alpha", "# alpha\n")
-	write(t, filepath.Join(plugin, ".mcp.json"), `{"mcpServers": {"plug": {"command": "plug"}}}`)
+		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeSkill(t, plugin, "alpha", "# alpha\n")
+		write(t, filepath.Join(plugin, ".mcp.json"), `{"mcpServers": {"plug": {"command": "plug"}}}`)
 
-	report := f.sync(t)
-	require.Empty(t, report.Kind(kind.MCP).Warnings)
-	require.Contains(t, hostMCPServers(t, f.claudeConfig(), "mcpServers"), "plug")
+		report := f.sync(t)
+		So(report.Kind(kind.MCP).Warnings, ShouldBeEmpty)
+		So(hostMCPServers(t, f.claudeConfig(), "mcpServers"), ShouldContainKey, "plug")
 
-	removeFromRegistry(t, f.home, "acme", "tool")
-	require.NoError(t, os.RemoveAll(plugin))
+		removeFromRegistry(t, f.home, "acme", "tool")
+		So(os.RemoveAll(plugin), ShouldBeNil)
 
-	f.sync(t)
+		f.sync(t)
 
-	_, err := f.engine.Heal(t.Context(), false)
-	require.NoError(t, err)
+		Convey("When heal runs and the agent tries to re-adopt the server", func() {
+			_, err := f.engine.Heal(t.Context(), false)
+			So(err, ShouldBeNil)
 
-	rec := ledgerRecord(t, f, "acme/tool")
-	require.Equal(t, []string{"plug"}, rec.Servers, "heal keeps the U-10 ownership list")
-	require.False(t, rec.RetiredAt.IsZero())
+			rec := ledgerRecord(t, f, "acme/tool")
 
-	write(t, f.claudeConfig(), `{"mcpServers": {"plug": {"type": "stdio", "command": "/tmp/evil"}}}`)
+			write(t, f.claudeConfig(), `{"mcpServers": {"plug": {"type": "stdio", "command": "/tmp/evil"}}}`)
 
-	f.sync(t)
+			f.sync(t)
 
-	require.NoFileExists(t, f.vault.ServersPath(), "a retired plugin server must never be adopted")
-	require.NotContains(t, hostMCPServers(t, f.claudeConfig(), "mcpServers"), "plug")
+			_, vaultErr := os.Stat(f.vault.ServersPath())
+
+			Convey("Then ownership survives and a retired server is never adopted", func() {
+				So(rec.Servers, ShouldResemble, []string{"plug"})
+				So(rec.RetiredAt.IsZero(), ShouldBeFalse)
+
+				So(errors.Is(vaultErr, fs.ErrNotExist), ShouldBeTrue)
+				So(hostMCPServers(t, f.claudeConfig(), "mcpServers"), ShouldNotContainKey, "plug")
+			})
+		})
+	})
 }
 
 func TestPluginQuarantineDoctorErrors(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", "")
+	Convey("Given a quarantined plugin", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
 
-	f := newFixture(t)
-	f.emptyConfigs(t)
+		f := newFixture(t)
+		f.emptyConfigs(t)
 
-	quarantinePlugin(t, f)
+		quarantinePlugin(t, f)
 
-	issues, err := f.engine.Doctor(t.Context())
-	require.NoError(t, err)
-	require.True(t, hasIssue(issues, engine.SeverityError, "is quarantined since"), "issues: %v", issues)
-	require.True(t, hasIssue(issues, engine.SeverityError, "run beadle heal"), "issues: %v", issues)
+		Convey("When doctor runs before and after heal", func() {
+			issues, err := f.engine.Doctor(t.Context())
+			So(err, ShouldBeNil)
 
-	_, err = f.engine.Heal(t.Context(), false)
-	require.NoError(t, err)
+			So(hasIssue(issues, engine.SeverityError, "is quarantined since"), ShouldBeTrue)
+			So(hasIssue(issues, engine.SeverityError, "run beadle heal"), ShouldBeTrue)
 
-	issues, err = f.engine.Doctor(t.Context())
-	require.NoError(t, err)
+			_, err = f.engine.Heal(t.Context(), false)
+			So(err, ShouldBeNil)
 
-	for _, issue := range issues {
-		require.NotContains(t, issue.Message, "acme/tool", "a healed plugin must be silent: %v", issue)
-	}
+			issues, err = f.engine.Doctor(t.Context())
+			So(err, ShouldBeNil)
+
+			Convey("Then a healed plugin is silent", func() {
+				for _, issue := range issues {
+					So(issue.Message, ShouldNotContainSubstring, "acme/tool")
+				}
+			})
+		})
+	})
 }

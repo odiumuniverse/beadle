@@ -7,7 +7,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 )
 
 type runnerFunc func(name string, args []string, stdin []byte) ([]byte, int, error)
@@ -59,279 +59,352 @@ func exitError() error {
 }
 
 func TestKeyringGetFoundDarwin(t *testing.T) {
-	t.Parallel()
+	Convey("Given a macOS keyring returning an encoded payload", t, func() {
+		var calls []keyringCall
 
-	var calls []keyringCall
+		keyring := testShellKeyring(t, darwinTool, recordingRunner(t, &calls, func(keyringCall) ([]byte, int, error) {
+			return []byte(encodePayload("s3cr3t") + "\n"), 0, nil
+		}))
 
-	keyring := testShellKeyring(t, darwinTool, recordingRunner(t, &calls, func(keyringCall) ([]byte, int, error) {
-		return []byte(encodePayload("s3cr3t") + "\n"), 0, nil
-	}))
+		Convey("When the value is fetched", func() {
+			value, found, err := keyring.Get("ALPHA")
 
-	value, found, err := keyring.Get("ALPHA")
-	require.NoError(t, err)
-	require.True(t, found)
-	require.Equal(t, "s3cr3t", value)
-
-	require.Equal(t, []string{"find-generic-password", "-s", keyringService, "-a", "ALPHA", "-w"}, calls[0].args)
-	require.Nil(t, calls[0].stdin)
+			Convey("Then it decodes and uses find-generic-password with a password on argv", func() {
+				So(err, ShouldBeNil)
+				So(found, ShouldBeTrue)
+				So(value, ShouldEqual, "s3cr3t")
+				So(calls[0].args, ShouldResemble, []string{"find-generic-password", "-s", keyringService, "-a", "ALPHA", "-w"})
+				So(calls[0].stdin, ShouldBeNil)
+			})
+		})
+	})
 }
 
 func TestKeyringGetFoundLinux(t *testing.T) {
-	t.Parallel()
+	Convey("Given a linux keyring returning a payload with a newline", t, func() {
+		var calls []keyringCall
 
-	var calls []keyringCall
+		keyring := testShellKeyring(t, linuxTool, recordingRunner(t, &calls, func(keyringCall) ([]byte, int, error) {
+			return []byte(encodePayload("pem\nline") + "\n"), 0, nil
+		}))
 
-	keyring := testShellKeyring(t, linuxTool, recordingRunner(t, &calls, func(keyringCall) ([]byte, int, error) {
-		return []byte(encodePayload("pem\nline") + "\n"), 0, nil
-	}))
+		Convey("When the value is fetched", func() {
+			value, found, err := keyring.Get("ALPHA")
 
-	value, found, err := keyring.Get("ALPHA")
-	require.NoError(t, err)
-	require.True(t, found)
-	require.Equal(t, "pem\nline", value, "only the tool's trailing newline is trimmed")
-
-	require.Equal(t, []string{"lookup", "service", keyringService, "account", "ALPHA"}, calls[0].args)
+			Convey("Then only the tool's trailing newline is trimmed", func() {
+				So(err, ShouldBeNil)
+				So(found, ShouldBeTrue)
+				So(value, ShouldEqual, "pem\nline")
+				So(calls[0].args, ShouldResemble, []string{"lookup", "service", keyringService, "account", "ALPHA"})
+			})
+		})
+	})
 }
 
 func TestKeyringGetNotFound(t *testing.T) {
-	t.Parallel()
+	Convey("Given a keyring that reports a missing item", t, func() {
+		for tool, code := range map[string]int{darwinTool: darwinMissing, linuxTool: linuxMissing} {
+			var calls []keyringCall
 
-	for tool, code := range map[string]int{darwinTool: darwinMissing, linuxTool: linuxMissing} {
-		var calls []keyringCall
+			keyring := testShellKeyring(t, tool, recordingRunner(t, &calls, func(keyringCall) ([]byte, int, error) {
+				return nil, code, exitError()
+			}))
 
-		keyring := testShellKeyring(t, tool, recordingRunner(t, &calls, func(keyringCall) ([]byte, int, error) {
-			return nil, code, exitError()
-		}))
+			Convey("When the value is fetched from "+tool, func() {
+				value, found, err := keyring.Get("ALPHA")
 
-		value, found, err := keyring.Get("ALPHA")
-		require.NoError(t, err)
-		require.False(t, found)
-		require.Empty(t, value)
-	}
+				Convey("Then it reports absence without error", func() {
+					So(err, ShouldBeNil)
+					So(found, ShouldBeFalse)
+					So(value, ShouldBeEmpty)
+				})
+			})
+		}
+	})
 }
 
 func TestKeyringGetFailure(t *testing.T) {
-	t.Parallel()
+	Convey("Given a keyring that fails with an unrelated error", t, func() {
+		var calls []keyringCall
 
-	var calls []keyringCall
+		keyring := testShellKeyring(t, darwinTool, recordingRunner(t, &calls, func(keyringCall) ([]byte, int, error) {
+			return nil, 36, errors.New("security: SecKeychainSearchCopyNext: The specified item could not be found")
+		}))
 
-	keyring := testShellKeyring(t, darwinTool, recordingRunner(t, &calls, func(keyringCall) ([]byte, int, error) {
-		return nil, 36, errors.New("security: SecKeychainSearchCopyNext: The specified item could not be found")
-	}))
+		Convey("When the value is fetched", func() {
+			_, _, err := keyring.Get("ALPHA")
 
-	_, _, err := keyring.Get("ALPHA")
-	require.ErrorContains(t, err, "keyring get ALPHA")
+			Convey("Then the error is reported", func() {
+				So(err, ShouldBeError)
+				So(err.Error(), ShouldContainSubstring, "keyring get ALPHA")
+			})
+		})
+	})
 }
 
 func TestKeyringSetUsesHexTransport(t *testing.T) {
-	t.Parallel()
+	Convey("Given a macOS keyring", t, func() {
+		var calls []keyringCall
 
-	var calls []keyringCall
+		keyring := testShellKeyring(t, darwinTool, recordingRunner(t, &calls, func(keyringCall) ([]byte, int, error) {
+			return nil, 0, nil
+		}))
 
-	keyring := testShellKeyring(t, darwinTool, recordingRunner(t, &calls, func(keyringCall) ([]byte, int, error) {
-		return nil, 0, nil
-	}))
+		value := "line1\nline2 $ecret"
 
-	value := "line1\nline2 $ecret"
+		Convey("When a value is stored", func() {
+			So(keyring.Set("ALPHA", value), ShouldBeNil)
+			So(calls, ShouldHaveLength, 1)
 
-	require.NoError(t, keyring.Set("ALPHA", value))
-	require.Len(t, calls, 1)
+			payload := calls[0].args[len(calls[0].args)-1]
 
-	payload := calls[0].args[len(calls[0].args)-1]
-	require.Equal(t, []string{"add-generic-password", "-U", "-s", keyringService, "-a", "ALPHA", "-X", payload}, calls[0].args)
-	require.Nil(t, calls[0].stdin)
+			decoded, err := hex.DecodeString(payload)
 
-	decoded, err := hex.DecodeString(payload)
-	require.NoError(t, err)
-	require.Equal(t, encodePayload(value), string(decoded))
-	require.Equal(t, "v1:"+hex.EncodeToString([]byte(value)), string(decoded), "the stored payload is always printable ASCII")
+			Convey("Then it is hex-encoded and never reaches argv in plaintext", func() {
+				So(calls[0].args, ShouldResemble, []string{"add-generic-password", "-U", "-s", keyringService, "-a", "ALPHA", "-X", payload})
+				So(calls[0].stdin, ShouldBeNil)
 
-	for _, arg := range calls[0].args {
-		require.NotContains(t, arg, value, "the plaintext must never reach argv")
-		require.NotContains(t, arg, "line1", "the plaintext must never reach argv")
-	}
+				So(err, ShouldBeNil)
+				So(string(decoded), ShouldEqual, encodePayload(value))
+				So(string(decoded), ShouldEqual, "v1:"+hex.EncodeToString([]byte(value)))
+
+				for _, arg := range calls[0].args {
+					So(arg, ShouldNotContainSubstring, value)
+					So(arg, ShouldNotContainSubstring, "line1")
+				}
+			})
+		})
+	})
 }
 
 func TestKeyringSetUsesStdinOnLinux(t *testing.T) {
-	t.Parallel()
+	Convey("Given a linux keyring", t, func() {
+		var calls []keyringCall
 
-	var calls []keyringCall
+		keyring := testShellKeyring(t, linuxTool, recordingRunner(t, &calls, func(keyringCall) ([]byte, int, error) {
+			return nil, 0, nil
+		}))
 
-	keyring := testShellKeyring(t, linuxTool, recordingRunner(t, &calls, func(keyringCall) ([]byte, int, error) {
-		return nil, 0, nil
-	}))
+		value := "line1\nline2 $ecret"
 
-	value := "line1\nline2 $ecret"
+		Convey("When a value is stored", func() {
+			So(keyring.Set("ALPHA", value), ShouldBeNil)
+			So(calls, ShouldHaveLength, 1)
 
-	require.NoError(t, keyring.Set("ALPHA", value))
-	require.Len(t, calls, 1)
-
-	require.Equal(t, []string{"store", "--label=" + keyringService + ": ALPHA", "service", keyringService, "account", "ALPHA"}, calls[0].args)
-	require.Equal(t, encodePayload(value), string(calls[0].stdin))
-	require.Contains(t, string(calls[0].stdin), payloadPrefix)
-	require.NotContains(t, string(calls[0].stdin), value, "the plaintext never reaches stdin")
+			Convey("Then the payload goes over stdin and never in plaintext", func() {
+				So(calls[0].args, ShouldResemble, []string{"store", "--label=" + keyringService + ": ALPHA", "service", keyringService, "account", "ALPHA"})
+				So(string(calls[0].stdin), ShouldEqual, encodePayload(value))
+				So(string(calls[0].stdin), ShouldContainSubstring, payloadPrefix)
+				So(string(calls[0].stdin), ShouldNotContainSubstring, value)
+			})
+		})
+	})
 }
 
 func TestKeyringLinuxRoundTripKeepsTrailingNewline(t *testing.T) {
-	t.Parallel()
+	Convey("Given a linux keyring that stores stdin verbatim", t, func() {
+		value := "line1\nline2\n"
 
-	value := "line1\nline2\n"
+		var stored []byte
 
-	var stored []byte
+		keyring := testShellKeyring(t, linuxTool, runnerFunc(func(_ string, args []string, stdin []byte) ([]byte, int, error) {
+			if args[0] == "store" {
+				stored = append([]byte(nil), stdin...)
 
-	keyring := testShellKeyring(t, linuxTool, runnerFunc(func(_ string, args []string, stdin []byte) ([]byte, int, error) {
-		if args[0] == "store" {
-			stored = append([]byte(nil), stdin...)
+				return nil, 0, nil
+			}
 
-			return nil, 0, nil
-		}
+			return append(append([]byte(nil), stored...), '\n'), 0, nil
+		}))
 
-		return append(append([]byte(nil), stored...), '\n'), 0, nil
-	}))
+		Convey("When a value ending with a newline round-trips", func() {
+			So(keyring.Set("ALPHA", value), ShouldBeNil)
+			So(string(stored), ShouldEqual, encodePayload(value))
 
-	require.NoError(t, keyring.Set("ALPHA", value))
-	require.Equal(t, encodePayload(value), string(stored))
+			got, found, err := keyring.Get("ALPHA")
 
-	got, found, err := keyring.Get("ALPHA")
-	require.NoError(t, err)
-	require.True(t, found)
-	require.Equal(t, value, got, "a value ending with a newline survives the round-trip")
+			Convey("Then the trailing newline survives", func() {
+				So(err, ShouldBeNil)
+				So(found, ShouldBeTrue)
+				So(got, ShouldEqual, value)
+			})
+		})
+	})
 }
 
 func TestKeyringSetFailure(t *testing.T) {
-	t.Parallel()
+	Convey("Given a keyring whose write is denied", t, func() {
+		var calls []keyringCall
 
-	var calls []keyringCall
+		keyring := testShellKeyring(t, darwinTool, recordingRunner(t, &calls, func(keyringCall) ([]byte, int, error) {
+			return nil, 1, errors.New("security: write denied")
+		}))
 
-	keyring := testShellKeyring(t, darwinTool, recordingRunner(t, &calls, func(keyringCall) ([]byte, int, error) {
-		return nil, 1, errors.New("security: write denied")
-	}))
+		Convey("When a value is stored", func() {
+			err := keyring.Set("ALPHA", "s3cr3t")
 
-	err := keyring.Set("ALPHA", "s3cr3t")
-	require.ErrorContains(t, err, "keyring set ALPHA")
-	require.NotContains(t, err.Error(), "s3cr3t")
+			Convey("Then the error is reported without the value", func() {
+				So(err, ShouldBeError)
+				So(err.Error(), ShouldContainSubstring, "keyring set ALPHA")
+				So(err.Error(), ShouldNotContainSubstring, "s3cr3t")
+			})
+		})
+	})
 }
 
 func TestKeyringDeleteRemovesEntry(t *testing.T) {
-	t.Parallel()
+	Convey("Given a keyring where delete succeeds and the read-back misses", t, func() {
+		var calls []keyringCall
 
-	var calls []keyringCall
+		keyring := testShellKeyring(t, darwinTool, recordingRunner(t, &calls, func(call keyringCall) ([]byte, int, error) {
+			if call.args[0] == "delete-generic-password" {
+				return nil, 0, nil
+			}
 
-	keyring := testShellKeyring(t, darwinTool, recordingRunner(t, &calls, func(call keyringCall) ([]byte, int, error) {
-		if call.args[0] == "delete-generic-password" {
-			return nil, 0, nil
-		}
+			return nil, darwinMissing, exitError()
+		}))
 
-		return nil, darwinMissing, exitError()
-	}))
+		Convey("When the entry is deleted", func() {
+			removed, err := keyring.Delete("ALPHA")
 
-	removed, err := keyring.Delete("ALPHA")
-	require.NoError(t, err)
-	require.True(t, removed)
-
-	require.Len(t, calls, 2, "delete is followed by a read-back")
-	require.Equal(t, []string{"delete-generic-password", "-s", keyringService, "-a", "ALPHA"}, calls[0].args)
-	require.Equal(t, "find-generic-password", calls[1].args[0])
+			Convey("Then delete is followed by a read-back", func() {
+				So(err, ShouldBeNil)
+				So(removed, ShouldBeTrue)
+				So(calls, ShouldHaveLength, 2)
+				So(calls[0].args, ShouldResemble, []string{"delete-generic-password", "-s", keyringService, "-a", "ALPHA"})
+				So(calls[1].args[0], ShouldEqual, "find-generic-password")
+			})
+		})
+	})
 }
 
 func TestKeyringDeleteNotFound(t *testing.T) {
-	t.Parallel()
+	Convey("Given a keyring where the entry is already missing", t, func() {
+		var calls []keyringCall
 
-	var calls []keyringCall
+		keyring := testShellKeyring(t, darwinTool, recordingRunner(t, &calls, func(keyringCall) ([]byte, int, error) {
+			return nil, darwinMissing, exitError()
+		}))
 
-	keyring := testShellKeyring(t, darwinTool, recordingRunner(t, &calls, func(keyringCall) ([]byte, int, error) {
-		return nil, darwinMissing, exitError()
-	}))
+		Convey("When the entry is deleted", func() {
+			removed, err := keyring.Delete("ALPHA")
 
-	removed, err := keyring.Delete("ALPHA")
-	require.NoError(t, err)
-	require.False(t, removed)
+			Convey("Then absence is reported without error", func() {
+				So(err, ShouldBeNil)
+				So(removed, ShouldBeFalse)
+			})
+		})
+	})
 }
 
 func TestKeyringDeleteReadBackProof(t *testing.T) {
-	t.Parallel()
+	Convey("Given a keyring whose entry survives delete", t, func() {
+		var calls []keyringCall
 
-	var calls []keyringCall
+		keyring := testShellKeyring(t, darwinTool, recordingRunner(t, &calls, func(call keyringCall) ([]byte, int, error) {
+			if call.args[0] == "delete-generic-password" {
+				return nil, 0, nil
+			}
 
-	keyring := testShellKeyring(t, darwinTool, recordingRunner(t, &calls, func(call keyringCall) ([]byte, int, error) {
-		if call.args[0] == "delete-generic-password" {
-			return nil, 0, nil
-		}
+			return []byte("still here\n"), 0, nil
+		}))
 
-		return []byte("still here\n"), 0, nil
-	}))
+		Convey("When the entry is deleted", func() {
+			removed, err := keyring.Delete("ALPHA")
 
-	removed, err := keyring.Delete("ALPHA")
-	require.ErrorContains(t, err, "still present")
-	require.False(t, removed)
+			Convey("Then the read-back reports it still present", func() {
+				So(err, ShouldBeError)
+				So(err.Error(), ShouldContainSubstring, "still present")
+				So(removed, ShouldBeFalse)
+			})
+		})
+	})
 }
 
 func TestKeyringGetReturnsForeignRawValue(t *testing.T) {
-	t.Parallel()
+	Convey("Given a keyring item added outside beadle", t, func() {
+		var calls []keyringCall
 
-	var calls []keyringCall
+		keyring := testShellKeyring(t, darwinTool, recordingRunner(t, &calls, func(keyringCall) ([]byte, int, error) {
+			return []byte("hand-added password\n"), 0, nil
+		}))
 
-	keyring := testShellKeyring(t, darwinTool, recordingRunner(t, &calls, func(keyringCall) ([]byte, int, error) {
-		return []byte("hand-added password\n"), 0, nil
-	}))
+		Convey("When it is fetched", func() {
+			value, found, err := keyring.Get("ALPHA")
 
-	value, found, err := keyring.Get("ALPHA")
-	require.NoError(t, err)
-	require.True(t, found)
-	require.Equal(t, "hand-added password", value, "items added outside beadle are returned as-is")
+			Convey("Then the raw value is returned as-is", func() {
+				So(err, ShouldBeNil)
+				So(found, ShouldBeTrue)
+				So(value, ShouldEqual, "hand-added password")
+			})
+		})
+	})
 }
 
 func TestKeyringGetRejectsCorruptPayload(t *testing.T) {
-	t.Parallel()
+	Convey("Given a keyring holding a corrupt payload", t, func() {
+		var calls []keyringCall
 
-	var calls []keyringCall
+		keyring := testShellKeyring(t, darwinTool, recordingRunner(t, &calls, func(keyringCall) ([]byte, int, error) {
+			return []byte(payloadPrefix + "zz\n"), 0, nil
+		}))
 
-	keyring := testShellKeyring(t, darwinTool, recordingRunner(t, &calls, func(keyringCall) ([]byte, int, error) {
-		return []byte(payloadPrefix + "zz\n"), 0, nil
-	}))
+		Convey("When it is fetched", func() {
+			_, _, err := keyring.Get("ALPHA")
 
-	_, _, err := keyring.Get("ALPHA")
-	require.ErrorIs(t, err, errCorruptPayload)
+			Convey("Then the corrupt payload is rejected", func() {
+				So(errors.Is(err, errCorruptPayload), ShouldBeTrue)
+			})
+		})
+	})
 }
 
 func TestKeyringLookPathIsLazy(t *testing.T) {
-	t.Parallel()
+	Convey("Given a keyring whose tool is missing", t, func() {
+		called := 0
 
-	called := 0
+		keyring := &shellKeyring{
+			runner: runnerFunc(func(string, []string, []byte) ([]byte, int, error) {
+				called++
 
-	keyring := &shellKeyring{
-		runner: runnerFunc(func(string, []string, []byte) ([]byte, int, error) {
-			called++
+				return nil, 0, nil
+			}),
+			tool:     darwinTool,
+			notFound: darwinMissing,
+			lookPath: func(string) (string, error) { return "", exec.ErrNotFound },
+		}
 
-			return nil, 0, nil
-		}),
-		tool:     darwinTool,
-		notFound: darwinMissing,
-		lookPath: func(string) (string, error) { return "", exec.ErrNotFound },
-	}
+		Convey("When get, set and delete are called", func() {
+			_, _, err := keyring.Get("ALPHA")
+			So(errors.Is(err, ErrKeyringUnavailable), ShouldBeTrue)
+			So(err.Error(), ShouldContainSubstring, darwinTool)
 
-	_, _, err := keyring.Get("ALPHA")
-	require.ErrorIs(t, err, ErrKeyringUnavailable)
-	require.ErrorContains(t, err, darwinTool)
+			So(errors.Is(keyring.Set("ALPHA", "s3cr3t"), ErrKeyringUnavailable), ShouldBeTrue)
 
-	require.ErrorIs(t, keyring.Set("ALPHA", "s3cr3t"), ErrKeyringUnavailable)
+			_, err = keyring.Delete("ALPHA")
 
-	_, err = keyring.Delete("ALPHA")
-	require.ErrorIs(t, err, ErrKeyringUnavailable)
-
-	require.Zero(t, called, "the tool is never executed when it is missing")
+			Convey("Then the tool is never executed", func() {
+				So(errors.Is(err, ErrKeyringUnavailable), ShouldBeTrue)
+				So(called, ShouldEqual, 0)
+			})
+		})
+	})
 }
 
 func TestKeyringSupportedPlatforms(t *testing.T) {
-	t.Parallel()
+	Convey("Given the host platform", t, func() {
+		Convey("When a shell keyring is constructed", func() {
+			keyring, err := NewShellKeyring(ExecRunner{})
 
-	switch runtime.GOOS {
-	case "darwin", "linux":
-		keyring, err := NewShellKeyring(ExecRunner{})
-		require.NoError(t, err)
-		require.NotNil(t, keyring)
-	default:
-		_, err := NewShellKeyring(ExecRunner{})
-		require.ErrorIs(t, err, ErrKeyringUnsupported)
-	}
+			Convey("Then it is supported on darwin and linux only", func() {
+				switch runtime.GOOS {
+				case "darwin", "linux":
+					So(err, ShouldBeNil)
+					So(keyring, ShouldNotBeNil)
+				default:
+					So(errors.Is(err, ErrKeyringUnsupported), ShouldBeTrue)
+				}
+			})
+		})
+	})
 }

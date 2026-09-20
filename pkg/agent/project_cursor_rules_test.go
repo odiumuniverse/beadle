@@ -1,10 +1,14 @@
 package agent_test
 
 import (
+	"errors"
+	"io/fs"
+	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 
-	"github.com/stretchr/testify/require"
+	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/kind"
@@ -24,71 +28,87 @@ func cursorRulesSurfaceOf(t *testing.T, cwd string) agent.Surface {
 	return nil
 }
 
+var cursorRuleKey = regexp.MustCompile(`^[^/]+/\.cursor/rules/[A-Za-z0-9][A-Za-z0-9._-]*\.mdc$`)
+
 func TestCursorRulesSurfaceReadsOnlyValidNames(t *testing.T) {
-	t.Parallel()
+	Convey("Given a .cursor/rules directory with valid and invalid entries", t, func() {
+		cwd := t.TempDir()
+		dir := filepath.Join(cwd, ".cursor", "rules")
 
-	cwd := t.TempDir()
-	dir := filepath.Join(cwd, ".cursor", "rules")
+		writeFile(t, filepath.Join(dir, "style.mdc"), "# style\n")
+		writeFile(t, filepath.Join(dir, "A-B_c.mdc"), "# mixed\n")
+		writeFile(t, filepath.Join(dir, ".hidden.mdc"), "# hidden\n")
+		writeFile(t, filepath.Join(dir, "notes.txt"), "# not mdc\n")
+		writeFile(t, filepath.Join(dir, "sub", "nested.mdc"), "# nested\n")
 
-	writeFile(t, filepath.Join(dir, "style.mdc"), "# style\n")
-	writeFile(t, filepath.Join(dir, "A-B_c.mdc"), "# mixed\n")
-	writeFile(t, filepath.Join(dir, ".hidden.mdc"), "# hidden\n")
-	writeFile(t, filepath.Join(dir, "notes.txt"), "# not mdc\n")
-	writeFile(t, filepath.Join(dir, "sub", "nested.mdc"), "# nested\n")
+		surface := cursorRulesSurfaceOf(t, cwd)
 
-	surface := cursorRulesSurfaceOf(t, cwd)
+		Convey("When the surface reads", func() {
+			snap, err := surface.Read(t.Context())
 
-	snap, err := surface.Read(t.Context())
-	require.NoError(t, err)
-	require.Len(t, snap.Items, 2, "only flat [A-Za-z0-9][A-Za-z0-9._-]*.mdc names are rules")
+			Convey("Then only flat valid .mdc names become rules", func() {
+				So(err, ShouldBeNil)
+				So(snap.Items, ShouldHaveLength, 2)
 
-	for key := range snap.Items {
-		require.Regexp(t, `^[^/]+/\.cursor/rules/[A-Za-z0-9][A-Za-z0-9._-]*\.mdc$`, key)
-	}
+				for key := range snap.Items {
+					So(cursorRuleKey.MatchString(key), ShouldBeTrue)
+				}
+			})
+		})
+	})
 }
 
 func TestCursorRulesSurfaceWriteKeepsForeignFiles(t *testing.T) {
-	t.Parallel()
+	Convey("Given a .cursor/rules directory with a stale rule and a foreign file", t, func() {
+		cwd := t.TempDir()
+		dir := filepath.Join(cwd, ".cursor", "rules")
 
-	cwd := t.TempDir()
-	dir := filepath.Join(cwd, ".cursor", "rules")
+		writeFile(t, filepath.Join(dir, "style.mdc"), "# style\n")
+		writeFile(t, filepath.Join(dir, "old.mdc"), "# old\n")
+		writeFile(t, filepath.Join(dir, "notes.txt"), "foreign\n")
 
-	writeFile(t, filepath.Join(dir, "style.mdc"), "# style\n")
-	writeFile(t, filepath.Join(dir, "old.mdc"), "# old\n")
-	writeFile(t, filepath.Join(dir, "notes.txt"), "foreign\n")
+		surface := cursorRulesSurfaceOf(t, cwd)
 
-	surface := cursorRulesSurfaceOf(t, cwd)
+		snap, err := surface.Read(t.Context())
+		So(err, ShouldBeNil)
+		So(snap.Items, ShouldHaveLength, 2)
 
-	snap, err := surface.Read(t.Context())
-	require.NoError(t, err)
-	require.Len(t, snap.Items, 2)
+		styleKey := ""
 
-	styleKey := ""
-
-	for key := range snap.Items {
-		if filepath.Base(key) == "style.mdc" {
-			styleKey = key
+		for key := range snap.Items {
+			if filepath.Base(key) == "style.mdc" {
+				styleKey = key
+			}
 		}
-	}
 
-	require.NotEmpty(t, styleKey)
+		So(styleKey, ShouldNotBeEmpty)
 
-	prefix := styleKey[:len(styleKey)-len("style.mdc")]
+		prefix := styleKey[:len(styleKey)-len("style.mdc")]
 
-	desired := kind.Items{
-		styleKey:                 []byte("# style v2\n"),
-		prefix + "new.mdc":       []byte("# new\n"),
-		prefix + "ghost.mdc":     []byte("# ghost\n"),
-		prefix + "notes.txt":     []byte("# ignored\n"),
-		prefix + "sub/nested.md": []byte("# ignored\n"),
-	}
+		desired := kind.Items{
+			styleKey:                 []byte("# style v2\n"),
+			prefix + "new.mdc":       []byte("# new\n"),
+			prefix + "ghost.mdc":     []byte("# ghost\n"),
+			prefix + "notes.txt":     []byte("# ignored\n"),
+			prefix + "sub/nested.md": []byte("# ignored\n"),
+		}
 
-	require.NoError(t, surface.Write(t.Context(), desired))
+		Convey("When the surface writes", func() {
+			So(surface.Write(t.Context(), desired), ShouldBeNil)
 
-	require.Equal(t, "# style v2\n", readFile(t, filepath.Join(dir, "style.mdc")))
-	require.Equal(t, "# new\n", readFile(t, filepath.Join(dir, "new.mdc")))
-	require.Equal(t, "# ghost\n", readFile(t, filepath.Join(dir, "ghost.mdc")), "a valid new name is created")
-	require.NoFileExists(t, filepath.Join(dir, "old.mdc"), "a rule missing from desired is removed")
-	require.NoFileExists(t, filepath.Join(dir, "sub", "nested.mdc"), "invalid keys are never written")
-	require.Equal(t, "foreign\n", readFile(t, filepath.Join(dir, "notes.txt")), "foreign files stay")
+			Convey("Then changed and new rules land, the stale one is removed and foreign files stay", func() {
+				So(readFile(t, filepath.Join(dir, "style.mdc")), ShouldEqual, "# style v2\n")
+				So(readFile(t, filepath.Join(dir, "new.mdc")), ShouldEqual, "# new\n")
+				So(readFile(t, filepath.Join(dir, "ghost.mdc")), ShouldEqual, "# ghost\n")
+
+				_, err := os.Stat(filepath.Join(dir, "old.mdc"))
+				So(errors.Is(err, fs.ErrNotExist), ShouldBeTrue)
+
+				_, err = os.Stat(filepath.Join(dir, "sub", "nested.mdc"))
+				So(errors.Is(err, fs.ErrNotExist), ShouldBeTrue)
+
+				So(readFile(t, filepath.Join(dir, "notes.txt")), ShouldEqual, "foreign\n")
+			})
+		})
+	})
 }
