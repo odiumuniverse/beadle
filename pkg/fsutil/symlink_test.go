@@ -89,8 +89,16 @@ func TestReplaceSymlinkClassifiesUnsupported(t *testing.T) {
 		dir := t.TempDir()
 
 		Convey("When the link error is unsupported", func() {
-			for _, denied := range []error{syscall.EPERM, syscall.EOPNOTSUPP, syscall.ENOTSUP, syscall.ENOSYS} {
-				Convey("With "+denied.Error(), func() {
+			seen := map[syscall.Errno]bool{}
+
+			for _, denied := range []syscall.Errno{syscall.EPERM, syscall.EOPNOTSUPP, syscall.ENOTSUP, syscall.ENOSYS} {
+				if seen[denied] {
+					continue
+				}
+
+				seen[denied] = true
+
+				Convey(fmt.Sprintf("With %s (%d)", denied.Error(), denied), func() {
 					stubSymlinkLinker(t, func(_, _ string) error { return denied })
 
 					Convey("Then it is classified as unsupported", func() {
