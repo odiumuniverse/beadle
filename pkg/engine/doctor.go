@@ -1108,6 +1108,10 @@ func (e *Engine) pluginPivotIssues(_ context.Context) []Issue {
 	var issues []Issue
 
 	for _, key := range slices.Sorted(maps.Keys(keys)) {
+		if key == bundlePluginKey() {
+			continue
+		}
+
 		record, isInstalled := installed[key]
 		rec, isParked := ledger.Plugins[key]
 

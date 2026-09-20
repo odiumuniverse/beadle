@@ -998,3 +998,23 @@ func TestDoctorPluginPivotIssuesNoRegistry(t *testing.T) {
 		})
 	})
 }
+
+func TestDoctorIgnoresTheBeadleBundlePlugin(t *testing.T) {
+	Convey("Given the beadle bundle plugin installed but not parked", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		pluginTree(t, f.home, "beadle", "beadle-canon", "0.0.0-test")
+
+		issues, err := f.engine.Doctor(t.Context())
+		So(err, ShouldBeNil)
+
+		Convey("When doctor runs", func() {
+			Convey("Then it never asks to park the bundle", func() {
+				for _, issue := range issues {
+					So(issue.Message, ShouldNotContainSubstring, "beadle-canon")
+				}
+			})
+		})
+	})
+}
