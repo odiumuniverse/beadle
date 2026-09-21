@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/odiumuniverse/beadle/pkg/cas"
@@ -16,10 +18,38 @@ import (
 
 type Tree map[string][]byte
 
+const skillFileName = "SKILL.md"
+
 var namePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 func ValidName(name string) bool {
 	return namePattern.MatchString(name)
+}
+
+// HasRoot reports whether dir is a skill root: it holds a regular SKILL.md
+// directly. The name match is case-sensitive even on a case-insensitive
+// filesystem, and a symlink to a regular file counts.
+func HasRoot(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+
+	for _, entry := range entries {
+		if entry.Name() != skillFileName {
+			continue
+		}
+
+		if entry.Type()&fs.ModeSymlink != 0 {
+			info, err := os.Stat(filepath.Join(dir, entry.Name()))
+
+			return err == nil && info.Mode().IsRegular()
+		}
+
+		return entry.Type().IsRegular()
+	}
+
+	return false
 }
 
 func ReadDir(dir string) (map[string]Tree, error) {
@@ -44,7 +74,12 @@ func ReadDir(dir string) (map[string]Tree, error) {
 			continue
 		}
 
-		tree, err := ReadTree(filepath.Join(dir, name))
+		root := filepath.Join(dir, name)
+		if !HasRoot(root) {
+			continue
+		}
+
+		tree, err := ReadTree(root)
 		if err != nil {
 			return nil, err
 		}
@@ -224,6 +259,21 @@ func FilePath(dir, name, rel string) (string, error) {
 }
 
 type Manifest map[string]cas.Hash
+
+// TreeDigest hashes a skill tree deterministically: sorted paths, each line
+// carrying the path and the file hash.
+func TreeDigest(tree Tree) cas.Hash {
+	var builder strings.Builder
+
+	for _, rel := range slices.Sorted(maps.Keys(tree)) {
+		builder.WriteString(rel)
+		builder.WriteByte(0)
+		builder.WriteString(string(cas.HashOf(tree[rel])))
+		builder.WriteByte('\n')
+	}
+
+	return cas.HashOf([]byte(builder.String()))
+}
 
 func ManifestOf(tree Tree) Manifest {
 	manifest := make(Manifest, len(tree))

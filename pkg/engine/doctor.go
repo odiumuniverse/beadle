@@ -83,6 +83,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 
 	issues = append(issues, e.skillCollisionIssues(active)...)
 	issues = append(issues, e.skillShadowIssues(active)...)
+	issues = append(issues, e.canonSkillValidityIssues(st)...)
 	issues = append(issues, e.secretIssues()...)
 	issues = append(issues, e.projectScopeIssues(ctx, active)...)
 	issues = append(issues, e.projectPolicyIssues(active)...)
@@ -562,6 +563,45 @@ func (e *Engine) brokenSymlinkIssues(a *agent.Agent, surface agent.Surface, path
 	}
 
 	return []Issue{{Severity: SeverityError, Agent: a.ID, Message: "broken symlink: " + path}}
+}
+
+// canonSkillValidityIssues reports canon directories that are not skills:
+// no root SKILL.md. An owned directory is retired by the next sync; an
+// unowned one is left alone.
+func (e *Engine) canonSkillValidityIssues(st *state.State) []Issue {
+	dir := e.vault.SkillsDir()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	var issues []Issue
+
+	for _, entry := range entries {
+		name := entry.Name()
+		path := filepath.Join(dir, name)
+
+		if !skill.ValidName(name) || entry.Type()&fs.ModeSymlink != 0 || !entry.IsDir() || skill.HasRoot(path) {
+			continue
+		}
+
+		if skillNameOwned(st, name) {
+			issues = append(issues, Issue{
+				Severity: SeverityWarn, Kind: kind.Skills,
+				Message: fmt.Sprintf("canon skill %s has no root SKILL.md; run beadle sync to retire it", name),
+			})
+
+			continue
+		}
+
+		issues = append(issues, Issue{
+			Severity: SeverityInfo, Kind: kind.Skills,
+			Message: fmt.Sprintf("canon directory %s has no root SKILL.md; it is not treated as a skill", name),
+		})
+	}
+
+	return issues
 }
 
 func (e *Engine) skillCollisionIssues(active []*agent.Agent) []Issue {

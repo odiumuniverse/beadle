@@ -292,7 +292,7 @@ func (e *Engine) scanPluginSkills(key, target, root string) ([]string, bool, []s
 
 	for _, entry := range entries {
 		path := filepath.Join(target, farmSkillsDir, entry.Name())
-		if !isDir(path) || !fsutil.Exists(filepath.Join(path, farmSkillFile)) {
+		if !isDir(path) || !skill.HasRoot(path) {
 			continue
 		}
 
@@ -330,9 +330,15 @@ func (e *Engine) canonSkillNames() (map[string]struct{}, []string) {
 	}
 
 	for _, entry := range entries {
-		if entry.IsDir() {
-			names[normSkillName(entry.Name())] = struct{}{}
+		if !entry.IsDir() {
+			continue
 		}
+
+		if !skill.HasRoot(filepath.Join(e.vault.SkillsDir(), entry.Name())) {
+			continue
+		}
+
+		names[normSkillName(entry.Name())] = struct{}{}
 	}
 
 	return names, nil

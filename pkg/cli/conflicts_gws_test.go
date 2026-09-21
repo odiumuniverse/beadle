@@ -501,6 +501,8 @@ func TestConflictsJSONOrderAndBinary(t *testing.T) {
 	Convey("Given a rules conflict and a binary skills conflict", t, func() {
 		home := gwsHome(t)
 		gwsRules(t, home, "# claude\n", "# opencode\n")
+		gwsWrite(t, filepath.Join(home, ".claude", "skills", "tool", "SKILL.md"), "# tool\n")
+		gwsWrite(t, filepath.Join(home, ".config", "opencode", "skills", "tool", "SKILL.md"), "# tool\n")
 		gwsWrite(t, filepath.Join(home, ".claude", "skills", "tool", "data.bin"), string([]byte{0, 1, 2, 3}))
 		gwsWrite(t, filepath.Join(home, ".config", "opencode", "skills", "tool", "data.bin"), string([]byte{9, 8, 7}))
 

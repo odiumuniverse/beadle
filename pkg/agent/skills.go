@@ -131,7 +131,7 @@ func (s *skillsSurface) skillRootAt(dir string, entry fs.DirEntry) (string, stri
 	path := filepath.Join(dir, entry.Name())
 
 	if entry.Type()&fs.ModeSymlink == 0 {
-		if !entry.IsDir() || isStubDir(path) {
+		if !entry.IsDir() || isStubDir(path) || !skill.HasRoot(path) {
 			return "", "", false
 		}
 
@@ -139,7 +139,7 @@ func (s *skillsSurface) skillRootAt(dir string, entry fs.DirEntry) (string, stri
 	}
 
 	target, err := filepath.EvalSymlinks(path)
-	if err != nil || s.ignored(target) || isStubDir(target) {
+	if err != nil || s.ignored(target) || isStubDir(target) || !skill.HasRoot(target) {
 		return "", "", false
 	}
 

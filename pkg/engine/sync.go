@@ -86,7 +86,9 @@ func (e *Engine) syncKind(ctx context.Context, spec kind.Spec, agents []*agent.A
 		}
 	}
 
-	report.VaultChanged = !vaultItems.Equal(original)
+	retired := e.cleanupInvalidSkills(spec, views, st, opts, &report)
+
+	report.VaultChanged = retired || !vaultItems.Equal(original)
 
 	if !opts.DryRun {
 		if report.VaultChanged || dirty {
@@ -111,6 +113,23 @@ func (e *Engine) syncKind(ctx context.Context, spec kind.Spec, agents []*agent.A
 	}
 
 	return report
+}
+
+// cleanupInvalidSkills retires beadle-owned canon entries without a root
+// SKILL.md and prunes them from the writable file surfaces. A dry run and the
+// pull direction leave the canon alone; foreign directories are never touched.
+func (e *Engine) cleanupInvalidSkills(spec kind.Spec, views []*view, st *state.State, opts SyncOptions, report *KindReport) bool {
+	if spec.ID != kind.Skills || opts.DryRun || opts.Direction == config.ModePull {
+		return false
+	}
+
+	for _, v := range views {
+		if v.mode.Pushes() {
+			pruneInvalidSkills(v.surface.Path(), v.base, report)
+		}
+	}
+
+	return e.retireInvalidSkills(st, report)
 }
 
 func (e *Engine) prepareProjects(spec kind.Spec, report *KindReport) bool {
