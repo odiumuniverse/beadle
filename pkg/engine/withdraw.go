@@ -166,7 +166,7 @@ type withdrawPlan struct {
 // It performs no writes, so the caller can checkpoint the records before the
 // deletions run.
 func (e *Engine) planBundleWithdrawal(
-	ctx context.Context, host bundle.Host, st *state.State, req bundle.Request,
+	ctx context.Context, host bundle.Host, st *state.State, req bundle.Request, cov coverage,
 ) ([]withdrawPlan, []string, []string) {
 	var (
 		plans []withdrawPlan
@@ -202,7 +202,7 @@ func (e *Engine) planBundleWithdrawal(
 		}
 
 		canon := itemGroups(canonItems, k)
-		delivered := requestGroups(k, req)
+		delivered := withdrawalDelivered(k, req, cov)
 
 		var shared map[string]bool
 		if k == kind.Skills {
@@ -399,6 +399,8 @@ func (e *Engine) rematerializeBundle(ctx context.Context, host bundle.Host, entr
 		return nil, nil, nil
 	}
 
+	// The restore path keeps the unfiltered canon: a covered name may need to
+	// come back when its foreign copy is gone.
 	req, warns, err := e.bundleRequest(host)
 	if err != nil {
 		return nil, warns, err

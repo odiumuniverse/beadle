@@ -144,8 +144,9 @@ func (e *Engine) BundlesEnable(ctx context.Context, hostName string) (Report, er
 		return report, err
 	}
 
-	req, reqWarns, err := e.bundleRequest(host)
+	req, cov, reqWarns, err := e.bundleRenderRequest(host)
 	report.Warnings = append(report.Warnings, reqWarns...)
+	report.Warnings = append(report.Warnings, cov.Warnings...)
 
 	if err != nil {
 		return report, err
@@ -180,7 +181,7 @@ func (e *Engine) BundlesEnable(ctx context.Context, hostName string) (Report, er
 	entry.ProbeNote = probeNote
 
 	if entry.Registered && tier == state.VerifyExecuted {
-		return e.enableVerifiedBundle(ctx, host, st, req, entry, result, action, note, &report)
+		return e.enableVerifiedBundle(ctx, host, st, req, cov, entry, result, action, note, &report)
 	}
 
 	st.Bundles[string(host)] = entry
@@ -215,10 +216,10 @@ func reportedVersion(entry state.BundleState, result bundle.Result) string {
 }
 
 func (e *Engine) enableVerifiedBundle(
-	ctx context.Context, host bundle.Host, st *state.State, req bundle.Request,
+	ctx context.Context, host bundle.Host, st *state.State, req bundle.Request, cov coverage,
 	entry state.BundleState, result bundle.Result, action, note string, report *Report,
 ) (Report, error) {
-	plans, kept, warnList := e.planBundleWithdrawal(ctx, host, st, req)
+	plans, kept, warnList := e.planBundleWithdrawal(ctx, host, st, req, cov)
 	report.Warnings = append(report.Warnings, warnList...)
 
 	planned := plannedWithdrawn(plans)
@@ -582,6 +583,16 @@ func bundleSkills(items kind.Items) (map[string]map[string][]byte, []string) {
 		skills[name][rel] = items[key]
 	}
 
+	for _, name := range slices.Sorted(maps.Keys(skills)) {
+		if _, ok := skills[name][farmSkillFile]; ok {
+			continue
+		}
+
+		warns = append(warns, fmt.Sprintf("bundles: skill %s has no root %s; not rendered", name, farmSkillFile))
+
+		delete(skills, name)
+	}
+
 	return skills, warns
 }
 
@@ -607,8 +618,9 @@ func (e *Engine) refreshBundles(ctx context.Context, st *state.State, report *Re
 			continue
 		}
 
-		req, warns, err := e.bundleRequest(host)
+		req, cov, warns, err := e.bundleRenderRequest(host)
 		report.Warnings = append(report.Warnings, warns...)
+		report.Warnings = append(report.Warnings, cov.Warnings...)
 
 		if err != nil {
 			report.Warnings = append(report.Warnings, "bundles: "+err.Error())
@@ -882,10 +894,12 @@ func (e *Engine) bundleHostStateIssues(ctx context.Context, st *state.State, hos
 
 	issues = append(issues, e.bundleRegistrationIssues(hostName, host, entry)...)
 
-	req, _, err := e.bundleRequest(host)
+	req, cov, _, err := e.bundleRenderRequest(host)
 	if err != nil {
 		return append(issues, Issue{Severity: SeverityWarn, Message: "bundles: " + err.Error()})
 	}
+
+	issues = append(issues, coverageIssues(host, cov)...)
 
 	fresh, _, err := bundle.Plan(req)
 	if err != nil {
@@ -1082,6 +1096,29 @@ func (e *Engine) validateActiveClaudeBundle(st *state.State) []Issue {
 	}
 
 	return nil
+}
+
+// coverageIssues renders the coverage scan for the doctor: fork warnings per
+// name and one Info line per host.
+func coverageIssues(host bundle.Host, cov coverage) []Issue {
+	var issues []Issue
+
+	for _, warn := range cov.Warnings {
+		issues = append(issues, Issue{Severity: SeverityWarn, Kind: kind.Skills, Agent: host.AgentID(), Message: warn})
+	}
+
+	if len(cov.Skills) == 0 {
+		return issues
+	}
+
+	names := slices.Sorted(maps.Keys(cov.Skills))
+
+	issues = append(issues, Issue{
+		Severity: SeverityInfo, Kind: kind.Skills, Agent: host.AgentID(),
+		Message: fmt.Sprintf("%d skill(s) covered by other tools: %s", len(names), summarizeFarmNames(names)),
+	})
+
+	return issues
 }
 
 func (e *Engine) bundleRegistrationIssues(hostName string, host bundle.Host, entry state.BundleState) []Issue {
