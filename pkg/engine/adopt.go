@@ -94,15 +94,23 @@ func (e *Engine) Adopt(ctx context.Context, name, hostName string, dryRun bool) 
 
 // collectAdoptions resolves every target and returns the records to stash.
 // With an explicit host a refusal is an error; otherwise the host is skipped
-// with a warning and the other hosts still proceed.
+// with a warning and the other hosts still proceed. A dry run cannot move the
+// copy, so it simulates the moves: a provider already planned for one host is
+// reported as adopted there and skipped for the next, exactly like the real
+// run where the first stash removes the copy from the other read areas.
 func (e *Engine) collectAdoptions(
 	report *Report, targets []*agent.Agent, name string, digest cas.Hash,
 	hostName string, dryRun bool, st *state.State, canon map[string]skill.Tree,
 ) ([]state.Adoption, bool, error) {
 	var (
 		staged    []state.Adoption
+		planned   map[string]string
 		adoptable bool
 	)
+
+	if dryRun {
+		planned = map[string]string{}
+	}
 
 	for _, a := range targets {
 		record, note := e.adoptable(a, name, digest, st, canon)
@@ -117,9 +125,20 @@ func (e *Engine) collectAdoptions(
 			continue
 		}
 
+		if owner, taken := planned[record.Provider]; taken {
+			note = fmt.Sprintf("the copy at %s is already adopted for %s", record.Provider, owner)
+
+			report.Warnings = append(report.Warnings, a.ID+": "+note)
+			report.Adoptions = append(report.Adoptions, AdoptResult{Agent: a.ID, Name: name, Action: adoptSkipped, Note: note})
+
+			continue
+		}
+
 		adoptable = true
 
 		if dryRun {
+			planned[record.Provider] = a.ID
+
 			report.Adoptions = append(report.Adoptions, AdoptResult{Agent: a.ID, Name: name, Action: adoptPlan, Provider: record.Provider, Note: note})
 
 			continue

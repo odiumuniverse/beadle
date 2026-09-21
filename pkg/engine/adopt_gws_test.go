@@ -421,3 +421,41 @@ func TestAdoptWithoutHostAdoptsTheOwningSurfaceOnce(t *testing.T) {
 		})
 	})
 }
+
+func TestAdoptDryRunSimulatesTheSharedCopy(t *testing.T) {
+	Convey("Given a foreign symlink both claude and opencode can read", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		write(t, f.vaultSkill("alpha"), "# alpha\n")
+		foreignSkill(t, f, "alpha", "# alpha\n")
+
+		link := filepath.Join(f.home, ".claude", "skills", "alpha")
+		stash := filepath.Join(f.vault.AdoptionsDir(), agent.ClaudeCodeID, "alpha")
+
+		Convey("When adopt runs dry without a host", func() {
+			report, err := f.engine.Adopt(t.Context(), "alpha", "", true)
+			So(err, ShouldBeNil)
+
+			Convey("Then the copy is planned once and the other host is skipped", func() {
+				actions := map[string]string{}
+				for _, result := range report.Adoptions {
+					actions[result.Agent] = result.Action
+				}
+
+				So(actions[agent.ClaudeCodeID], ShouldEqual, "would-adopt")
+				So(actions[agent.OpenCodeID], ShouldEqual, "skipped")
+				So(strings.Join(report.Warnings, " "), ShouldContainSubstring, agent.ClaudeCodeID)
+
+				_, statErr := os.Lstat(link)
+				So(statErr, ShouldBeNil)
+				So(fsutil.Exists(stash), ShouldBeFalse)
+
+				_, ok := loadState(t, f).AdoptionFor(agent.ClaudeCodeID, "alpha")
+				So(ok, ShouldBeFalse)
+			})
+		})
+	})
+}
