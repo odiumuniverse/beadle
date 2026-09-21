@@ -386,6 +386,8 @@ func formatPatchedValue(root *hujson.Value, op patchOp, inline map[string]bool, 
 }
 
 func formatMember(obj *hujson.Object, member *hujson.ObjectMember, value any, unit string, depth int) {
+	member.Name.BeforeExtra = takeSameLineComment(obj, member.Name.BeforeExtra)
+
 	indent, after, ok := memberIndent(obj, member, depth, unit)
 	if !ok || (after != nil && !isWhitespace(obj.AfterExtra)) {
 		return
@@ -425,6 +427,22 @@ func formatMember(obj *hujson.Object, member *hujson.ObjectMember, value any, un
 	}
 
 	member.Value.Value = parsed.Value
+}
+
+func takeSameLineComment(obj *hujson.Object, extra hujson.Extra) hujson.Extra {
+	idx := bytes.IndexByte(obj.AfterExtra, '\n')
+	if idx <= 0 {
+		return extra
+	}
+
+	head := obj.AfterExtra[:idx]
+	if !bytes.ContainsRune(head, '/') {
+		return extra
+	}
+
+	obj.AfterExtra = obj.AfterExtra[idx:]
+
+	return append(hujson.Extra(string(head)), extra...)
 }
 
 func trailingComment(extra hujson.Extra) bool {
