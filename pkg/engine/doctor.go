@@ -84,6 +84,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.skillCollisionIssues(active)...)
 	issues = append(issues, e.skillShadowIssues(active)...)
 	issues = append(issues, e.visibilityIssues(st, active)...)
+	issues = append(issues, e.adoptionIssues(st)...)
 	issues = append(issues, e.canonSkillValidityIssues(st)...)
 	issues = append(issues, e.secretIssues()...)
 	issues = append(issues, e.projectScopeIssues(ctx, active)...)
@@ -762,6 +763,34 @@ func (e *Engine) visibilityIssues(st *state.State, active []*agent.Agent) []Issu
 		issues = append(issues, Issue{
 			Severity: SeverityInfo, Kind: kind.Skills, Agent: a.ID,
 			Message: fmt.Sprintf("%d skill(s) covered by other tools: %s", len(names), summarizeFarmNames(names)),
+		})
+	}
+
+	return issues
+}
+
+// adoptionIssues reports the active skill adoptions: one Info per record,
+// plus a Warn when neither the stashed original nor its symlink target is
+// left, so a restore is no longer possible.
+func (e *Engine) adoptionIssues(st *state.State) []Issue {
+	var issues []Issue
+
+	for _, record := range st.Adoptions {
+		stash := e.adoptionStashPath(record.Host, record.Name)
+
+		issues = append(issues, Issue{
+			Severity: SeverityInfo, Kind: kind.Skills, Agent: record.Host,
+			Message: fmt.Sprintf("skill %s was adopted (original at %s); run beadle skills unadopt %s --host %s to restore it",
+				record.Name, displayHomePath(stash, e.home), record.Name, record.Host),
+		})
+
+		if entryExists(stash) || (record.Target != "" && entryExists(record.Target)) {
+			continue
+		}
+
+		issues = append(issues, Issue{
+			Severity: SeverityWarn, Kind: kind.Skills, Agent: record.Host,
+			Message: fmt.Sprintf("the adopted copy of %s is gone (neither the stash nor the original target is there); the record stays for manual review", record.Name),
 		})
 	}
 

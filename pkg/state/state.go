@@ -137,6 +137,17 @@ type Refusal struct {
 	Message string    `json:"message"`
 }
 
+// Adoption records one foreign skill copy beadle moved aside on a host
+// surface, so unadopt can bring the original back.
+type Adoption struct {
+	Host     string    `json:"host"`
+	Name     string    `json:"name"`
+	Provider string    `json:"provider"`
+	Target   string    `json:"target,omitempty"`
+	Digest   cas.Hash  `json:"digest,omitempty"`
+	At       time.Time `json:"at"`
+}
+
 type State struct {
 	Version   int                         `json:"version"`
 	Bases     map[kind.ID]map[string]Base `json:"bases,omitempty"`
@@ -146,6 +157,7 @@ type State struct {
 	Drift     map[string]Drift            `json:"drift,omitempty"`
 	Bundles   map[string]BundleState      `json:"bundles,omitempty"`
 	Refusals  []Refusal                   `json:"refusals,omitempty"`
+	Adoptions []Adoption                  `json:"adoptions,omitempty"`
 }
 
 func New() *State {
@@ -230,6 +242,29 @@ func (s *State) SetBase(k kind.ID, agent string, base Base) {
 	}
 
 	s.Bases[k][agent] = base
+}
+
+// AdoptionFor returns the adoption record of one host and skill.
+func (s *State) AdoptionFor(host, name string) (Adoption, bool) {
+	for _, record := range s.Adoptions {
+		if record.Host == host && record.Name == name {
+			return record, true
+		}
+	}
+
+	return Adoption{}, false
+}
+
+// RemoveAdoption drops the adoption record of one host and skill and reports
+// whether it existed.
+func (s *State) RemoveAdoption(host, name string) bool {
+	before := len(s.Adoptions)
+
+	s.Adoptions = slices.DeleteFunc(s.Adoptions, func(record Adoption) bool {
+		return record.Host == host && record.Name == name
+	})
+
+	return len(s.Adoptions) != before
 }
 
 func (s *State) Hashes() []cas.Hash {

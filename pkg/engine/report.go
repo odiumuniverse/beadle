@@ -86,6 +86,7 @@ type Report struct {
 	Warnings  []string         `json:"warnings,omitempty"`
 	Resolved  []string         `json:"resolved,omitempty"`
 	Refusals  []state.Refusal  `json:"refusals,omitempty"`
+	Adoptions []AdoptResult    `json:"adoptions,omitempty"`
 
 	RulingsApplied    []RulingEvent `json:"rulings_applied,omitempty"`
 	RulingSuggestions []RulingEvent `json:"ruling_suggestions,omitempty"`

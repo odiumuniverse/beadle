@@ -23,6 +23,10 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		st.ReplaceConflicts(kind.MCP, "opencode", []state.Conflict{{
 			Kind: kind.MCP, Agent: "opencode", Key: "alpha", Reason: state.ReasonModified, Since: time.Unix(100, 0).UTC(),
 		}})
+		st.Adoptions = []state.Adoption{{
+			Host: "claude-code", Name: "alpha", Provider: "/home/u/.claude/skills/alpha",
+			Target: "/home/u/skills-src/alpha", Digest: cas.HashOf([]byte("a")), At: time.Unix(100, 0).UTC(),
+		}}
 
 		Convey("When it is saved and loaded back", func() {
 			So(st.Save(path), ShouldBeNil)
@@ -40,6 +44,36 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 				So(ok, ShouldBeFalse)
 
 				So(loaded.OpenConflicts(), ShouldHaveLength, 1)
+
+				adoption, ok := loaded.AdoptionFor("claude-code", "alpha")
+				So(ok, ShouldBeTrue)
+				So(adoption.Target, ShouldEqual, "/home/u/skills-src/alpha")
+			})
+		})
+	})
+}
+
+func TestAdoptionLookup(t *testing.T) {
+	Convey("Given a state with one adoption record", t, func() {
+		st := state.New()
+		st.Adoptions = []state.Adoption{{Host: "claude-code", Name: "alpha", Provider: "/p/alpha"}}
+
+		Convey("When the record is looked up", func() {
+			Convey("Then it is found by host and name only", func() {
+				_, ok := st.AdoptionFor("claude-code", "alpha")
+				So(ok, ShouldBeTrue)
+
+				_, ok = st.AdoptionFor("claude-code", "beta")
+				So(ok, ShouldBeFalse)
+
+				_, ok = st.AdoptionFor("opencode", "alpha")
+				So(ok, ShouldBeFalse)
+			})
+
+			Convey("And removing it reports whether it existed", func() {
+				So(st.RemoveAdoption("opencode", "alpha"), ShouldBeFalse)
+				So(st.RemoveAdoption("claude-code", "alpha"), ShouldBeTrue)
+				So(st.Adoptions, ShouldBeEmpty)
 			})
 		})
 	})

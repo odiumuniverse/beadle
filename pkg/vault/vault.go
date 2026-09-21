@@ -150,6 +150,13 @@ func (v *Vault) RulingsDir() string {
 	return filepath.Join(v.root, "rulings")
 }
 
+// AdoptionsDir returns the machine-local directory holding the foreign skill
+// copies beadle adopted. It lives inside the gitignored state/ tree, so the
+// original bytes never enter the vault history.
+func (v *Vault) AdoptionsDir() string {
+	return filepath.Join(v.root, "state", "adoptions")
+}
+
 // MergetoolPath returns the machine-local file describing the active
 // mergetool merge, if any.
 func (v *Vault) MergetoolPath() string {
