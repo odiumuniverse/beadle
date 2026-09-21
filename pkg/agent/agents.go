@@ -89,11 +89,12 @@ func OpenCode(home, cwd string) *Agent {
 				path: filepath.Join(dir, agentsMarkdown),
 				traits: Traits{
 					DefaultMode: config.ModeSync,
-					Note:        "without its own AGENTS.md OpenCode reads ~/.claude/CLAUDE.md natively",
+					Note:        "OpenCode V2 reads AGENTS.md only: the CLAUDE.md fallback is gone; V1 and V2 config dialects are both supported",
 				},
 			},
 			&mcpSurface{
-				file: configFile, pointer: "/mcp", codec: openCodeMCP,
+				file: configFile, pointer: openCodeMCPPointer, codec: openCodeMCP,
+				target: openCodeMCPTarget,
 				traits: Traits{
 					DefaultMode: config.ModeSync,
 					ReloadHint:  "OpenCode reads its config at startup: restart OpenCode to load the changes",
@@ -109,7 +110,9 @@ func OpenCode(home, cwd string) *Agent {
 				},
 			},
 			&permSurface{
-				file: configFile, pointer: "/permission", codec: openCodeCodec{},
+				file: configFile, pointer: openCodePermissionPointer, codec: openCodeCodec{},
+				v2Codec: openCodeV2Codec{},
+				target:  openCodePermissionTarget,
 				traits: Traits{
 					DefaultMode: config.ModeSync,
 					ReloadHint:  "OpenCode reads its config at startup: restart OpenCode to load the changes",

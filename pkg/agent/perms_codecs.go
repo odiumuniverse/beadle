@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -179,7 +180,9 @@ const openCodeBash = "bash"
 
 type openCodeCodec struct{}
 
-func (openCodeCodec) read(block map[string]any) kind.Items {
+func (openCodeCodec) read(raw any) kind.Items {
+	block, _ := raw.(map[string]any)
+
 	rules := permission.Rules{}
 
 	for key, value := range block {
@@ -208,7 +211,12 @@ func (openCodeCodec) read(block map[string]any) kind.Items {
 	return rulesToItems(rules)
 }
 
-func (c openCodeCodec) ops(pointer string, block map[string]any, desired kind.Items) []patchOp {
+func (c openCodeCodec) ops(pointer string, raw any, found bool, desired kind.Items) ([]patchOp, error) {
+	block, ok := raw.(map[string]any)
+	if found && !ok {
+		return nil, fmt.Errorf("%s is not an object, refusing to rewrite it", pointer)
+	}
+
 	current := c.read(block)
 
 	_, bashIsObject := block[openCodeBash].(map[string]any)
@@ -244,7 +252,7 @@ func (c openCodeCodec) ops(pointer string, block map[string]any, desired kind.It
 		ops = append(ops, addOp(path, string(want)))
 	}
 
-	return ops
+	return withContainer(pointer, found, ops), nil
 }
 
 func (openCodeCodec) project(key, effect string) (string, bool) {

@@ -11,15 +11,30 @@ import (
 )
 
 type permCodec interface {
-	read(block map[string]any) kind.Items
-	ops(pointer string, block map[string]any, desired kind.Items) []patchOp
+	read(raw any) kind.Items
+	ops(pointer string, raw any, found bool, desired kind.Items) ([]patchOp, error)
 	project(key, effect string) (string, bool)
+}
+
+type permPlacement struct {
+	v2      bool
+	primary string
+	shadow  string
+}
+
+type permResolution struct {
+	pointer     string
+	codec       permCodec
+	shadow      string
+	shadowCodec permCodec
 }
 
 type permSurface struct {
 	file    func() string
 	pointer string
 	codec   permCodec
+	v2Codec permCodec
+	target  func(data []byte) (permPlacement, error)
 	traits  Traits
 }
 
@@ -30,6 +45,26 @@ func (s *permSurface) Path() string { return s.file() }
 func (s *permSurface) WatchPaths() []string { return []string{s.file()} }
 
 func (s *permSurface) Traits() Traits { return s.traits }
+
+func (s *permSurface) resolve(data []byte) (permResolution, error) {
+	if s.target == nil {
+		return permResolution{pointer: s.pointer, codec: s.codec}, nil
+	}
+
+	placement, err := s.target(data)
+	if err != nil {
+		return permResolution{}, err
+	}
+
+	resolved := permResolution{pointer: placement.primary, codec: s.codec}
+	if placement.v2 {
+		resolved.codec = s.v2Codec
+		resolved.shadow = placement.shadow
+		resolved.shadowCodec = s.codec
+	}
+
+	return resolved, nil
+}
 
 func (s *permSurface) Read(context.Context) (Snapshot, error) {
 	path := s.file()
@@ -43,15 +78,17 @@ func (s *permSurface) Read(context.Context) (Snapshot, error) {
 		return Snapshot{Items: kind.Items{}}, nil
 	}
 
-	var raw any
-
-	if _, err := decodePointer(data, s.pointer, &raw); err != nil {
+	resolved, err := s.resolve(data)
+	if err != nil {
 		return Snapshot{}, fmt.Errorf("%s: %w", path, err)
 	}
 
-	block, _ := raw.(map[string]any)
+	items, err := readPermItems(data, resolved)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("%s: %w", path, err)
+	}
 
-	return Snapshot{Items: s.codec.read(block), Present: true}, nil
+	return Snapshot{Items: items, Present: true}, nil
 }
 
 func (s *permSurface) Write(_ context.Context, desired kind.Items) error {
@@ -62,25 +99,18 @@ func (s *permSurface) Write(_ context.Context, desired kind.Items) error {
 			return nil, false, fmt.Errorf("%s: %w", path, ErrNotConfigured)
 		}
 
-		var raw any
-
-		found, err := decodePointer(data, s.pointer, &raw)
+		resolved, err := s.resolve(data)
 		if err != nil {
 			return nil, false, fmt.Errorf("%s: %w", path, err)
 		}
 
-		block, isObject := raw.(map[string]any)
-		if found && !isObject {
-			return nil, false, fmt.Errorf("%s: %s is not an object, refusing to rewrite it", path, s.pointer)
+		ops, err := writePermOps(data, resolved, desired)
+		if err != nil {
+			return nil, false, fmt.Errorf("%s: %w", path, err)
 		}
 
-		ops := s.codec.ops(s.pointer, block, desired)
 		if len(ops) == 0 {
 			return nil, false, nil
-		}
-
-		if !found {
-			ops = append([]patchOp{addOp(s.pointer, map[string]any{})}, ops...)
 		}
 
 		out, err := applyPatch(data, ops)
@@ -94,11 +124,131 @@ func (s *permSurface) Write(_ context.Context, desired kind.Items) error {
 
 func (s *permSurface) Project(key string, value []byte) (string, []byte, bool) {
 	pkey, ok := s.codec.project(key, string(value))
+
+	if !ok && s.v2Codec != nil {
+		pkey, ok = s.v2Codec.project(key, string(value))
+	}
+
 	if !ok {
 		return "", nil, false
 	}
 
 	return pkey, value, true
+}
+
+func readPermItems(data []byte, resolved permResolution) (kind.Items, error) {
+	var raw any
+
+	if _, err := decodePointer(data, resolved.pointer, &raw); err != nil {
+		return nil, err
+	}
+
+	items := resolved.codec.read(raw)
+
+	if resolved.shadow == "" {
+		return items, nil
+	}
+
+	raw = nil
+
+	if _, err := decodePointer(data, resolved.shadow, &raw); err != nil {
+		return nil, err
+	}
+
+	for key, value := range resolved.shadowCodec.read(raw) {
+		if _, exists := items[key]; !exists {
+			items[key] = value
+		}
+	}
+
+	return items, nil
+}
+
+func writePermOps(data []byte, resolved permResolution, desired kind.Items) ([]patchOp, error) {
+	var primaryRaw, shadowRaw any
+
+	primaryFound, err := decodePointer(data, resolved.pointer, &primaryRaw)
+	if err != nil {
+		return nil, err
+	}
+
+	shadowFound := false
+
+	if resolved.shadow != "" {
+		shadowFound, err = decodePointer(data, resolved.shadow, &shadowRaw)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	primary := resolved.codec.read(primaryRaw)
+
+	shadow := kind.Items{}
+	if resolved.shadowCodec != nil {
+		shadow = resolved.shadowCodec.read(shadowRaw)
+	}
+
+	primaryDesired, shadowDesired := permTargets(desired, primary, shadow)
+
+	ops, err := resolved.codec.ops(resolved.pointer, primaryRaw, primaryFound, primaryDesired)
+	if err != nil {
+		return nil, err
+	}
+
+	if resolved.shadow == "" {
+		return ops, nil
+	}
+
+	shadowOps, err := resolved.shadowCodec.ops(resolved.shadow, shadowRaw, shadowFound, shadowDesired)
+	if err != nil {
+		return nil, err
+	}
+
+	return append(ops, shadowOps...), nil
+}
+
+func permTargets(desired, primary, shadow kind.Items) (kind.Items, kind.Items) {
+	primaryDesired := kind.Items{}
+	shadowDesired := kind.Items{}
+
+	for _, key := range unionItemKeys(desired, unionItems(primary, shadow)) {
+		want, keep := desired[key]
+		_, inPrimary := primary[key]
+		_, inShadow := shadow[key]
+
+		switch {
+		case !keep:
+		case inPrimary:
+			primaryDesired[key] = want
+
+			if inShadow && string(primary[key]) == string(want) {
+				shadowDesired[key] = shadow[key]
+			}
+		case inShadow:
+			shadowDesired[key] = want
+		default:
+			primaryDesired[key] = want
+		}
+	}
+
+	return primaryDesired, shadowDesired
+}
+
+func unionItems(a, b kind.Items) kind.Items {
+	out := make(kind.Items, len(a)+len(b))
+
+	maps.Copy(out, a)
+	maps.Copy(out, b)
+
+	return out
+}
+
+func withContainer(pointer string, found bool, ops []patchOp) []patchOp {
+	if found || len(ops) == 0 {
+		return ops
+	}
+
+	return append([]patchOp{addOp(pointer, map[string]any{})}, ops...)
 }
 
 type effectList struct {
@@ -112,7 +262,9 @@ type listCodec struct {
 	render func(key string) (string, bool)
 }
 
-func (c listCodec) read(block map[string]any) kind.Items {
+func (c listCodec) read(raw any) kind.Items {
+	block, _ := raw.(map[string]any)
+
 	rules := permission.Rules{}
 
 	for _, list := range c.lists {
@@ -126,7 +278,12 @@ func (c listCodec) read(block map[string]any) kind.Items {
 	return rulesToItems(rules)
 }
 
-func (c listCodec) ops(pointer string, block map[string]any, desired kind.Items) []patchOp {
+func (c listCodec) ops(pointer string, raw any, found bool, desired kind.Items) ([]patchOp, error) {
+	block, ok := raw.(map[string]any)
+	if found && !ok {
+		return nil, fmt.Errorf("%s is not an object, refusing to rewrite it", pointer)
+	}
+
 	var ops []patchOp
 
 	for _, list := range c.lists {
@@ -144,7 +301,7 @@ func (c listCodec) ops(pointer string, block map[string]any, desired kind.Items)
 		ops = append(ops, addOp(pointerJoin(pointer, list.key), next))
 	}
 
-	return ops
+	return withContainer(pointer, found, ops), nil
 }
 
 func (c listCodec) rebuild(current []string, effect string, desired kind.Items) []string {

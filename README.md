@@ -126,7 +126,7 @@ manage alone.
 | Agent | Rules | MCP | Skills | Permissions |
 |---|---|---|---|---|
 | Claude Code | ✅ `~/.claude/CLAUDE.md` | ✅ `~/.claude.json` | ✅ writes `~/.claude/skills` | ✅ opt-in (tools, shell, MCP) |
-| OpenCode | ✅ `~/.config/opencode/AGENTS.md` | ✅ `opencode.jsonc` (comments preserved) | reads Claude/shared dirs natively | ✅ opt-in (tools, shell, MCP) |
+| OpenCode | ✅ `~/.config/opencode/AGENTS.md` (V2 reads AGENTS.md only) | ✅ `opencode.jsonc` — V1 `mcp` и V2 `mcp.servers`, mixed union (comments preserved) | reads Claude/shared dirs natively | ✅ opt-in (V1 `permission` / V2 `permissions`; tools, shell, MCP) |
 | Gemini CLI | ✅ `~/.gemini/GEMINI.md` | ✅ `settings.json` (`httpUrl`) | ✅ `~/.gemini/skills` | ✅ opt-in (shell rules) |
 | Cursor | — (user rules live in the account) | ✅ `~/.cursor/mcp.json` | reads Claude/shared dirs natively | ✅ opt-in (shell, MCP) |
 | Antigravity CLI | — (reads `~/.gemini/GEMINI.md` via the Gemini CLI adapter) | ✅ `~/.gemini/config/mcp_config.json` (`serverUrl`) | — (v1 not managed) | — (not managed: `action(target)` dialect) |

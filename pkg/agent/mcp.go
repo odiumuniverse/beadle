@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/mcp"
@@ -19,10 +20,16 @@ type mcpCodec struct {
 
 const mcpServersPointer = "/mcpServers"
 
+type mcpPlacement struct {
+	primary string
+	shadow  string
+}
+
 type mcpSurface struct {
 	file    func() string
 	pointer string
 	codec   mcpCodec
+	target  func(data []byte) (mcpPlacement, error)
 	traits  Traits
 }
 
@@ -38,6 +45,14 @@ func (s *mcpSurface) WatchPaths() []string { return []string{s.file()} }
 
 func (s *mcpSurface) Traits() Traits { return s.traits }
 
+func (s *mcpSurface) resolve(data []byte) (mcpPlacement, error) {
+	if s.target == nil {
+		return mcpPlacement{primary: s.pointer}, nil
+	}
+
+	return s.target(data)
+}
+
 func (s *mcpSurface) Read(context.Context) (Snapshot, error) {
 	path := s.file()
 
@@ -50,7 +65,12 @@ func (s *mcpSurface) Read(context.Context) (Snapshot, error) {
 		return Snapshot{Items: kind.Items{}}, nil
 	}
 
-	entries, _, err := decodeObjects(data, s.pointer)
+	placement, err := s.resolve(data)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("%s: %w", path, err)
+	}
+
+	entries, err := s.merged(data, placement)
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("%s: %w", path, err)
 	}
@@ -74,14 +94,14 @@ func (s *mcpSurface) Write(_ context.Context, desired kind.Items) error {
 			return nil, false, fmt.Errorf("%s: %w", path, ErrNotConfigured)
 		}
 
-		entries, found, err := decodeObjects(data, s.pointer)
+		placement, err := s.resolve(data)
 		if err != nil {
 			return nil, false, fmt.Errorf("%s: %w", path, err)
 		}
 
-		ops, err := s.ops(entries, found, desired)
+		ops, err := s.writeOps(data, placement, desired)
 		if err != nil {
-			return nil, false, err
+			return nil, false, fmt.Errorf("%s: %w", path, err)
 		}
 
 		if len(ops) == 0 {
@@ -97,49 +117,145 @@ func (s *mcpSurface) Write(_ context.Context, desired kind.Items) error {
 	})
 }
 
-func (s *mcpSurface) ops(entries map[string]map[string]any, found bool, desired kind.Items) ([]patchOp, error) {
+func (s *mcpSurface) merged(data []byte, placement mcpPlacement) (map[string]map[string]any, error) {
+	entries, _, err := decodeObjects(data, placement.primary)
+	if err != nil {
+		return nil, err
+	}
+
+	if entries == nil {
+		entries = map[string]map[string]any{}
+	}
+
+	if placement.shadow == "" {
+		return entries, nil
+	}
+
+	shadow, _, err := decodeObjects(data, placement.shadow)
+	if err != nil {
+		return nil, err
+	}
+
+	for name, entry := range shadow {
+		if existing, exists := entries[name]; exists {
+			if _, managed := s.codec.decode(existing); managed {
+				continue
+			}
+		}
+
+		entries[name] = entry
+	}
+
+	return entries, nil
+}
+
+func (s *mcpSurface) writeOps(data []byte, placement mcpPlacement, desired kind.Items) ([]patchOp, error) {
+	entries, found, err := decodeObjects(data, placement.primary)
+	if err != nil {
+		return nil, err
+	}
+
+	shadow := map[string]map[string]any{}
+
+	if placement.shadow != "" {
+		shadow, _, err = decodeObjects(data, placement.shadow)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	var ops []patchOp
 
 	if !found {
-		ops = append(ops, addOp(s.pointer, map[string]any{}))
+		ops, err = ensureOps(data, placement.primary)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	for _, name := range s.names(entries, desired) {
-		op, needed, err := s.entryOp(name, entries, desired)
+	for _, name := range unionNames(entries, shadow, desired) {
+		nameOps, err := s.nameOps(placement, name, entries, shadow, desired)
 		if err != nil {
 			return nil, err
 		}
 
-		if needed {
-			ops = append(ops, op)
-		}
+		ops = append(ops, nameOps...)
 	}
 
 	return ops, nil
 }
 
-func (s *mcpSurface) names(entries map[string]map[string]any, desired kind.Items) []string {
-	names := map[string]struct{}{}
+func (s *mcpSurface) nameOps(
+	placement mcpPlacement, name string, entries, shadow map[string]map[string]any, desired kind.Items,
+) ([]patchOp, error) {
+	primaryEntry, inPrimary := entries[name]
+	shadowEntry, inShadow := shadow[name]
 
-	for name := range desired {
-		names[name] = struct{}{}
+	primaryManaged := inPrimary && s.managed(primaryEntry)
+	shadowManaged := placement.shadow != "" && inShadow && s.managed(shadowEntry)
+
+	if _, keep := desired[name]; !keep {
+		return removeNameOps(placement, name, primaryManaged, shadowManaged), nil
 	}
 
-	for name, entry := range entries {
-		if _, managed := s.codec.decode(entry); managed {
-			names[name] = struct{}{}
+	if inPrimary {
+		op, needed, err := s.entryOp(placement.primary, name, entries, desired)
+		if err != nil {
+			return nil, err
 		}
+
+		if !needed {
+			return nil, nil
+		}
+
+		ops := []patchOp{op}
+
+		if shadowManaged {
+			ops = append(ops, removeOp(pointerJoin(placement.shadow, name)))
+		}
+
+		return ops, nil
 	}
 
-	return slices.Sorted(maps.Keys(names))
+	target, source := placement.primary, entries
+	if shadowManaged {
+		target, source = placement.shadow, shadow
+	}
+
+	op, needed, err := s.entryOp(target, name, source, desired)
+	if err != nil || !needed {
+		return nil, err
+	}
+
+	return []patchOp{op}, nil
 }
 
-func (s *mcpSurface) entryOp(name string, entries map[string]map[string]any, desired kind.Items) (patchOp, bool, error) {
-	path := pointerJoin(s.pointer, name)
+func removeNameOps(placement mcpPlacement, name string, primaryManaged, shadowManaged bool) []patchOp {
+	var ops []patchOp
+
+	if primaryManaged {
+		ops = append(ops, removeOp(pointerJoin(placement.primary, name)))
+	}
+
+	if shadowManaged {
+		ops = append(ops, removeOp(pointerJoin(placement.shadow, name)))
+	}
+
+	return ops
+}
+
+func (s *mcpSurface) managed(entry map[string]any) bool {
+	_, ok := s.codec.decode(entry)
+
+	return ok
+}
+
+func (s *mcpSurface) entryOp(pointer, name string, entries map[string]map[string]any, desired kind.Items) (patchOp, bool, error) {
+	path := pointerJoin(pointer, name)
 	entry, exists := entries[name]
 
-	want, keep := desired[name]
-	if !keep {
+	want, ok := desired[name]
+	if !ok {
 		return removeOp(path), true, nil
 	}
 
@@ -186,4 +302,55 @@ func (s *mcpSurface) Project(key string, value []byte) (string, []byte, bool) {
 	}
 
 	return key, mcp.Encode(back), true
+}
+
+func unionNames(entries, shadow map[string]map[string]any, desired kind.Items) []string {
+	names := map[string]struct{}{}
+
+	for name := range desired {
+		names[name] = struct{}{}
+	}
+
+	for name := range entries {
+		names[name] = struct{}{}
+	}
+
+	for name := range shadow {
+		names[name] = struct{}{}
+	}
+
+	return slices.Sorted(maps.Keys(names))
+}
+
+func ensureOps(data []byte, pointer string) ([]patchOp, error) {
+	var ops []patchOp
+
+	var raw any
+
+	for _, prefix := range pointerPrefixes(pointer) {
+		found, err := decodePointer(data, prefix, &raw)
+		if err != nil {
+			return nil, err
+		}
+
+		if !found {
+			ops = append(ops, addOp(prefix, map[string]any{}))
+		}
+
+		raw = nil
+	}
+
+	return ops, nil
+}
+
+func pointerPrefixes(pointer string) []string {
+	tokens := strings.Split(strings.TrimPrefix(pointer, "/"), "/")
+
+	prefixes := make([]string, 0, len(tokens))
+
+	for i := range tokens {
+		prefixes = append(prefixes, "/"+strings.Join(tokens[:i+1], "/"))
+	}
+
+	return prefixes
 }
