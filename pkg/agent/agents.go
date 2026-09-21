@@ -44,9 +44,10 @@ func ClaudeCode(home, cwd string) *Agent {
 				traits:  Traits{DefaultMode: config.ModeSync, ReloadHint: "new Claude Code sessions load MCP changes"},
 			},
 			&skillsSurface{
-				dir:         filepath.Join(dir, "skills"),
-				ignoreUnder: []string{filepath.Join(dir, "plugins")},
-				traits:      Traits{DefaultMode: config.ModeSync, Creatable: true},
+				dir:              filepath.Join(dir, "skills"),
+				ignoreUnder:      []string{filepath.Join(dir, "plugins")},
+				namespacedBundle: true,
+				traits:           Traits{DefaultMode: config.ModeSync, Creatable: true},
 			},
 			&memorySurface{
 				projects: filepath.Join(dir, "projects"),
@@ -104,6 +105,14 @@ func OpenCode(home, cwd string) *Agent {
 				dir:         filepath.Join(dir, "skills"),
 				ignoreUnder: []string{filepath.Join(home, ".claude", "plugins")},
 				alsoReads:   []string{filepath.Join(home, ".claude", "skills"), filepath.Join(home, ".agents", "skills")},
+				// The V2 docs define the read order (own directory last, so
+				// highest precedence); they are untested, so shadowing stays
+				// off and the order is informational only.
+				readOrder: []string{
+					filepath.Join(dir, "skills"),
+					filepath.Join(home, ".agents", "skills"),
+					filepath.Join(home, ".claude", "skills"),
+				},
 				traits: Traits{
 					DefaultMode: config.ModePull,
 					Note:        "OpenCode reads ~/.claude/skills and ~/.agents/skills natively",

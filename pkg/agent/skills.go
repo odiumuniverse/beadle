@@ -19,7 +19,50 @@ type skillsSurface struct {
 	dir         string
 	ignoreUnder []string
 	alsoReads   []string
-	traits      Traits
+	// shadowing tells whether the host collapses same-name copies of its
+	// read directories into one visible skill. Undeclared hosts read every
+	// copy (conservative: duplicates stay visible and are never hidden).
+	shadowing bool
+	// readOrder lists the read directories from the highest precedence to
+	// the lowest; it is only consulted when shadowing is set. Empty means
+	// the scan order (the own directory first).
+	readOrder []string
+	// namespacedBundle tells whether the host shows bundle skills under a
+	// separate namespace (Claude: beadle-canon:<name>), so a bundle copy
+	// never collapses with and never shadows a file copy.
+	namespacedBundle bool
+	traits           Traits
+}
+
+// SkillCaps describes how an agent composes same-name skill copies from its
+// read area. It is declared next to alsoReads: hosts without documented
+// precedence leave everything visible, so beadle never hides a copy it
+// cannot prove shadowed.
+type SkillCaps struct {
+	// Shadowing reports that the host collapses same-name copies between
+	// the read directories.
+	Shadowing bool
+	// ReadOrder lists the read directories from the highest precedence to
+	// the lowest; consulted only when Shadowing is set.
+	ReadOrder []string
+	// NamespacedBundle reports that bundle skills are visible in addition
+	// to the file copies instead of replacing them (Claude).
+	NamespacedBundle bool
+}
+
+// SkillCapsSurface declares the skill visibility caps of a surface.
+type SkillCapsSurface interface {
+	SkillCaps() SkillCaps
+}
+
+func (s *skillsSurface) SkillCaps() SkillCaps {
+	return SkillCaps{Shadowing: s.shadowing, ReadOrder: s.readOrder, NamespacedBundle: s.namespacedBundle}
+}
+
+// ReadDirs lists the directories the surface reads skills from, in scan
+// order (the own directory first).
+func (s *skillsSurface) ReadDirs() []string {
+	return slices.Concat([]string{s.dir}, s.alsoReads)
 }
 
 // SkillRef points to one readable copy of a skill.
@@ -34,10 +77,16 @@ type SkillReader interface {
 	ReadableSkills() ([]SkillRef, error)
 }
 
+// SkillReadArea lists the directories a skills surface reads from, in scan
+// order (the own directory first).
+type SkillReadArea interface {
+	ReadDirs() []string
+}
+
 func (s *skillsSurface) ReadableSkills() ([]SkillRef, error) {
 	var refs []SkillRef
 
-	for _, dir := range slices.Concat([]string{s.dir}, s.alsoReads) {
+	for _, dir := range s.ReadDirs() {
 		entries, err := os.ReadDir(dir)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue

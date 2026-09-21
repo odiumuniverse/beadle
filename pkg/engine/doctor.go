@@ -83,6 +83,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 
 	issues = append(issues, e.skillCollisionIssues(active)...)
 	issues = append(issues, e.skillShadowIssues(active)...)
+	issues = append(issues, e.visibilityIssues(st, active)...)
 	issues = append(issues, e.canonSkillValidityIssues(st)...)
 	issues = append(issues, e.secretIssues()...)
 	issues = append(issues, e.projectScopeIssues(ctx, active)...)
@@ -724,6 +725,60 @@ func (e *Engine) skillShadowIssuesFor(a *agent.Agent, refs []agent.SkillRef) []I
 	}
 
 	return issues
+}
+
+// visibilityIssues reports the canon skills a foreign copy already delivers
+// to file hosts, plus the forks between the canon and the copies a host can
+// read. Bundle hosts report both through bundleHostStateIssues (В-19).
+func (e *Engine) visibilityIssues(st *state.State, active []*agent.Agent) []Issue {
+	items, _, err := e.loadVault(kind.Skills)
+	if err != nil {
+		return []Issue{{Severity: SeverityWarn, Kind: kind.Skills, Message: "skills: " + err.Error()}}
+	}
+
+	canon := skill.Group(items)
+
+	var issues []Issue
+
+	for _, a := range active {
+		surface := a.Surface(kind.Skills)
+		if surface == nil || len(e.foreignReadDirs(surface)) == 0 || e.bundleActiveFor(st, a.ID) {
+			continue
+		}
+
+		vis := e.resolveSkillVisibility(a, surface, st, canon)
+
+		for _, warn := range vis.Warnings {
+			issues = append(issues, Issue{Severity: SeverityWarn, Kind: kind.Skills, Agent: a.ID, Message: warn})
+		}
+
+		covered := vis.foreignCoverage()
+		if len(covered) == 0 {
+			continue
+		}
+
+		names := slices.Sorted(maps.Keys(covered))
+
+		issues = append(issues, Issue{
+			Severity: SeverityInfo, Kind: kind.Skills, Agent: a.ID,
+			Message: fmt.Sprintf("%d skill(s) covered by other tools: %s", len(names), summarizeFarmNames(names)),
+		})
+	}
+
+	return issues
+}
+
+// bundleActiveFor reports whether the agent's native bundle owns the skills
+// channel; it reports its coverage and forks itself.
+func (e *Engine) bundleActiveFor(st *state.State, agentID string) bool {
+	host, ok := bundleHostFor(agentID)
+	if !ok {
+		return false
+	}
+
+	entry, ok := st.Bundles[string(host)]
+
+	return ok && entry.Enabled
 }
 
 func (e *Engine) sameSkillTree(cache map[string]skill.Tree, left, right string) (bool, error) {

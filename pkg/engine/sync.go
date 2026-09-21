@@ -15,6 +15,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/mcp"
 	"github.com/odiumuniverse/beadle/pkg/rulings"
+	"github.com/odiumuniverse/beadle/pkg/skill"
 	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
@@ -32,10 +33,13 @@ type view struct {
 	// plugin-sourced items and leaves the canon remnants alone.
 	pluginOnly  bool
 	pluginOwned map[string]struct{}
-	moved       int
-	holds       map[string]bool
-	conflicts   []state.Conflict
-	blobs       [][]byte
+	// visibility is the resolved skill copy map of the view's agent; it is
+	// set for writing skill views only (В-14).
+	visibility *visibility
+	moved      int
+	holds      map[string]bool
+	conflicts  []state.Conflict
+	blobs      [][]byte
 }
 
 func (v *view) frozen(spec kind.Spec, key string) bool {
@@ -88,6 +92,8 @@ func (e *Engine) syncKind(ctx context.Context, spec kind.Spec, agents []*agent.A
 
 	retired := e.cleanupInvalidSkills(spec, views, st, opts, &report)
 
+	e.attachSkillVisibility(spec, views, st, opts, vaultItems, &report)
+
 	report.VaultChanged = retired || !vaultItems.Equal(original)
 
 	if !opts.DryRun {
@@ -130,6 +136,121 @@ func (e *Engine) cleanupInvalidSkills(spec kind.Spec, views []*view, st *state.S
 	}
 
 	return e.retireInvalidSkills(st, report)
+}
+
+// attachSkillVisibility resolves the canon skills against the read area of
+// every writing view once per sync, so pushView can release the writable
+// copies another copy already delivers. Views without an independent read
+// directory are skipped: a foreign copy can only live there (В-14). The
+// warnings are reported for real runs only; doctor diagnoses dry runs.
+func (e *Engine) attachSkillVisibility(spec kind.Spec, views []*view, st *state.State, opts SyncOptions, vaultItems kind.Items, report *KindReport) {
+	if spec.ID != kind.Skills {
+		return
+	}
+
+	canon := skill.Group(vaultItems)
+
+	for _, v := range views {
+		if !v.mode.Pushes() || len(e.foreignReadDirs(v.surface)) == 0 {
+			continue
+		}
+
+		vis := e.resolveSkillVisibility(v.agent, v.surface, st, canon)
+		v.visibility = &vis
+
+		if !opts.DryRun {
+			report.Warnings = append(report.Warnings, vis.Warnings...)
+		}
+	}
+}
+
+// complementSkills drops the canon skills a foreign copy already delivers
+// when the local beadle copy is unmodified: the foreign copy is the single
+// winner for the host. Only base-owned copies leave, and only through the
+// ordinary surface write, so read-only entries keep their protection.
+func (e *Engine) complementSkills(spec kind.Spec, v *view, desired kind.Items, report *KindReport) kind.Items {
+	if spec.ID != kind.Skills || v.visibility == nil {
+		return desired
+	}
+
+	covered := v.visibility.foreignCoverage()
+	if len(covered) == 0 {
+		return desired
+	}
+
+	out := desired
+
+	for _, name := range slices.Sorted(maps.Keys(covered)) {
+		if v.holds[name] || v.snap.ReadOnly[name] != "" {
+			continue
+		}
+
+		files := groupFiles(v.snap.Items, name)
+		if len(files) > 0 {
+			if !groupMatchesBase(v.snap.Items, v.base, name, files) {
+				continue
+			}
+
+			for _, key := range files {
+				delete(out, key)
+			}
+
+			report.Warnings = append(report.Warnings, fmt.Sprintf("skills: %s is also delivered by %s; the beadle copy is not written", name, covered[name].path))
+
+			continue
+		}
+
+		// No local copy: keep the covered name from being written while the
+		// foreign copy delivers it.
+		for key := range out {
+			if strings.HasPrefix(key, name+"/") {
+				delete(out, key)
+			}
+		}
+	}
+
+	return out
+}
+
+// groupFiles lists the snapshot keys of one skill group, sorted.
+func groupFiles(items kind.Items, name string) []string {
+	prefix := name + "/"
+
+	var files []string
+
+	for key := range items {
+		if strings.HasPrefix(key, prefix) {
+			files = append(files, key)
+		}
+	}
+
+	slices.Sort(files)
+
+	return files
+}
+
+// groupMatchesBase reports that the local copy is beadle's own and untouched:
+// every local file matches the base and the base knows no extra file.
+func groupMatchesBase(snapshot, base kind.Items, name string, files []string) bool {
+	recorded := 0
+
+	for key := range base {
+		if groupName(kind.Skills, key) == name {
+			recorded++
+		}
+	}
+
+	if recorded != len(files) {
+		return false
+	}
+
+	for _, key := range files {
+		if !same(value(snapshot, key), value(base, key)) {
+			return false
+		}
+	}
+
+	return true
 }
 
 func (e *Engine) prepareProjects(spec kind.Spec, report *KindReport) bool {
@@ -574,6 +695,7 @@ func (e *Engine) pushView(
 
 	desired = dropInvalidMCP(spec, desired)
 	desired = e.suppressKept(spec, v, desired, report)
+	desired = e.complementSkills(spec, v, desired, report)
 
 	// The ref-form comparison alone cannot see the secrets mode: both the
 	// snapshot and the desired projection hold {secret:NAME} references, so a
