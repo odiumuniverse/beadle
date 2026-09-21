@@ -857,7 +857,7 @@ func (e *Engine) bundleIssues(ctx context.Context) []Issue {
 		hostName := string(host)
 		entry, exists := st.Bundles[hostName]
 
-		issues = append(issues, e.bundleHostStateIssues(ctx, host, hostName, entry, exists)...)
+		issues = append(issues, e.bundleHostStateIssues(ctx, st, host, hostName, entry, exists)...)
 	}
 
 	issues = append(issues, e.validateActiveClaudeBundle(st)...)
@@ -865,7 +865,7 @@ func (e *Engine) bundleIssues(ctx context.Context) []Issue {
 	return issues
 }
 
-func (e *Engine) bundleHostStateIssues(ctx context.Context, host bundle.Host, hostName string, entry state.BundleState, exists bool) []Issue {
+func (e *Engine) bundleHostStateIssues(ctx context.Context, st *state.State, host bundle.Host, hostName string, entry state.BundleState, exists bool) []Issue {
 	issues := e.bundleZeroDeliveryIssues(host, hostName, entry, exists)
 
 	if !exists {
@@ -896,7 +896,7 @@ func (e *Engine) bundleHostStateIssues(ctx context.Context, host bundle.Host, ho
 		issues = append(issues, Issue{Severity: SeverityWarn, Message: fmt.Sprintf("bundle %s is stale (registered %s, canon %s); run beadle sync", hostName, entry.Version, fresh.Version)})
 	}
 
-	issues = append(issues, e.bundlePresentationIssues(ctx, host, hostName, entry, req)...)
+	issues = append(issues, e.bundlePresentationIssues(ctx, st, host, hostName, entry, req)...)
 
 	return issues
 }
@@ -933,7 +933,7 @@ func (e *Engine) zeroDeliveryMessage(host bundle.Host, hostName string, k kind.I
 	return fmt.Sprintf("bundle %s is off for %s and nothing delivers the canon; %s", hostName, k, bundleRetry(host))
 }
 
-func (e *Engine) bundlePresentationIssues(ctx context.Context, host bundle.Host, hostName string, entry state.BundleState, req bundle.Request) []Issue {
+func (e *Engine) bundlePresentationIssues(ctx context.Context, st *state.State, host bundle.Host, hostName string, entry state.BundleState, req bundle.Request) []Issue {
 	if !entry.Registered {
 		return nil
 	}
@@ -951,7 +951,7 @@ func (e *Engine) bundlePresentationIssues(ctx context.Context, host bundle.Host,
 			}
 		}
 
-		alive, readIssues := e.canonAliveInSurface(ctx, host, req)
+		alive, readIssues := e.canonAliveInSurface(ctx, st, host, req)
 		issues = append(issues, readIssues...)
 
 		for _, element := range alive {
@@ -983,7 +983,12 @@ type aliveElement struct {
 	name string
 }
 
-func (e *Engine) canonAliveInSurface(ctx context.Context, host bundle.Host, req bundle.Request) ([]aliveElement, []Issue) {
+// canonAliveInSurface lists the canon elements a verified enable would
+// actually withdraw but that are still present: writable items (never a
+// symlink or another read-only copy) that beadle owns according to the
+// state base. Read-only copies and unmanaged directories are not double
+// delivery — enable leaves them alone by design.
+func (e *Engine) canonAliveInSurface(ctx context.Context, st *state.State, host bundle.Host, req bundle.Request) ([]aliveElement, []Issue) {
 	var (
 		alive  []aliveElement
 		issues []Issue
@@ -1005,8 +1010,16 @@ func (e *Engine) canonAliveInSurface(ctx context.Context, host bundle.Host, req 
 			continue
 		}
 
+		items, _ := writableItems(snap, k)
+
+		base, _ := st.Base(k, host.AgentID())
+
 		for _, name := range e.canonNames(k, req) {
-			if surfaceHasName(snap.Items, k, name) {
+			if !baseOwns(base, k, name) {
+				continue
+			}
+
+			if surfaceHasName(items, k, name) {
 				alive = append(alive, aliveElement{kind: k, name: name})
 			}
 		}

@@ -1323,6 +1323,41 @@ func TestBundleDoctorInvariants(t *testing.T) {
 	})
 }
 
+func TestBundleDoctorDoubleDeliverySkipsForeignElements(t *testing.T) {
+	Convey("Given a read-only copy and an unmanaged canon directory", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		f.config.Enable(agent.SharedID)
+		So(f.config.Save(f.vault.ConfigPath()), ShouldBeNil)
+
+		f.sync(t)
+
+		claudeAlpha := filepath.Dir(f.claudeSkill("alpha"))
+		So(os.RemoveAll(claudeAlpha), ShouldBeNil)
+		So(os.Symlink(filepath.Dir(f.sharedSkill("alpha")), claudeAlpha), ShouldBeNil)
+
+		write(t, filepath.Join(f.vault.SkillsDir(), "beta", "SKILL.md"), "# beta\n")
+		write(t, f.claudeSkill("beta"), "# foreign beta\n")
+
+		_, _, report := enableClaude(t, f)
+
+		Convey("When the verified bundle is enabled", func() {
+			Convey("Then neither element is reported as double delivery", func() {
+				So(report.Bundles[0].Kept, ShouldContain, "skills alpha (read-only)")
+				So(report.Bundles[0].Kept, ShouldContain, "skills beta (unmanaged)")
+
+				issues, err := f.engine.Doctor(t.Context())
+				So(err, ShouldBeNil)
+
+				for _, issue := range issues {
+					So(issue.Message, ShouldNotContainSubstring, "double delivery")
+				}
+			})
+		})
+	})
+}
+
 func TestBundleIssuesApprovalInfo(t *testing.T) {
 	Convey("Given an unapproved hook", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")
