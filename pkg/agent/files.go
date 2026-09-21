@@ -401,8 +401,15 @@ func formatMember(obj *hujson.Object, member *hujson.ObjectMember, value any, un
 		return
 	}
 
-	if len(member.Name.BeforeExtra) == 0 {
+	extra := member.Name.BeforeExtra
+
+	switch {
+	case len(extra) == 0:
 		member.Name.BeforeExtra = hujson.Extra("\n" + indent)
+	case bytes.HasSuffix(extra, []byte("\n")):
+		member.Name.BeforeExtra = hujson.Extra(string(extra) + indent)
+	case trailingComment(extra):
+		member.Name.BeforeExtra = hujson.Extra(string(bytes.TrimRight(extra, " \t")) + "\n" + indent)
 	}
 
 	if len(member.Value.BeforeExtra) == 0 {
@@ -418,6 +425,12 @@ func formatMember(obj *hujson.Object, member *hujson.ObjectMember, value any, un
 	}
 
 	member.Value.Value = parsed.Value
+}
+
+func trailingComment(extra hujson.Extra) bool {
+	idx := bytes.LastIndexByte(extra, '\n')
+
+	return bytes.ContainsRune(extra[idx+1:], '/')
 }
 
 func colonWhitespace(obj *hujson.Object, member *hujson.ObjectMember) hujson.Extra {
@@ -471,7 +484,7 @@ func objectMember(obj *hujson.Object, name string) *hujson.ObjectMember {
 }
 
 func memberIndent(obj *hujson.Object, member *hujson.ObjectMember, depth int, unit string) (string, *string, bool) {
-	if indent, ok := trailingWhitespace(member.Name.BeforeExtra); ok {
+	if indent, ok := trailingWhitespace(member.Name.BeforeExtra); ok && indent != "" {
 		return indent, nil, true
 	}
 
