@@ -163,8 +163,11 @@ func TestBundlePlanClaudeGolden(t *testing.T) {
 				}`)
 
 				So(string(files["plugins/beadle-canon/hooks/hooks.json"]), ShouldEqualJSON, `{
-					"SessionStart": [{"matcher": "*", "hooks": [{"type": "command", "command": "echo hi", "timeout": 5}]}],
-					"PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "make lint"}]}]
+					"description": "beadle vault canon: skills, MCP servers and approved hooks",
+					"hooks": {
+						"SessionStart": [{"matcher": "*", "hooks": [{"type": "command", "command": "echo hi", "timeout": 5}]}],
+						"PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "make lint"}]}]
+					}
 				}`)
 
 				So(string(files["plugins/beadle-canon/skills/alpha/SKILL.md"]), ShouldEqual, "# alpha\n")
@@ -202,8 +205,10 @@ func TestBundlePlanGeminiFiles(t *testing.T) {
 				}`)
 
 				So(string(files["hooks/hooks.json"]), ShouldEqualJSON, `{
-					"SessionStart": [{"matcher": "*", "hooks": [{"name": "notify", "type": "command", "command": "echo hi", "timeout": 5000}]}],
-					"AfterTool": [{"matcher": "Bash", "hooks": [{"name": "lint", "type": "command", "command": "make lint"}]}]
+					"hooks": {
+						"SessionStart": [{"matcher": "*", "hooks": [{"name": "notify", "type": "command", "command": "echo hi", "timeout": 5000}]}],
+						"AfterTool": [{"matcher": "Bash", "hooks": [{"name": "lint", "type": "command", "command": "make lint"}]}]
+					}
 				}`)
 			})
 		})
@@ -236,7 +241,10 @@ func TestBundlePlanAntigravityGolden(t *testing.T) {
 					"skills/alpha/docs/note.txt",
 				})
 
-				So(string(files["plugin.json"]), ShouldEqualJSON, `{"name": "beadle-canon", "version": "`+result.Version+`"}`)
+				So(string(files["plugin.json"]), ShouldEqualJSON, `{
+					"name": "beadle-canon",
+					"description": "beadle vault canon: skills, MCP servers and approved hooks"
+				}`)
 
 				So(string(files["mcp_config.json"]), ShouldEqualJSON, `{
 					"mcpServers": {

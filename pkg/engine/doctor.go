@@ -88,10 +88,11 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.projectPolicyIssues(active)...)
 	issues = append(issues, e.pluginRefIssues(active)...)
 	issues = append(issues, e.pluginPivotIssues(ctx)...)
+	issues = append(issues, e.orphanPivotIssues()...)
 	issues = append(issues, e.pluginPinIssues(active)...)
 	issues = append(issues, e.pluginMigrationIssues(ctx, ledger)...)
 	issues = append(issues, e.farmPresentationIssues(active, ledger)...)
-	issues = append(issues, e.bundleIssues()...)
+	issues = append(issues, e.bundleIssues(ctx)...)
 	issues = append(issues, e.digestIssues(active, st)...)
 	issues = append(issues, e.memorySecretIssues()...)
 	issues = append(issues, e.rulesSecretIssues()...)
@@ -1072,6 +1073,46 @@ func strayPinDirIssues(key string, versions []string, dir string) []Issue {
 
 func pinIssue(severity, agentID, message string) Issue {
 	return Issue{Severity: severity, Kind: kind.Skills, Agent: agentID, Message: message}
+}
+
+func (e *Engine) orphanPivotIssues() []Issue {
+	ledger, _, err := loadPluginLedger(e.vault.PluginsLedgerPath())
+	if err != nil {
+		return nil
+	}
+
+	var issues []Issue
+
+	for _, dir := range e.orphanPivotDirs(ledger, e.pinnedVersions()) {
+		key := pluginKey(filepath.Base(filepath.Dir(dir)), filepath.Base(dir))
+
+		if _, safe := orphanPivotSafe(dir); !safe {
+			issues = append(issues, Issue{Severity: SeverityWarn, Message: fmt.Sprintf(
+				"plugin %s has an orphan pivot holding regular files; review and remove it manually", key)})
+
+			continue
+		}
+
+		issues = append(issues, Issue{Severity: SeverityWarn, Message: fmt.Sprintf(
+			"plugin %s has an orphan pivot left in the vault (not in the ledger); run beadle heal", key)})
+	}
+
+	if e.home != "" {
+		links, _ := e.pruneOrphanFarmLinks(ledger, true)
+
+		count := 0
+
+		for _, link := range links {
+			count += link.Count
+		}
+
+		if count > 0 {
+			issues = append(issues, Issue{Severity: SeverityWarn, Kind: kind.Skills, Message: fmt.Sprintf(
+				"%d orphan plugin skill link(s) point into retired pivots; run beadle heal", count)})
+		}
+	}
+
+	return issues
 }
 
 func (e *Engine) pluginPivotIssues(_ context.Context) []Issue {

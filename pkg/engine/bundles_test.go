@@ -2,8 +2,10 @@ package engine_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -20,19 +22,147 @@ import (
 )
 
 type fakeCLI struct {
-	calls  [][]string
-	failOn map[string]error
-	output string
+	calls   [][]string
+	failOn  map[string]error
+	respond func(name string, args []string) ([]byte, bool)
+	after   func(name string, args []string)
+	output  string
 }
 
 func (f *fakeCLI) Run(name string, args []string, _ []byte) ([]byte, int, error) {
 	f.calls = append(f.calls, append([]string{name}, args...))
 
+	if f.respond != nil {
+		if data, ok := f.respond(name, args); ok {
+			return data, 0, nil
+		}
+	}
+
 	if err := f.failOn[strings.Join(args, " ")]; err != nil {
 		return []byte(f.output), 1, err
 	}
 
+	if f.after != nil {
+		f.after(name, args)
+	}
+
 	return []byte(f.output), 0, nil
+}
+
+// claudeHost mimics the parts of Claude Code the probe reads: the installed
+// plugin listing and the validate report.
+type claudeHost struct {
+	Version  string
+	Listed   bool
+	Disabled bool
+	Errors   []string
+	Validate []string
+}
+
+func (h *claudeHost) respond(name string, args []string) ([]byte, bool) {
+	if name != "claude" || len(args) < 2 || args[0] != "plugin" {
+		return nil, false
+	}
+
+	switch args[1] {
+	case "validate":
+		return h.validateReport()
+	case "list":
+		return h.listReport(args)
+	default:
+		return nil, false
+	}
+}
+
+func (h *claudeHost) validateReport() ([]byte, bool) {
+	if len(h.Validate) == 0 {
+		return []byte(`{"success": true}`), true
+	}
+
+	messages := make([]map[string]string, 0, len(h.Validate))
+
+	for _, message := range h.Validate {
+		messages = append(messages, map[string]string{"message": message})
+	}
+
+	data, err := json.Marshal(map[string]any{
+		"success":  false,
+		"contents": []map[string]any{{"type": "hooks", "errors": messages}},
+	})
+	if err != nil {
+		return nil, false
+	}
+
+	return data, true
+}
+
+func (h *claudeHost) listReport(args []string) ([]byte, bool) {
+	if len(args) != 3 || args[2] != "--json" {
+		return nil, false
+	}
+
+	if !h.Listed {
+		return []byte("[]"), true
+	}
+
+	entry := map[string]any{"id": "beadle-canon@beadle", "version": h.Version, "enabled": !h.Disabled}
+	if len(h.Errors) > 0 {
+		entry["errors"] = h.Errors
+	}
+
+	data, err := json.Marshal([]map[string]any{entry})
+	if err != nil {
+		return nil, false
+	}
+
+	return data, true
+}
+
+func claudeBundleCLI(t *testing.T, f *fixture) (*fakeCLI, *claudeHost) {
+	t.Helper()
+
+	host := &claudeHost{}
+
+	cli := &fakeCLI{}
+	cli.respond = host.respond
+	cli.after = func(name string, args []string) {
+		if name != "claude" || len(args) < 2 {
+			return
+		}
+
+		if args[1] == "install" || args[1] == "update" {
+			host.Listed = true
+			host.Version = renderedClaudeVersion(t, f)
+		}
+	}
+
+	return cli, host
+}
+
+func renderedClaudeVersion(t *testing.T, f *fixture) string {
+	t.Helper()
+
+	path := filepath.Join(f.vault.BundlesDir(), "claude", "plugins", "beadle-canon", ".claude-plugin", "plugin.json")
+
+	var doc struct {
+		Version string `json:"version"`
+	}
+
+	if err := json.Unmarshal([]byte(read(t, path)), &doc); err != nil {
+		t.Fatalf("unmarshal the rendered manifest: %v", err)
+	}
+
+	return doc.Version
+}
+
+func geminiExtensionsResponder(output string) func(string, []string) ([]byte, bool) {
+	return func(name string, args []string) ([]byte, bool) {
+		if name != "gemini" || len(args) != 4 || args[0] != "extensions" || args[1] != "list" || args[2] != "--output-format" || args[3] != "json" {
+			return nil, false
+		}
+
+		return []byte(output), true
+	}
 }
 
 func foundCLI(t *testing.T) {
@@ -86,37 +216,51 @@ func loadState(t *testing.T, f *fixture) *state.State {
 	return st
 }
 
+func enableClaude(t *testing.T, f *fixture) (*fakeCLI, *claudeHost, engine.Report) {
+	t.Helper()
+
+	cli, host := claudeBundleCLI(t, f)
+	fakeRunner(t, cli)
+	foundCLI(t)
+
+	report, err := f.engine.BundlesEnable(t.Context(), "claude")
+	if err != nil {
+		t.Fatalf("enable claude: %v", err)
+	}
+
+	return cli, host, report
+}
+
 func TestBundlesEnableRegistersClaude(t *testing.T) {
 	Convey("Given an approved hook canon and a claude CLI", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := bundleFixture(t)
-		foundCLI(t)
-
-		cli := &fakeCLI{}
-		fakeRunner(t, cli)
-
-		report, err := f.engine.BundlesEnable(t.Context(), "claude")
-		So(err, ShouldBeNil)
+		cli, _, report := enableClaude(t, f)
 
 		dir := filepath.Join(f.vault.BundlesDir(), "claude")
+		pluginDir := filepath.Join(dir, "plugins", "beadle-canon")
 
 		st := loadState(t, f)
 		entry := st.Bundles["claude"]
 
 		Convey("When it is enabled", func() {
-			Convey("Then the CLI registers the bundle, kinds dedup and the plugin is rendered", func() {
+			Convey("Then validate runs on the plugin directory and the marketplace root, then the CLI registers", func() {
 				So(report.Bundles, ShouldHaveLength, 1)
 				So(report.Bundles[0].Action, ShouldEqual, "enabled")
 				So(report.Bundles[0].Registered, ShouldBeTrue)
+				So(report.Bundles[0].Tier, ShouldEqual, state.VerifyExecuted)
 
 				matched, matchErr := regexp.MatchString(`^0\.0\.0-[0-9a-f]{12}$`, report.Bundles[0].Version)
 				So(matchErr, ShouldBeNil)
 				So(matched, ShouldBeTrue)
 
 				So(cli.calls, ShouldResemble, [][]string{
+					{"claude", "plugin", "validate", "--json", "--strict", pluginDir},
+					{"claude", "plugin", "validate", "--json", "--strict", dir},
 					{"claude", "plugin", "marketplace", "add", dir},
 					{"claude", "plugin", "install", "beadle-canon@beadle"},
+					{"claude", "plugin", "list", "--json"},
 				})
 
 				So(f.config.ModeFor(agent.ClaudeCodeID, kind.Skills, config.ModeSync), ShouldEqual, config.ModeOff)
@@ -124,13 +268,52 @@ func TestBundlesEnableRegistersClaude(t *testing.T) {
 
 				So(entry.Enabled, ShouldBeTrue)
 				So(entry.Registered, ShouldBeTrue)
+				So(entry.VerifyTier, ShouldEqual, state.VerifyExecuted)
+				So(entry.ProbeNote, ShouldBeEmpty)
 				So(entry.SavedModes, ShouldResemble, map[kind.ID]config.Mode{kind.Skills: config.ModeSync, kind.MCP: config.ModeSync})
 
 				marketplace := read(t, filepath.Join(dir, ".claude-plugin", "marketplace.json"))
 				So(marketplace, ShouldContainSubstring, `"name": "beadle"`)
 				So(marketplace, ShouldContainSubstring, entry.Version)
-				So(read(t, filepath.Join(dir, "plugins", "beadle-canon", "skills", "alpha", "SKILL.md")), ShouldContainSubstring, "# alpha")
-				So(read(t, filepath.Join(dir, "plugins", "beadle-canon", "hooks", "hooks.json")), ShouldContainSubstring, "echo hi")
+				So(read(t, filepath.Join(pluginDir, "skills", "alpha", "SKILL.md")), ShouldContainSubstring, "# alpha")
+				So(read(t, filepath.Join(pluginDir, "hooks", "hooks.json")), ShouldContainSubstring, "echo hi")
+			})
+		})
+	})
+}
+
+func TestBundlesEnableValidateFailureSkipsRegistration(t *testing.T) {
+	Convey("Given a bundle that fails validation", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		cli, host := claudeBundleCLI(t, f)
+		fakeRunner(t, cli)
+		foundCLI(t)
+
+		host.Validate = []string{"hooks.json must have `hooks` (the hook matchers) or `modules` (hooks modules), or both"}
+
+		report, err := f.engine.BundlesEnable(t.Context(), "claude")
+		So(err, ShouldBeNil)
+
+		st := loadState(t, f)
+
+		Convey("When it is enabled", func() {
+			Convey("Then nothing registers, Enabled is not saved and the raw CLI text is reported", func() {
+				So(report.Bundles, ShouldHaveLength, 1)
+				So(report.Bundles[0].Action, ShouldEqual, "failed")
+				So(report.Bundles[0].Note, ShouldContainSubstring, "hooks.json must have `hooks`")
+				So(report.Bundles[0].Note, ShouldContainSubstring, "beadle bundles enable claude")
+
+				_, ok := st.Bundles["claude"]
+				So(ok, ShouldBeFalse)
+
+				for _, call := range cli.calls {
+					So(call[1], ShouldEqual, "plugin")
+					So(call[2], ShouldEqual, "validate")
+				}
+
+				So(f.config.ModeFor(agent.ClaudeCodeID, kind.Skills, config.ModeSync), ShouldEqual, config.ModeSync)
 			})
 		})
 	})
@@ -152,10 +335,11 @@ func TestBundlesEnableWithoutCLI(t *testing.T) {
 		st := loadState(t, f)
 
 		Convey("When it is enabled", func() {
-			Convey("Then it only generates files and keeps file sync on", func() {
+			Convey("Then it only generates files, stays unverifiable and keeps file sync on", func() {
 				So(report.Bundles, ShouldHaveLength, 1)
 				So(report.Bundles[0].Action, ShouldEqual, "generated")
 				So(report.Bundles[0].Registered, ShouldBeFalse)
+				So(report.Bundles[0].Tier, ShouldEqual, state.VerifyUnverifiable)
 				So(report.Bundles[0].Note, ShouldContainSubstring, "claude plugin marketplace add")
 				So(strings.Join(report.Warnings, " "), ShouldContainSubstring, "claude CLI not found")
 				So(cli.calls, ShouldBeEmpty)
@@ -164,6 +348,7 @@ func TestBundlesEnableWithoutCLI(t *testing.T) {
 
 				So(st.Bundles["claude"].Enabled, ShouldBeTrue)
 				So(st.Bundles["claude"].Registered, ShouldBeFalse)
+				So(st.Bundles["claude"].VerifyTier, ShouldEqual, state.VerifyUnverifiable)
 			})
 		})
 	})
@@ -174,21 +359,62 @@ func TestBundlesEnableCLIFailureShowsOutput(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := bundleFixture(t)
+		cli, _ := claudeBundleCLI(t, f)
+		fakeRunner(t, cli)
 		foundCLI(t)
 
-		cli := &fakeCLI{failOn: map[string]error{"plugin install beadle-canon@beadle": errors.New("boom")}, output: "raw install failure"}
-		fakeRunner(t, cli)
+		cli.failOn = map[string]error{"plugin install beadle-canon@beadle": errors.New("boom")}
+		cli.output = "raw install failure"
 
 		report, err := f.engine.BundlesEnable(t.Context(), "claude")
 		So(err, ShouldBeNil)
 
+		st := loadState(t, f)
+
 		Convey("When it is enabled", func() {
-			Convey("Then the raw output is surfaced and file sync stays on", func() {
-				So(report.Bundles[0].Action, ShouldEqual, "generated")
+			Convey("Then the raw output is surfaced, the tier is failed and file sync stays on", func() {
+				So(report.Bundles[0].Action, ShouldEqual, "failed")
 				So(report.Bundles[0].Registered, ShouldBeFalse)
+				So(report.Bundles[0].Tier, ShouldEqual, state.VerifyFailed)
 				So(report.Bundles[0].Note, ShouldContainSubstring, "raw install failure")
 				So(strings.Join(report.Warnings, " "), ShouldContainSubstring, "raw install failure")
 				So(f.config.ModeFor(agent.ClaudeCodeID, kind.Skills, config.ModeSync), ShouldEqual, config.ModeSync)
+
+				So(st.Bundles["claude"].Enabled, ShouldBeTrue)
+				So(st.Bundles["claude"].VerifyTier, ShouldEqual, state.VerifyFailed)
+			})
+		})
+	})
+}
+
+func TestBundlesEnableProbeFailureKeepsModes(t *testing.T) {
+	Convey("Given a host that rejects the plugin", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		cli, host := claudeBundleCLI(t, f)
+		fakeRunner(t, cli)
+		foundCLI(t)
+
+		host.Errors = []string{"Hook load failed: hooks.json is broken"}
+
+		report, err := f.engine.BundlesEnable(t.Context(), "claude")
+		So(err, ShouldBeNil)
+
+		st := loadState(t, f)
+
+		Convey("When it is enabled", func() {
+			Convey("Then the modes stay as they were and the state records the failure", func() {
+				So(report.Bundles[0].Action, ShouldEqual, "failed")
+				So(report.Bundles[0].Tier, ShouldEqual, state.VerifyFailed)
+				So(report.Bundles[0].Note, ShouldContainSubstring, "Hook load failed")
+
+				So(f.config.ModeFor(agent.ClaudeCodeID, kind.Skills, config.ModeSync), ShouldEqual, config.ModeSync)
+				So(f.config.ModeFor(agent.ClaudeCodeID, kind.MCP, config.ModeSync), ShouldEqual, config.ModeSync)
+
+				So(st.Bundles["claude"].Registered, ShouldBeTrue)
+				So(st.Bundles["claude"].VerifyTier, ShouldEqual, state.VerifyFailed)
+				So(st.Bundles["claude"].ProbeNote, ShouldContainSubstring, "Hook load failed")
 			})
 		})
 	})
@@ -199,22 +425,276 @@ func TestBundlesEnableIdempotent(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := bundleFixture(t)
-		foundCLI(t)
-
-		cli := &fakeCLI{}
-		fakeRunner(t, cli)
-
-		_, err := f.engine.BundlesEnable(t.Context(), "claude")
-		So(err, ShouldBeNil)
+		cli, _, _ := enableClaude(t, f)
 
 		Convey("When it is enabled again", func() {
 			report, err := f.engine.BundlesEnable(t.Context(), "claude")
 			So(err, ShouldBeNil)
 
-			Convey("Then no CLI call and the action is noop", func() {
-				So(cli.calls, ShouldHaveLength, 2)
+			Convey("Then the register call is skipped and the action is noop", func() {
 				So(report.Bundles[0].Action, ShouldEqual, "noop")
-				So(cli.calls, ShouldHaveLength, 2)
+				So(report.Bundles[0].Tier, ShouldEqual, state.VerifyExecuted)
+
+				installs := 0
+
+				for _, call := range cli.calls {
+					if len(call) > 2 && call[1] == "plugin" && call[2] == "install" {
+						installs++
+					}
+				}
+
+				So(installs, ShouldEqual, 1)
+			})
+		})
+	})
+}
+
+func TestBundlesEnableWithdrawsManagedElements(t *testing.T) {
+	Convey("Given canon elements already synced into the host files", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		f.config.Enable(agent.SharedID)
+		So(f.config.Save(f.vault.ConfigPath()), ShouldBeNil)
+
+		f.sync(t)
+
+		So(read(t, f.claudeSkill("alpha")), ShouldContainSubstring, "# alpha")
+		So(read(t, f.sharedSkill("alpha")), ShouldContainSubstring, "# alpha")
+		So(read(t, f.claudeConfig()), ShouldContainSubstring, "plug")
+
+		_, _, report := enableClaude(t, f)
+
+		Convey("When the verified bundle is enabled", func() {
+			Convey("Then the owned canon elements leave the file surface and the shared copy stays", func() {
+				So(report.Bundles[0].Action, ShouldEqual, "enabled")
+				So(report.Bundles[0].Withdrawn, ShouldContain, "skills alpha")
+				So(report.Bundles[0].Withdrawn, ShouldContain, "mcp plug")
+				So(report.Bundles[0].Kept, ShouldBeEmpty)
+
+				_, err := os.Stat(filepath.Dir(f.claudeSkill("alpha")))
+				So(errors.Is(err, fs.ErrNotExist), ShouldBeTrue)
+
+				So(read(t, f.sharedSkill("alpha")), ShouldContainSubstring, "# alpha")
+				So(read(t, f.claudeConfig()), ShouldNotContainSubstring, "plug")
+
+				entry := loadState(t, f).Bundles["claude"]
+				So(entry.PendingWithdrawal, ShouldBeFalse)
+				So(entry.Withdrawn, ShouldHaveLength, 2)
+			})
+
+			Convey("Then a sync in the withdrawal window keeps the canon and opens no conflicts", func() {
+				f.sync(t)
+
+				So(f.conflicts(t, kind.Skills, agent.ClaudeCodeID), ShouldBeEmpty)
+				So(f.conflicts(t, kind.MCP, agent.ClaudeCodeID), ShouldBeEmpty)
+				So(read(t, f.vaultSkill("alpha")), ShouldContainSubstring, "# alpha")
+				_, hasPlug := f.servers(t)["plug"]
+				So(hasPlug, ShouldBeTrue)
+			})
+
+			Convey("Then disabling restores the files, the modes and the state", func() {
+				before := f.config.ModeFor(agent.ClaudeCodeID, kind.Skills, config.ModeSync)
+				So(before, ShouldEqual, config.ModeOff)
+
+				report, err := f.engine.BundlesDisable(t.Context(), "claude")
+				So(err, ShouldBeNil)
+
+				So(report.Bundles[0].Action, ShouldEqual, "disabled")
+				So(report.Bundles[0].Note, ShouldContainSubstring, "restored: skills alpha")
+
+				So(read(t, f.claudeSkill("alpha")), ShouldContainSubstring, "# alpha")
+				So(read(t, f.claudeConfig()), ShouldContainSubstring, "plug")
+				So(f.config.ModeFor(agent.ClaudeCodeID, kind.Skills, config.ModeOff), ShouldEqual, config.ModeSync)
+				So(f.config.ModeFor(agent.ClaudeCodeID, kind.MCP, config.ModeOff), ShouldEqual, config.ModeSync)
+
+				st := loadState(t, f)
+				_, ok := st.Bundles["claude"]
+				So(ok, ShouldBeFalse)
+
+				Convey("And the next sync finds nothing to change", func() {
+					f.sync(t)
+
+					So(f.conflicts(t, kind.Skills, agent.ClaudeCodeID), ShouldBeEmpty)
+					So(read(t, f.claudeSkill("alpha")), ShouldContainSubstring, "# alpha")
+				})
+			})
+		})
+	})
+}
+
+func TestBundlesEnableWithdrawsSecretServer(t *testing.T) {
+	Convey("Given a canon server holding a literal secret", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+
+		write(t, f.vault.ServersPath(), `{"api": {
+			"transport": "http",
+			"url": "https://example.com/mcp",
+			"headers": {"Authorization": "Bearer tok-1"}
+		}}`)
+
+		f.sync(t)
+
+		So(read(t, f.claudeConfig()), ShouldContainSubstring, "Bearer tok-1")
+
+		_, _, report := enableClaude(t, f)
+
+		Convey("When the verified bundle is enabled", func() {
+			Convey("Then the server leaves the host file even though its base holds a reference", func() {
+				So(report.Bundles[0].Withdrawn, ShouldContain, "mcp api")
+
+				for _, kept := range report.Bundles[0].Kept {
+					So(kept, ShouldNotContainSubstring, "mcp")
+				}
+
+				So(read(t, f.claudeConfig()), ShouldNotContainSubstring, "api")
+			})
+		})
+	})
+}
+
+func TestBundlesDisableKeepsStateWhenCanonUnresolved(t *testing.T) {
+	Convey("Given a withdrawn server whose canon cannot resolve", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+
+		write(t, f.vault.ServersPath(), `{"api": {
+			"transport": "http",
+			"url": "https://example.com/mcp",
+			"headers": {"Authorization": "Bearer tok-1"}
+		}}`)
+
+		f.sync(t)
+
+		_, _, report := enableClaude(t, f)
+		So(report.Bundles[0].Withdrawn, ShouldContain, "mcp api")
+
+		// The canon now references a secret that has no value: the element
+		// cannot be materialized back.
+		write(t, f.vault.ServersPath(), `{"api": {
+			"transport": "http",
+			"url": "https://example.com/mcp",
+			"headers": {"Authorization": "{secret:MISSING_TOKEN}"}
+		}}`)
+
+		cli, _ := claudeBundleCLI(t, f)
+		fakeRunner(t, cli)
+		foundCLI(t)
+
+		disable, err := f.engine.BundlesDisable(t.Context(), "claude")
+		So(err, ShouldBeNil)
+
+		st := loadState(t, f)
+
+		Convey("When disable runs", func() {
+			Convey("Then it fails, keeps the entry and leaves the modes off", func() {
+				So(disable.Bundles[0].Action, ShouldEqual, "failed")
+				So(disable.Bundles[0].Note, ShouldContainSubstring, "unresolved secrets")
+
+				entry, ok := st.Bundles["claude"]
+				So(ok, ShouldBeTrue)
+				So(entry.Withdrawn, ShouldNotBeEmpty)
+				So(f.config.ModeFor(agent.ClaudeCodeID, kind.MCP, config.ModeSync), ShouldEqual, config.ModeOff)
+				So(read(t, f.claudeConfig()), ShouldNotContainSubstring, "api")
+			})
+		})
+	})
+}
+
+func TestBundlesEnableKeepsModifiedSkill(t *testing.T) {
+	Convey("Given a hand-edited canon skill copy", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		f.config.Enable(agent.SharedID)
+		So(f.config.Save(f.vault.ConfigPath()), ShouldBeNil)
+
+		f.sync(t)
+
+		write(t, f.claudeSkill("alpha"), "# edited by hand\n")
+
+		_, _, report := enableClaude(t, f)
+
+		Convey("When the verified bundle is enabled", func() {
+			Convey("Then the edited skill stays with a warning and the untouched server leaves", func() {
+				So(report.Bundles[0].Kept, ShouldContain, "skills alpha (modified)")
+				So(report.Bundles[0].Withdrawn, ShouldContain, "mcp plug")
+
+				So(read(t, f.claudeSkill("alpha")), ShouldContainSubstring, "# edited by hand")
+				So(strings.Join(report.Warnings, " "), ShouldContainSubstring, "kept skills alpha")
+			})
+		})
+	})
+}
+
+func TestBundlesEnableKeepsSymlinkedSkill(t *testing.T) {
+	Convey("Given a canon skill delivered to claude as a symlink", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		f.config.Enable(agent.SharedID)
+		So(f.config.Save(f.vault.ConfigPath()), ShouldBeNil)
+
+		f.sync(t)
+
+		claudeSkill := filepath.Dir(f.claudeSkill("alpha"))
+		So(os.RemoveAll(claudeSkill), ShouldBeNil)
+		So(os.Symlink(filepath.Dir(f.sharedSkill("alpha")), claudeSkill), ShouldBeNil)
+
+		_, _, report := enableClaude(t, f)
+
+		Convey("When the verified bundle is enabled", func() {
+			Convey("Then the symlink stays and is reported as read-only, not withdrawn", func() {
+				So(report.Bundles[0].Withdrawn, ShouldNotContain, "skills alpha")
+				So(report.Bundles[0].Kept, ShouldContain, "skills alpha (read-only)")
+
+				info, err := os.Lstat(claudeSkill)
+				So(err, ShouldBeNil)
+				So(info.Mode()&fs.ModeSymlink != 0, ShouldBeTrue)
+			})
+		})
+	})
+}
+
+func TestBundlesEnableKeepsEditedServer(t *testing.T) {
+	Convey("Given a hand-edited canon server in the host file", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		f.sync(t)
+
+		edited := strings.Replace(read(t, f.claudeConfig()), `"srv.js"`, `"other.js"`, 1)
+		write(t, f.claudeConfig(), edited)
+
+		_, _, report := enableClaude(t, f)
+
+		Convey("When the verified bundle is enabled", func() {
+			Convey("Then the edited server stays with a warning", func() {
+				So(report.Bundles[0].Kept, ShouldContain, "mcp plug (modified)")
+				So(report.Bundles[0].Withdrawn, ShouldNotContain, "mcp plug")
+				So(read(t, f.claudeConfig()), ShouldContainSubstring, "other.js")
+			})
+		})
+	})
+}
+
+func TestBundlesEnableKeepsUnmanagedElement(t *testing.T) {
+	Convey("Given a canon element never written by beadle", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		write(t, f.claudeSkill("alpha"), "# foreign copy\n")
+
+		_, _, report := enableClaude(t, f)
+
+		Convey("When the verified bundle is enabled", func() {
+			Convey("Then the unmanaged copy stays", func() {
+				So(report.Bundles[0].Kept, ShouldContain, "skills alpha (unmanaged)")
+				So(read(t, f.claudeSkill("alpha")), ShouldContainSubstring, "# foreign copy")
+				So(report.Bundles[0].Withdrawn, ShouldBeEmpty)
 			})
 		})
 	})
@@ -225,13 +705,7 @@ func TestBundlesDisableRestoresModes(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := bundleFixture(t)
-		foundCLI(t)
-
-		cli := &fakeCLI{}
-		fakeRunner(t, cli)
-
-		_, err := f.engine.BundlesEnable(t.Context(), "claude")
-		So(err, ShouldBeNil)
+		cli, _, _ := enableClaude(t, f)
 
 		cli.calls = nil
 
@@ -265,22 +739,72 @@ func TestBundlesDisableRestoresModes(t *testing.T) {
 	})
 }
 
+func TestBundlesDisableMigratesSavedOffModes(t *testing.T) {
+	Convey("Given a bundle whose modes were off before the enable", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		f.config.SetMode(agent.ClaudeCodeID, kind.Skills, config.ModeOff)
+		f.config.SetMode(agent.ClaudeCodeID, kind.MCP, config.ModeOff)
+		So(f.config.Save(f.vault.ConfigPath()), ShouldBeNil)
+
+		_, _, enableReport := enableClaude(t, f)
+
+		st := loadState(t, f)
+		entry := st.Bundles["claude"]
+
+		Convey("When the bundle is enabled and disabled", func() {
+			Convey("Then off is not saved as user intent and the surface defaults come back with warnings", func() {
+				So(entry.SavedModes, ShouldResemble, map[kind.ID]config.Mode{kind.Skills: config.ModeSync, kind.MCP: config.ModeSync})
+				So(strings.Join(enableReport.Warnings, " "), ShouldContainSubstring, "restoring the default skills mode")
+
+				report, err := f.engine.BundlesDisable(t.Context(), "claude")
+				So(err, ShouldBeNil)
+
+				So(f.config.ModeFor(agent.ClaudeCodeID, kind.Skills, config.ModeOff), ShouldEqual, config.ModeSync)
+				So(f.config.ModeFor(agent.ClaudeCodeID, kind.MCP, config.ModeOff), ShouldEqual, config.ModeSync)
+				So(report.Bundles[0].Action, ShouldEqual, "disabled")
+			})
+		})
+	})
+}
+
+func TestBundlesDisableRestoresSeededOffModes(t *testing.T) {
+	Convey("Given an existing state with saved_modes off/off", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		_, _, _ = enableClaude(t, f)
+
+		st := loadState(t, f)
+		entry := st.Bundles["claude"]
+		entry.SavedModes = map[kind.ID]config.Mode{kind.Skills: config.ModeOff, kind.MCP: config.ModeOff}
+		st.Bundles["claude"] = entry
+		So(st.Save(f.vault.StatePath()), ShouldBeNil)
+
+		report, err := f.engine.BundlesDisable(t.Context(), "claude")
+		So(err, ShouldBeNil)
+
+		Convey("When the bundle is disabled", func() {
+			Convey("Then off is migrated to the surface defaults with a warning", func() {
+				So(strings.Join(report.Warnings, " "), ShouldContainSubstring, "restoring the default skills mode")
+				So(f.config.ModeFor(agent.ClaudeCodeID, kind.Skills, config.ModeOff), ShouldEqual, config.ModeSync)
+				So(f.config.ModeFor(agent.ClaudeCodeID, kind.MCP, config.ModeOff), ShouldEqual, config.ModeSync)
+			})
+		})
+	})
+}
+
 func TestBundlesDisableRetriesAfterFailure(t *testing.T) {
 	Convey("Given a bundle whose unregister failed", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := bundleFixture(t)
-		foundCLI(t)
-
-		cli := &fakeCLI{}
-		fakeRunner(t, cli)
-
-		_, err := f.engine.BundlesEnable(t.Context(), "claude")
-		So(err, ShouldBeNil)
+		cli, _, _ := enableClaude(t, f)
 
 		cli.failOn = map[string]error{"plugin uninstall beadle-canon@beadle": errors.New("boom")}
 
-		_, err = f.engine.BundlesDisable(t.Context(), "claude")
+		_, err := f.engine.BundlesDisable(t.Context(), "claude")
 		So(err, ShouldBeNil)
 
 		cli.failOn = nil
@@ -312,13 +836,7 @@ func TestBundlesEnableUpdateFailureKeepsRegisteredVersion(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := bundleFixture(t)
-		foundCLI(t)
-
-		cli := &fakeCLI{}
-		fakeRunner(t, cli)
-
-		first, err := f.engine.BundlesEnable(t.Context(), "claude")
-		So(err, ShouldBeNil)
+		cli, _, first := enableClaude(t, f)
 
 		cli.failOn = map[string]error{"plugin update beadle-canon@beadle": errors.New("boom")}
 		cli.output = "raw update failure"
@@ -331,13 +849,14 @@ func TestBundlesEnableUpdateFailureKeepsRegisteredVersion(t *testing.T) {
 
 			st := loadState(t, f)
 
-			Convey("Then the registered version is reported and the raw output noted", func() {
-				So(report.Bundles[0].Action, ShouldEqual, "enabled")
+			Convey("Then the registered version is kept, the raw output noted and the tier failed", func() {
+				So(report.Bundles[0].Action, ShouldEqual, "failed")
 				So(report.Bundles[0].Version, ShouldEqual, first.Bundles[0].Version)
 				So(report.Bundles[0].Note, ShouldContainSubstring, "raw update failure")
 				So(strings.Join(report.Warnings, " "), ShouldContainSubstring, "raw update failure")
 
 				So(st.Bundles["claude"].Version, ShouldEqual, first.Bundles[0].Version)
+				So(st.Bundles["claude"].VerifyTier, ShouldEqual, state.VerifyFailed)
 			})
 		})
 	})
@@ -384,16 +903,114 @@ func TestBundleIssuesAntigravityLinkStates(t *testing.T) {
 	})
 }
 
+func TestBundlesEnableAntigravityRegistersThroughCLI(t *testing.T) {
+	Convey("Given an agy CLI that stages the plugin", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		foundCLI(t)
+
+		linked := filepath.Join(f.home, ".gemini", "antigravity-cli", "plugins", "beadle-canon")
+
+		cli := &fakeCLI{
+			respond: func(name string, args []string) ([]byte, bool) {
+				if name == "agy" && len(args) == 2 && args[0] == "plugin" && args[1] == "list" {
+					return []byte("beadle-canon (enabled)"), true
+				}
+
+				return nil, false
+			},
+			after: func(name string, args []string) {
+				switch {
+				case name == "agy" && len(args) >= 2 && args[0] == "plugin" && args[1] == "install":
+					So(os.MkdirAll(filepath.Dir(linked), 0o750), ShouldBeNil)
+					So(os.Symlink(filepath.Join(f.vault.BundlesDir(), "antigravity"), linked), ShouldBeNil)
+				case name == "agy" && len(args) >= 2 && args[0] == "plugin" && args[1] == "uninstall":
+					So(os.RemoveAll(linked), ShouldBeNil)
+				}
+			},
+		}
+
+		fakeRunner(t, cli)
+
+		report, err := f.engine.BundlesEnable(t.Context(), "antigravity")
+		So(err, ShouldBeNil)
+
+		Convey("When it is enabled", func() {
+			Convey("Then the CLI installs and enables the plugin, then the structural probe verifies it", func() {
+				So(report.Bundles[0].Action, ShouldEqual, "enabled")
+				So(report.Bundles[0].Registered, ShouldBeTrue)
+				So(report.Bundles[0].Tier, ShouldEqual, state.VerifyExecuted)
+				So(f.config.ModeFor(agent.AntigravityCLIID, kind.MCP, config.ModeSync), ShouldEqual, config.ModeOff)
+
+				So(cli.calls, ShouldResemble, [][]string{
+					{"agy", "plugin", "install", filepath.Join(f.vault.BundlesDir(), "antigravity")},
+					{"agy", "plugin", "enable", "beadle-canon"},
+					{"agy", "plugin", "list"},
+				})
+
+				note := loadState(t, f).Bundles["antigravity"].ProbeNote
+				So(note, ShouldContainSubstring, "structural")
+			})
+
+			Convey("Then disabling uninstalls through the CLI", func() {
+				cli.calls = nil
+
+				report, err := f.engine.BundlesDisable(t.Context(), "antigravity")
+				So(err, ShouldBeNil)
+				So(report.Bundles[0].Action, ShouldEqual, "disabled")
+				So(cli.calls, ShouldResemble, [][]string{{"agy", "plugin", "uninstall", "beadle-canon"}})
+			})
+		})
+	})
+}
+
+func TestBundlesEnableAntigravityListMissKeepsModes(t *testing.T) {
+	Convey("Given an agy listing without the plugin", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		foundCLI(t)
+
+		linked := filepath.Join(f.home, ".gemini", "antigravity-cli", "plugins", "beadle-canon")
+
+		cli := &fakeCLI{
+			respond: func(name string, args []string) ([]byte, bool) {
+				if name == "agy" && len(args) == 2 && args[0] == "plugin" && args[1] == "list" {
+					return []byte("caveman (enabled)"), true
+				}
+
+				return nil, false
+			},
+			after: func(name string, args []string) {
+				if name == "agy" && len(args) >= 2 && args[0] == "plugin" && args[1] == "install" {
+					So(os.MkdirAll(filepath.Dir(linked), 0o750), ShouldBeNil)
+					So(os.Symlink(filepath.Join(f.vault.BundlesDir(), "antigravity"), linked), ShouldBeNil)
+				}
+			},
+		}
+
+		fakeRunner(t, cli)
+
+		report, err := f.engine.BundlesEnable(t.Context(), "antigravity")
+		So(err, ShouldBeNil)
+
+		Convey("When it is enabled", func() {
+			Convey("Then the probe fails and the modes stay on", func() {
+				So(report.Bundles[0].Action, ShouldEqual, "failed")
+				So(report.Bundles[0].Tier, ShouldEqual, state.VerifyFailed)
+				So(f.config.ModeFor(agent.AntigravityCLIID, kind.MCP, config.ModeSync), ShouldEqual, config.ModeSync)
+			})
+		})
+	})
+}
+
 func TestBundlesDisableWithoutCLIKeepsRegistrationState(t *testing.T) {
 	Convey("Given a registered bundle and a missing CLI", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := bundleFixture(t)
-		foundCLI(t)
-		fakeRunner(t, &fakeCLI{})
-
-		_, err := f.engine.BundlesEnable(t.Context(), "claude")
-		So(err, ShouldBeNil)
+		_, _, _ = enableClaude(t, f)
 
 		missingCLI(t)
 
@@ -429,7 +1046,6 @@ func TestBundlesDisableAntigravityAfterUnlink(t *testing.T) {
 
 		_, err := f.engine.BundlesEnable(t.Context(), "antigravity")
 		So(err, ShouldBeNil)
-		So(f.config.ModeFor(agent.AntigravityCLIID, kind.MCP, config.ModeSync), ShouldEqual, config.ModeOff)
 
 		report, err := f.engine.BundlesDisable(t.Context(), "antigravity")
 		So(err, ShouldBeNil)
@@ -437,7 +1053,7 @@ func TestBundlesDisableAntigravityAfterUnlink(t *testing.T) {
 		Convey("When the link is removed and it is disabled again", func() {
 			So(report.Bundles[0].Action, ShouldEqual, "failed")
 			So(report.Bundles[0].Note, ShouldContainSubstring, "remove the plugin link first")
-			So(f.config.ModeFor(agent.AntigravityCLIID, kind.MCP, config.ModeSync), ShouldEqual, config.ModeOff)
+			So(f.config.ModeFor(agent.AntigravityCLIID, kind.MCP, config.ModeSync), ShouldEqual, config.ModeSync)
 
 			So(os.RemoveAll(linked), ShouldBeNil)
 
@@ -477,37 +1093,122 @@ func TestBundlesDisableWithoutEnable(t *testing.T) {
 	})
 }
 
-func TestBundlesSyncRerendersAndDoctorWarnsStale(t *testing.T) {
+func TestBundlesSyncUpdatesRegisteredBundle(t *testing.T) {
 	Convey("Given an enabled bundle whose canon changes", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := bundleFixture(t)
-		foundCLI(t)
+		cli, host, first := enableClaude(t, f)
 
-		cli := &fakeCLI{}
-		fakeRunner(t, cli)
-
-		report, err := f.engine.BundlesEnable(t.Context(), "claude")
-		So(err, ShouldBeNil)
-
-		registered := report.Bundles[0].Version
 		cli.calls = nil
 
 		write(t, filepath.Join(f.vault.SkillsDir(), "alpha", "SKILL.md"), "# alpha v2\n")
 
 		f.sync(t)
 
-		manifest := read(t, filepath.Join(f.vault.BundlesDir(), "claude", "plugins", "beadle-canon", ".claude-plugin", "plugin.json"))
+		st := loadState(t, f)
 
 		Convey("When sync re-renders the bundle", func() {
-			So(cli.calls, ShouldBeEmpty)
-			So(manifest, ShouldNotContainSubstring, registered)
-			So(manifest, ShouldContainSubstring, "0.0.0-")
+			Convey("Then it updates the host and re-probes without flipping modes", func() {
+				So(cli.calls, ShouldResemble, [][]string{
+					{"claude", "plugin", "validate", "--json", "--strict", filepath.Join(f.vault.BundlesDir(), "claude", "plugins", "beadle-canon")},
+					{"claude", "plugin", "validate", "--json", "--strict", filepath.Join(f.vault.BundlesDir(), "claude")},
+					{"claude", "plugin", "marketplace", "update", "beadle"},
+					{"claude", "plugin", "update", "beadle-canon@beadle"},
+					{"claude", "plugin", "list", "--json"},
+				})
+				So(host.Version, ShouldNotEqual, first.Bundles[0].Version)
+				So(st.Bundles["claude"].Version, ShouldEqual, host.Version)
+				So(st.Bundles["claude"].Version, ShouldNotEqual, first.Bundles[0].Version)
+				So(st.Bundles["claude"].VerifyTier, ShouldEqual, state.VerifyExecuted)
+				So(f.config.ModeFor(agent.ClaudeCodeID, kind.Skills, config.ModeSync), ShouldEqual, config.ModeOff)
+			})
+		})
+	})
+}
 
+func TestBundlesSyncUpdateFailureKeepsVersion(t *testing.T) {
+	Convey("Given an enabled bundle whose update fails during sync", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		cli, _, first := enableClaude(t, f)
+
+		cli.calls = nil
+		cli.failOn = map[string]error{"plugin update beadle-canon@beadle": errors.New("boom")}
+		cli.output = "raw sync update failure"
+
+		write(t, filepath.Join(f.vault.SkillsDir(), "alpha", "SKILL.md"), "# alpha v2\n")
+
+		report := f.sync(t)
+
+		st := loadState(t, f)
+
+		Convey("When sync runs", func() {
+			Convey("Then it warns, keeps the version, marks failed and leaves the modes alone", func() {
+				So(strings.Join(report.Warnings, " "), ShouldContainSubstring, "raw sync update failure")
+				So(st.Bundles["claude"].Version, ShouldEqual, first.Bundles[0].Version)
+				So(st.Bundles["claude"].VerifyTier, ShouldEqual, state.VerifyFailed)
+				So(f.config.ModeFor(agent.ClaudeCodeID, kind.Skills, config.ModeSync), ShouldEqual, config.ModeOff)
+			})
+		})
+	})
+}
+
+func TestBundlesRefreshSkipsDryRunPullPushAndKinds(t *testing.T) {
+	Convey("Given an enabled bundle", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		cli, _, _ := enableClaude(t, f)
+
+		manifest := filepath.Join(f.vault.BundlesDir(), "claude", "plugins", "beadle-canon", ".claude-plugin", "plugin.json")
+		before := read(t, manifest)
+
+		write(t, filepath.Join(f.vault.SkillsDir(), "alpha", "SKILL.md"), "# alpha v2\n")
+
+		Convey("When dry-run, pull, push and a scoped sync run", func() {
+			cli.calls = nil
+
+			f.run(t, engine.SyncOptions{DryRun: true})
+			So(read(t, manifest), ShouldEqual, before)
+
+			f.run(t, engine.SyncOptions{Direction: config.ModePull})
+			So(read(t, manifest), ShouldEqual, before)
+
+			f.run(t, engine.SyncOptions{Direction: config.ModePush})
+			So(read(t, manifest), ShouldEqual, before)
+
+			f.run(t, engine.SyncOptions{Kinds: []kind.ID{kind.Rules}})
+			So(read(t, manifest), ShouldEqual, before)
+
+			So(cli.calls, ShouldBeEmpty)
+
+			f.sync(t)
+			after := read(t, manifest)
+
+			Convey("Then only the full sync re-renders a new version", func() {
+				So(after, ShouldNotEqual, before)
+				So(cli.calls, ShouldHaveLength, 5)
+			})
+		})
+	})
+}
+
+func TestBundleIssuesStaleBeforeSync(t *testing.T) {
+	Convey("Given a changed canon that sync has not applied", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		_, _, _ = enableClaude(t, f)
+
+		write(t, filepath.Join(f.vault.SkillsDir(), "alpha", "SKILL.md"), "# alpha v2\n")
+
+		Convey("When doctor runs", func() {
 			issues, err := f.engine.Doctor(t.Context())
 			So(err, ShouldBeNil)
 
-			Convey("Then doctor warns the bundle is stale", func() {
+			Convey("Then it warns the bundle is stale", func() {
 				So(hasIssue(issues, engine.SeverityWarn, "is stale"), ShouldBeTrue)
 			})
 		})
@@ -519,11 +1220,7 @@ func TestBundleIssuesDedupConflict(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := bundleFixture(t)
-		foundCLI(t)
-		fakeRunner(t, &fakeCLI{})
-
-		_, err := f.engine.BundlesEnable(t.Context(), "claude")
-		So(err, ShouldBeNil)
+		_, _, _ = enableClaude(t, f)
 
 		f.config.SetMode(agent.ClaudeCodeID, kind.Skills, config.ModeSync)
 		So(f.config.Save(f.vault.ConfigPath()), ShouldBeNil)
@@ -535,6 +1232,93 @@ func TestBundleIssuesDedupConflict(t *testing.T) {
 			Convey("Then it errors on the double presentation", func() {
 				So(hasIssue(issues, engine.SeverityError, "still synced as files"), ShouldBeTrue)
 			})
+		})
+	})
+}
+
+func TestBundleDoctorInvariants(t *testing.T) {
+	Convey("Given a kind mode turned off without a verified bundle", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		missingCLI(t)
+		fakeRunner(t, &fakeCLI{})
+
+		f.config.SetMode(agent.ClaudeCodeID, kind.Skills, config.ModeOff)
+		f.config.SetMode(agent.ClaudeCodeID, kind.MCP, config.ModeOff)
+		So(f.config.Save(f.vault.ConfigPath()), ShouldBeNil)
+
+		issues, err := f.engine.Doctor(t.Context())
+		So(err, ShouldBeNil)
+
+		Convey("Then zero delivery is an error with a retry hint", func() {
+			So(hasIssue(issues, engine.SeverityError, "is off for skills and nothing delivers the canon"), ShouldBeTrue)
+			So(hasIssue(issues, engine.SeverityError, "run beadle bundles enable claude"), ShouldBeTrue)
+		})
+	})
+
+	Convey("Given a registered bundle the probe rejected", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		cli, host := claudeBundleCLI(t, f)
+		fakeRunner(t, cli)
+		foundCLI(t)
+
+		host.Errors = []string{"Hook load failed"}
+
+		_, err := f.engine.BundlesEnable(t.Context(), "claude")
+		So(err, ShouldBeNil)
+
+		issues, err := f.engine.Doctor(t.Context())
+		So(err, ShouldBeNil)
+
+		Convey("Then it warns that the modes were left on", func() {
+			So(hasIssue(issues, engine.SeverityWarn, "unverified, modes left on"), ShouldBeTrue)
+			So(hasIssue(issues, engine.SeverityWarn, "Hook load failed"), ShouldBeTrue)
+		})
+	})
+
+	Convey("Given a registered bundle whose update failed while the modes are off", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		cli, _, _ := enableClaude(t, f)
+
+		cli.failOn = map[string]error{"plugin update beadle-canon@beadle": errors.New("boom")}
+		cli.output = "raw update failure"
+
+		write(t, filepath.Join(f.vault.SkillsDir(), "alpha", "SKILL.md"), "# alpha v2\n")
+
+		f.sync(t)
+
+		issues, err := f.engine.Doctor(t.Context())
+		So(err, ShouldBeNil)
+
+		Convey("Then zero delivery is not claimed and the unverified warning shows", func() {
+			So(hasIssue(issues, engine.SeverityError, "nothing delivers the canon"), ShouldBeFalse)
+			So(hasIssue(issues, engine.SeverityWarn, "unverified, modes left on"), ShouldBeTrue)
+		})
+	})
+
+	Convey("Given a verified bundle whose files reappeared", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		_, _, _ = enableClaude(t, f)
+
+		f.config.SetMode(agent.ClaudeCodeID, kind.Skills, config.ModeSync)
+		f.config.SetMode(agent.ClaudeCodeID, kind.MCP, config.ModeSync)
+		So(f.config.Save(f.vault.ConfigPath()), ShouldBeNil)
+
+		f.sync(t)
+
+		issues, err := f.engine.Doctor(t.Context())
+		So(err, ShouldBeNil)
+
+		Convey("Then it errors on the files and warns about double delivery", func() {
+			So(hasIssue(issues, engine.SeverityError, "still synced as files"), ShouldBeTrue)
+			So(hasIssue(issues, engine.SeverityWarn, "double delivery"), ShouldBeTrue)
 		})
 	})
 }
@@ -568,23 +1352,31 @@ func TestBundleIssuesValidateFailure(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := bundleFixture(t)
-		foundCLI(t)
+		cli, host, _ := func() (*fakeCLI, *claudeHost, engine.Report) {
+			c, h := claudeBundleCLI(t, f)
+			fakeRunner(t, c)
+			foundCLI(t)
 
-		cli := &fakeCLI{}
-		fakeRunner(t, cli)
+			report, err := f.engine.BundlesEnable(t.Context(), "claude")
+			if err != nil {
+				t.Fatalf("enable: %v", err)
+			}
 
-		_, err := f.engine.BundlesEnable(t.Context(), "claude")
-		So(err, ShouldBeNil)
+			return c, h, report
+		}()
 
-		cli.failOn = map[string]error{"plugin validate " + filepath.Join(f.vault.BundlesDir(), "claude"): errors.New("bad manifest")}
-		cli.output = "manifest error"
+		host.Validate = []string{"manifest error"}
+		cli.calls = nil
 
 		issues, err := f.engine.Doctor(t.Context())
 		So(err, ShouldBeNil)
 
 		Convey("When doctor validates", func() {
-			Convey("Then the failure surfaces as an error", func() {
+			Convey("Then the failure surfaces as an error on the plugin directory", func() {
 				So(hasIssue(issues, engine.SeverityError, "claude plugin validate failed"), ShouldBeTrue)
+				So(cli.calls, ShouldHaveLength, 1)
+				So(cli.calls[0][2], ShouldEqual, "validate")
+				So(cli.calls[0][len(cli.calls[0])-1], ShouldEqual, filepath.Join(f.vault.BundlesDir(), "claude", "plugins", "beadle-canon"))
 			})
 		})
 	})
@@ -596,9 +1388,7 @@ func TestBundlesEnableGeminiOnlyDedupsMCP(t *testing.T) {
 
 		f := bundleFixture(t)
 		foundCLI(t)
-
-		cli := &fakeCLI{}
-		fakeRunner(t, cli)
+		fakeRunner(t, &fakeCLI{respond: geminiExtensionsResponder(`[{"name": "beadle-canon"}]`)})
 
 		report, err := f.engine.BundlesEnable(t.Context(), "gemini")
 		So(err, ShouldBeNil)
@@ -606,7 +1396,8 @@ func TestBundlesEnableGeminiOnlyDedupsMCP(t *testing.T) {
 		Convey("When it is enabled", func() {
 			Convey("Then only MCP dedups and skills stay a file surface", func() {
 				So(report.Bundles[0].Registered, ShouldBeTrue)
-				So(cli.calls, ShouldResemble, [][]string{{"gemini", "extensions", "link", filepath.Join(f.vault.BundlesDir(), "gemini")}})
+				So(report.Bundles[0].Tier, ShouldEqual, state.VerifyExecuted)
+				So(report.Bundles[0].Action, ShouldEqual, "enabled")
 				So(f.config.ModeFor(agent.GeminiCLIID, kind.MCP, config.ModeSync), ShouldEqual, config.ModeOff)
 				So(f.config.ModeFor(agent.GeminiCLIID, kind.Skills, config.ModeSync), ShouldEqual, config.ModeSync)
 
@@ -625,7 +1416,7 @@ func TestBundlesEnableAntigravityNeedsLink(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := bundleFixture(t)
-		foundCLI(t)
+		missingCLI(t)
 
 		cli := &fakeCLI{}
 		fakeRunner(t, cli)
@@ -636,8 +1427,11 @@ func TestBundlesEnableAntigravityNeedsLink(t *testing.T) {
 		Convey("When it is enabled before and after the link exists", func() {
 			So(report.Bundles[0].Action, ShouldEqual, "generated")
 			So(report.Bundles[0].Registered, ShouldBeFalse)
+			So(report.Bundles[0].Tier, ShouldEqual, state.VerifyUnverifiable)
 			So(cli.calls, ShouldBeEmpty)
 			So(report.Bundles[0].Note, ShouldContainSubstring, f.home)
+			So(report.Bundles[0].Note, ShouldContainSubstring, "antigravity-cli/plugins")
+			So(report.Bundles[0].Note, ShouldContainSubstring, ".gemini/config/plugins")
 			So(f.config.ModeFor(agent.AntigravityCLIID, kind.MCP, config.ModeSync), ShouldEqual, config.ModeSync)
 
 			_, skillErr := os.Stat(filepath.Join(f.vault.BundlesDir(), "antigravity", "skills", "alpha", "SKILL.md"))
@@ -645,12 +1439,13 @@ func TestBundlesEnableAntigravityNeedsLink(t *testing.T) {
 
 			linked := filepath.Join(f.home, ".gemini", "antigravity-cli", "plugins", "beadle-canon")
 			So(os.MkdirAll(filepath.Dir(linked), 0o750), ShouldBeNil)
-			So(os.MkdirAll(linked, 0o750), ShouldBeNil)
+			So(os.Symlink(filepath.Join(f.vault.BundlesDir(), "antigravity"), linked), ShouldBeNil)
 
 			report, err = f.engine.BundlesEnable(t.Context(), "antigravity")
 			So(err, ShouldBeNil)
 			So(report.Bundles[0].Registered, ShouldBeTrue)
-			So(f.config.ModeFor(agent.AntigravityCLIID, kind.MCP, config.ModeSync), ShouldEqual, config.ModeOff)
+			So(report.Bundles[0].Tier, ShouldEqual, state.VerifyUnverifiable)
+			So(f.config.ModeFor(agent.AntigravityCLIID, kind.MCP, config.ModeSync), ShouldEqual, config.ModeSync)
 
 			report, err = f.engine.BundlesEnable(t.Context(), "antigravity")
 
@@ -667,13 +1462,7 @@ func TestBundlesEnableUpdatesRegisteredBundle(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := bundleFixture(t)
-		foundCLI(t)
-
-		cli := &fakeCLI{}
-		fakeRunner(t, cli)
-
-		first, err := f.engine.BundlesEnable(t.Context(), "claude")
-		So(err, ShouldBeNil)
+		cli, _, first := enableClaude(t, f)
 
 		cli.calls = nil
 
@@ -690,8 +1479,11 @@ func TestBundlesEnableUpdatesRegisteredBundle(t *testing.T) {
 				So(second.Bundles[0].Version, ShouldNotEqual, first.Bundles[0].Version)
 
 				So(cli.calls, ShouldResemble, [][]string{
+					{"claude", "plugin", "validate", "--json", "--strict", filepath.Join(f.vault.BundlesDir(), "claude", "plugins", "beadle-canon")},
+					{"claude", "plugin", "validate", "--json", "--strict", filepath.Join(f.vault.BundlesDir(), "claude")},
 					{"claude", "plugin", "marketplace", "update", "beadle"},
 					{"claude", "plugin", "update", "beadle-canon@beadle"},
+					{"claude", "plugin", "list", "--json"},
 				})
 
 				So(st.Bundles["claude"].Version, ShouldEqual, second.Bundles[0].Version)
@@ -714,8 +1506,9 @@ func TestBundlesEnableKeepsSavedModes(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := bundleFixture(t)
+		cli, _ := claudeBundleCLI(t, f)
+		fakeRunner(t, cli)
 		foundCLI(t)
-		fakeRunner(t, &fakeCLI{})
 
 		f.config.SetMode(agent.ClaudeCodeID, kind.Skills, config.ModePull)
 		So(f.config.Save(f.vault.ConfigPath()), ShouldBeNil)
@@ -748,7 +1541,7 @@ func TestBundlesDisableGeminiUnlinks(t *testing.T) {
 		f := bundleFixture(t)
 		foundCLI(t)
 
-		cli := &fakeCLI{}
+		cli := &fakeCLI{respond: geminiExtensionsResponder(`[{"name": "beadle-canon"}]`)}
 		fakeRunner(t, cli)
 
 		_, err := f.engine.BundlesEnable(t.Context(), "gemini")
@@ -769,18 +1562,34 @@ func TestBundlesDisableGeminiUnlinks(t *testing.T) {
 	})
 }
 
+func TestBundlesGeminiProbeFailureKeepsModes(t *testing.T) {
+	Convey("Given a gemini listing without the extension", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		foundCLI(t)
+		fakeRunner(t, &fakeCLI{respond: geminiExtensionsResponder("no extensions")})
+
+		report, err := f.engine.BundlesEnable(t.Context(), "gemini")
+		So(err, ShouldBeNil)
+
+		Convey("When it is enabled", func() {
+			Convey("Then the MCP mode is left on and the raw listing is reported", func() {
+				So(report.Bundles[0].Action, ShouldEqual, "failed")
+				So(report.Bundles[0].Tier, ShouldEqual, state.VerifyFailed)
+				So(report.Bundles[0].Note, ShouldContainSubstring, "no extensions")
+				So(f.config.ModeFor(agent.GeminiCLIID, kind.MCP, config.ModeSync), ShouldEqual, config.ModeSync)
+			})
+		})
+	})
+}
+
 func TestBundlesDisableFailureKeepsRegistrationState(t *testing.T) {
 	Convey("Given an unregister failure", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := bundleFixture(t)
-		foundCLI(t)
-
-		cli := &fakeCLI{}
-		fakeRunner(t, cli)
-
-		_, err := f.engine.BundlesEnable(t.Context(), "claude")
-		So(err, ShouldBeNil)
+		cli, _, _ := enableClaude(t, f)
 
 		cli.failOn = map[string]error{"plugin uninstall beadle-canon@beadle": errors.New("boom")}
 		cli.output = "raw uninstall failure"
@@ -806,41 +1615,7 @@ func TestBundlesDisableFailureKeepsRegistrationState(t *testing.T) {
 				So(st.Bundles["claude"].Registered, ShouldBeTrue)
 
 				So(hasIssue(issues, engine.SeverityWarn, "is still registered"), ShouldBeTrue)
-				So(cli.calls, ShouldResemble, [][]string{{"claude", "plugin", "validate", filepath.Join(f.vault.BundlesDir(), "claude")}})
-			})
-		})
-	})
-}
-
-func TestBundlesRefreshSkipsDryRunAndPull(t *testing.T) {
-	Convey("Given an enabled bundle", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
-		f := bundleFixture(t)
-		foundCLI(t)
-		fakeRunner(t, &fakeCLI{})
-
-		report, err := f.engine.BundlesEnable(t.Context(), "claude")
-		So(err, ShouldBeNil)
-
-		manifest := filepath.Join(f.vault.BundlesDir(), "claude", "plugins", "beadle-canon", ".claude-plugin", "plugin.json")
-		before := read(t, manifest)
-
-		write(t, filepath.Join(f.vault.SkillsDir(), "alpha", "SKILL.md"), "# alpha v2\n")
-
-		Convey("When dry-run, pull and sync run", func() {
-			f.run(t, engine.SyncOptions{DryRun: true})
-			So(read(t, manifest), ShouldEqual, before)
-
-			f.run(t, engine.SyncOptions{Direction: config.ModePull})
-			So(read(t, manifest), ShouldEqual, before)
-
-			f.sync(t)
-			after := read(t, manifest)
-
-			Convey("Then only the real sync re-renders a new version", func() {
-				So(after, ShouldNotEqual, before)
-				So(after, ShouldNotContainSubstring, report.Bundles[0].Version)
+				So(cli.calls, ShouldHaveLength, 2)
 			})
 		})
 	})
@@ -851,13 +1626,7 @@ func TestBundleIssuesValidateSkippedWithoutCLI(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := bundleFixture(t)
-		foundCLI(t)
-
-		cli := &fakeCLI{}
-		fakeRunner(t, cli)
-
-		_, err := f.engine.BundlesEnable(t.Context(), "claude")
-		So(err, ShouldBeNil)
+		cli, _, _ := enableClaude(t, f)
 
 		missingCLI(t)
 
@@ -870,6 +1639,109 @@ func TestBundleIssuesValidateSkippedWithoutCLI(t *testing.T) {
 			Convey("Then it warns about the CLI and never invokes validate", func() {
 				So(hasIssue(issues, engine.SeverityWarn, "claude CLI not found"), ShouldBeTrue)
 				So(cli.calls, ShouldBeEmpty)
+			})
+		})
+	})
+}
+
+func TestBundlesEnableFlipFailureRemovesNothing(t *testing.T) {
+	Convey("Given a verified enable whose mode flip cannot be saved", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		f.config.Enable(agent.SharedID)
+		So(f.config.Save(f.vault.ConfigPath()), ShouldBeNil)
+
+		f.sync(t)
+
+		So(os.Remove(f.vault.ConfigPath()), ShouldBeNil)
+		So(os.Mkdir(f.vault.ConfigPath(), 0o700), ShouldBeNil)
+
+		_, err := enableClaudeRaw(t, f)
+
+		Convey("When the enable fails", func() {
+			Convey("Then no file was withdrawn", func() {
+				So(err, ShouldBeError)
+				So(read(t, f.claudeSkill("alpha")), ShouldContainSubstring, "# alpha")
+				So(read(t, f.claudeConfig()), ShouldContainSubstring, "plug")
+			})
+		})
+	})
+}
+
+func enableClaudeRaw(t *testing.T, f *fixture) (engine.Report, error) {
+	t.Helper()
+
+	cli, _ := claudeBundleCLI(t, f)
+	fakeRunner(t, cli)
+	foundCLI(t)
+
+	return f.engine.BundlesEnable(t.Context(), "claude")
+}
+
+func TestBundlePluginMCPPresentedWithModeOff(t *testing.T) {
+	Convey("Given a verified gemini bundle and plugin-sourced servers", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		write(t, f.geminiSettings(), `{"mcpServers": {}}`)
+
+		f.config.Enable(agent.GeminiCLIID)
+		So(f.config.Save(f.vault.ConfigPath()), ShouldBeNil)
+
+		first := pluginTree(t, f.home, "acme", "one", "1.0.0")
+		writeMCPServers(t, first, `{"mcpServers": {"plug-one": {"command": "node", "args": ["one.js"]}}}`)
+
+		f.sync(t)
+		So(read(t, f.geminiSettings()), ShouldContainSubstring, "plug-one")
+
+		foundCLI(t)
+		fakeRunner(t, &fakeCLI{respond: geminiExtensionsResponder(`[{"name": "beadle-canon"}]`)})
+
+		_, err := f.engine.BundlesEnable(t.Context(), "gemini")
+		So(err, ShouldBeNil)
+		So(f.config.ModeFor(agent.GeminiCLIID, kind.MCP, config.ModeSync), ShouldEqual, config.ModeOff)
+
+		second := pluginTree(t, f.home, "acme", "two", "1.0.0")
+		writeMCPServers(t, second, `{"mcpServers": {"plug-two": {"command": "node", "args": ["two.js"]}}}`)
+
+		f.sync(t)
+
+		Convey("When a new plugin appears while the MCP mode is off", func() {
+			Convey("Then its server still reaches the host config", func() {
+				So(read(t, f.geminiSettings()), ShouldContainSubstring, "plug-two")
+				So(read(t, f.geminiSettings()), ShouldContainSubstring, "plug-one")
+			})
+
+			Convey("And a removed plugin's server leaves the host config", func() {
+				removeFromRegistry(t, f.home, "acme", "two")
+				So(os.RemoveAll(second), ShouldBeNil)
+
+				f.sync(t)
+
+				So(read(t, f.geminiSettings()), ShouldNotContainSubstring, "plug-two")
+				So(read(t, f.geminiSettings()), ShouldContainSubstring, "plug-one")
+			})
+		})
+	})
+}
+
+func TestBundlePluginMCPStaysOutOfClaude(t *testing.T) {
+	Convey("Given a verified claude bundle and a plugin server", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		_, _, _ = enableClaude(t, f)
+
+		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeMCPServers(t, plugin, `{"mcpServers": {"from-plugin": {"command": "node", "args": ["plug.js"]}}}`)
+
+		f.sync(t)
+
+		Convey("When sync runs with the MCP mode off", func() {
+			Convey("Then the plugin server stays out of ~/.claude.json", func() {
+				So(read(t, f.claudeConfig()), ShouldNotContainSubstring, "from-plugin")
 			})
 		})
 	})

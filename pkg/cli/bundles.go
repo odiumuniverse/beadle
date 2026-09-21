@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -42,7 +43,7 @@ func (a *app) newBundlesStatusCmd() *cobra.Command {
 
 			out := cmd.OutOrStdout()
 
-			fmt.Fprintf(out, "  %-13s %-8s %-11s %-16s %s\n", "host", "enabled", "registered", "version", "cli")
+			fmt.Fprintf(out, "  %-13s %-8s %-11s %-16s %-14s %s\n", "host", "enabled", "registered", "version", "tier", "cli")
 
 			for _, host := range bundle.Hosts() {
 				entry := st.Bundles[string(host)]
@@ -52,12 +53,17 @@ func (a *app) newBundlesStatusCmd() *cobra.Command {
 					version = "-"
 				}
 
+				tier := entry.VerifyTier
+				if tier == "" {
+					tier = "-"
+				}
+
 				cli := "missing"
 				if _, err := exec.LookPath(host.Binary()); err == nil {
 					cli = "found"
 				}
 
-				fmt.Fprintf(out, "  %-13s %-8s %-11s %-16s %s\n", host, onOff(entry.Enabled, "yes", "no"), onOff(entry.Registered, "yes", "no"), version, cli)
+				fmt.Fprintf(out, "  %-13s %-8s %-11s %-16s %-14s %s\n", host, onOff(entry.Enabled, "yes", "no"), onOff(entry.Registered, "yes", "no"), version, tier, cli)
 			}
 
 			return nil
@@ -124,11 +130,23 @@ func printBundleReport(cmd *cobra.Command, report engine.Report) {
 			line += " (registered)"
 		}
 
+		if result.Tier != "" {
+			line += " " + result.Tier
+		}
+
 		if result.Note != "" {
 			line += ": " + result.Note
 		}
 
 		fmt.Fprintln(out, line)
+
+		if len(result.Withdrawn) > 0 {
+			fmt.Fprintln(out, "    withdrew: "+strings.Join(result.Withdrawn, ", "))
+		}
+
+		if len(result.Kept) > 0 {
+			fmt.Fprintln(out, "    kept: "+strings.Join(result.Kept, ", "))
+		}
 	}
 
 	for _, warning := range report.Warnings {

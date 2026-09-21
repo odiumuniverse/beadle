@@ -112,6 +112,8 @@ func pluginLines(results []engine.PluginResult, farm []engine.FarmResult) []stri
 			lines = append(lines, fmt.Sprintf("  ✗ %s %s quarantined: %s", result.Key, result.Version, result.Note))
 		case engine.PluginSkipped:
 			lines = append(lines, fmt.Sprintf("  ! %s skipped: %s", result.Key, result.Note))
+		case engine.PluginRetired:
+			lines = append(lines, fmt.Sprintf("  ✂ %s retired: %s", result.Key, result.Note))
 		case engine.PluginNoop:
 		}
 	}

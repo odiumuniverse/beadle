@@ -160,7 +160,7 @@ func (e *Engine) sync(ctx context.Context, opts SyncOptions) (*Report, error) {
 
 	e.liftRulings(report)
 
-	e.refreshBundles(st, report, opts)
+	e.refreshBundles(ctx, st, report, opts)
 
 	e.syncDigest(ctx, report, active, st, opts)
 

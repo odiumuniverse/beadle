@@ -73,10 +73,12 @@ manage alone.
   or MCP servers mid-task.
 - **Native bundles and hooks** — approved lifecycle hooks and the vault canon
   are rendered into native host bundles (a Claude marketplace plugin, a Gemini
-  extension, an Antigravity plugin) with content-hash versions; registration
-  goes through the host CLIs when they exist, otherwise you get exact
-  instructions. beadle writes hook files but never runs them. *Why:* native
-  plugins survive upgrades and keep hooks in one audited place.
+  extension, an Antigravity plugin) whose version follows the rendered bytes.
+  Registration goes through the host CLIs when they exist, and the result is
+  verified before beadle retires the file copies; without the CLI the canon
+  keeps arriving as files. `bundles disable` materializes everything back.
+  beadle writes hook files but never runs them. *Why:* native plugins survive
+  upgrades and keep hooks in one audited place.
 - **Project scope** — opt-in per repository: `.mcp.json`, `.cursor/mcp.json`,
   `.cursor/rules/*.mdc`, `.agents/mcp_config.json`, `AGENTS.md`, `GEMINI.md`.
   The project identity comes from the git origin, so clones and worktrees
@@ -225,7 +227,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the picture.
 | `resolve [id…] --take vault\|agent\|file` | settle conflicts and push the decision |
 | `history <kind>` / `restore <kind> --to N` | snapshots and rollbacks |
 | `doctor` | diagnostics; non-zero exit on errors |
-| `heal [--dry-run]` | clear quarantined plugins: stubs, artifacts, ledger tombstones |
+| `heal [--dry-run]` | clear quarantined plugins, stubs, tombstones and orphan pivots |
 
 ### Config & background
 

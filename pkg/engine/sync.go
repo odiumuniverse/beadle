@@ -27,10 +27,15 @@ type view struct {
 	base            kind.Items
 	presented       kind.Items
 	presentedFailed bool
-	moved           int
-	holds           map[string]bool
-	conflicts       []state.Conflict
-	blobs           [][]byte
+	// pluginOnly marks a view created for a host whose kind mode is off but
+	// whose verified bundle only delivers the canon: the view presents
+	// plugin-sourced items and leaves the canon remnants alone.
+	pluginOnly  bool
+	pluginOwned map[string]struct{}
+	moved       int
+	holds       map[string]bool
+	conflicts   []state.Conflict
+	blobs       [][]byte
 }
 
 func (v *view) frozen(spec kind.Spec, key string) bool {
@@ -66,7 +71,7 @@ func (e *Engine) syncKind(ctx context.Context, spec kind.Spec, agents []*agent.A
 		pluginLedger, pluginPlan = e.loadPluginMCPPlan(vaultItems, &report)
 	}
 
-	views := e.readViews(ctx, spec, agents, st, opts, &report)
+	views := e.readViews(ctx, spec, agents, st, opts, pluginPlan, &report)
 	original := maps.Clone(vaultItems)
 
 	e.logNoteSecretMoves(ctx, spec, views, opts)
@@ -236,7 +241,7 @@ func resultRank(action Action) int {
 }
 
 func (e *Engine) readViews(
-	ctx context.Context, spec kind.Spec, agents []*agent.Agent, st *state.State, opts SyncOptions, report *KindReport,
+	ctx context.Context, spec kind.Spec, agents []*agent.Agent, st *state.State, opts SyncOptions, pluginPlan pluginMCPPlan, report *KindReport,
 ) []*view {
 	var views []*view
 
@@ -249,8 +254,15 @@ func (e *Engine) readViews(
 			}
 
 			mode := restrict(e.config.ModeFor(a.ID, spec.ID, surface.Traits().DefaultMode), opts.Direction)
+			pluginOnly := false
+
 			if mode == config.ModeOff {
-				continue
+				if !e.bundlePresentsPluginMCP(st, a.ID, pluginPlan, opts) {
+					continue
+				}
+
+				mode = config.ModePush
+				pluginOnly = true
 			}
 
 			v, err := e.readView(ctx, spec, a, surface, mode, st)
@@ -259,6 +271,8 @@ func (e *Engine) readViews(
 
 				continue
 			}
+
+			v.pluginOnly = pluginOnly
 
 			for _, path := range slices.Sorted(maps.Values(v.snap.Unreadable)) {
 				report.Warnings = append(report.Warnings, fmt.Sprintf(
@@ -551,7 +565,7 @@ func (e *Engine) pushView(
 		resolved = nil // write() reports the error with the server name
 	}
 
-	if desired.Equal(v.snap.Items) && (resolved == nil || resolved.Equal(v.raw)) {
+	if desired.Equal(v.snap.Items) && v.unchangedForm(resolved) {
 		return v.snap.Items, single
 	}
 
@@ -669,7 +683,17 @@ func (e *Engine) suppressKept(spec kind.Spec, v *view, desired kind.Items, repor
 	return out
 }
 
+// unchangedForm reports that the rendered file form matches what the agent
+// holds: a plugin-only view never rewrites the canon remnants it inherited.
+func (v *view) unchangedForm(resolved kind.Items) bool {
+	return v.pluginOnly || resolved == nil || resolved.Equal(v.raw)
+}
+
 func (e *Engine) desired(spec kind.Spec, v *view, vaultItems kind.Items) kind.Items {
+	if v.pluginOnly {
+		return pluginOnlyDesired(spec, v)
+	}
+
 	proj := project(vaultItems, v.surface)
 
 	if spec.Singleton && len(proj.items) == 0 {
@@ -691,6 +715,36 @@ func (e *Engine) desired(spec kind.Spec, v *view, vaultItems kind.Items) kind.It
 	}
 
 	e.mergePresented(spec, v, vaultItems, out)
+
+	return out
+}
+
+// pluginOnlyDesired keeps the canon remnants as they are (they stay
+// untouched until a verified withdrawal), adds the plugin-sourced items and
+// drops the servers of plugins that are gone.
+func pluginOnlyDesired(spec kind.Spec, v *view) kind.Items {
+	out := maps.Clone(v.snap.Items)
+	if out == nil {
+		out = kind.Items{}
+	}
+
+	for key, data := range v.presented {
+		if _, taken := out[key]; taken || v.frozen(spec, key) {
+			continue
+		}
+
+		out[key] = data
+	}
+
+	for key := range out {
+		if _, presented := v.presented[key]; presented {
+			continue
+		}
+
+		if _, pluginOwned := v.pluginOwned[key]; pluginOwned {
+			delete(out, key)
+		}
+	}
 
 	return out
 }

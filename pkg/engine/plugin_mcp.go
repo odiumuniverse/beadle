@@ -11,9 +11,38 @@ import (
 	"strings"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/bundle"
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/state"
 )
+
+// bundlePresentsPluginMCP reports whether plugin-sourced servers must still
+// reach this agent even though its MCP mode is off: a verified bundle owns
+// the canon on that surface, and the host reads plugin servers only through
+// beadle. Claude Code is excluded: it loads plugin .mcp.json files natively,
+// so presenting them into ~/.claude.json duplicates the server and makes the
+// host skip one copy with a warning.
+func (e *Engine) bundlePresentsPluginMCP(st *state.State, agentID string, plan pluginMCPPlan, opts SyncOptions) bool {
+	if opts.Direction == config.ModePull || len(plan.Items[agentID]) == 0 {
+		return false
+	}
+
+	for hostName, entry := range st.Bundles {
+		if !entry.Verified() {
+			continue
+		}
+
+		host, err := bundle.ParseHost(hostName)
+		if err != nil || host == bundle.Claude || host.AgentID() != agentID || !slices.Contains(host.Kinds(), kind.MCP) {
+			continue
+		}
+
+		return true
+	}
+
+	return false
+}
 
 const (
 	pluginMCPFile   = ".mcp.json"
@@ -47,8 +76,21 @@ func (e *Engine) ownedPluginMCP(spec kind.Spec, views []*view, plan pluginMCPPla
 	e.presentPluginMCP(views, plan, report)
 	e.collectOwnedServers(plan, ledger, vaultItems, owned)
 	e.holdMCPFailSafe(spec, views, plan, vaultItems, owned, report)
+	markPluginOwnership(views, plan, owned)
 
 	return owned
+}
+
+// markPluginOwnership lets mode-off presentation-only views drop servers
+// whose plugin is gone.
+func markPluginOwnership(views []*view, plan pluginMCPPlan, owned map[string]struct{}) {
+	for _, v := range views {
+		if !v.pluginOnly || plan.failed(v.agent.ID) {
+			continue
+		}
+
+		v.pluginOwned = owned
+	}
 }
 
 func (e *Engine) holdMCPFailSafe(spec kind.Spec, views []*view, plan pluginMCPPlan, vaultItems kind.Items, owned map[string]struct{}, report *KindReport) {

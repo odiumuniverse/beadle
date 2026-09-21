@@ -3,12 +3,14 @@ package engine
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/bundle"
@@ -20,11 +22,14 @@ import (
 )
 
 type BundleResult struct {
-	Host       string `json:"host"`
-	Action     string `json:"action"`
-	Version    string `json:"version,omitempty"`
-	Registered bool   `json:"registered,omitempty"`
-	Note       string `json:"note,omitempty"`
+	Host       string   `json:"host"`
+	Action     string   `json:"action"`
+	Version    string   `json:"version,omitempty"`
+	Registered bool     `json:"registered,omitempty"`
+	Tier       string   `json:"tier,omitempty"`
+	Note       string   `json:"note,omitempty"`
+	Withdrawn  []string `json:"withdrawn,omitempty"`
+	Kept       []string `json:"kept,omitempty"`
 }
 
 const (
@@ -34,6 +39,7 @@ const (
 	bundleFailed    = "failed"
 	bundleNoop      = "noop"
 	cliPlugin       = "plugin"
+	bundleNoteLimit = 400
 )
 
 var (
@@ -50,6 +56,11 @@ func bundleRegisterCommands(host bundle.Host, dir string) [][]string {
 		}
 	case bundle.Gemini:
 		return [][]string{{"extensions", "link", dir}}
+	case bundle.Antigravity:
+		return [][]string{
+			{cliPlugin, "install", dir},
+			{cliPlugin, "enable", bundle.PluginName},
+		}
 	default:
 		return nil
 	}
@@ -75,6 +86,8 @@ func bundleUnregisterCommands(host bundle.Host, dir string) [][]string {
 		}
 	case bundle.Gemini:
 		return [][]string{{"extensions", "unlink", dir}}
+	case bundle.Antigravity:
+		return [][]string{{cliPlugin, "uninstall", bundle.PluginName}}
 	default:
 		return nil
 	}
@@ -87,7 +100,10 @@ func bundleInstructions(host bundle.Host, dir, home string) string {
 	case bundle.Gemini:
 		return "run: gemini extensions link " + dir
 	default:
-		return fmt.Sprintf("link the plugin into the antigravity customization root: ln -s %s %s/.gemini/antigravity-cli/plugins/%s", dir, home, bundle.PluginName)
+		return fmt.Sprintf("link the plugin into an antigravity customization root: ln -s %s %s (CLI) or %s (IDE/2.0)",
+			dir,
+			filepath.Join(home, ".gemini", "antigravity-cli", "plugins", bundle.PluginName),
+			filepath.Join(home, ".gemini", "config", "plugins", bundle.PluginName))
 	}
 }
 
@@ -98,8 +114,14 @@ func bundleUnregisterInstructions(host bundle.Host, dir, home string) string {
 	case bundle.Gemini:
 		return "run: gemini extensions unlink " + dir
 	default:
-		return fmt.Sprintf("remove the plugin link: rm %s/.gemini/antigravity-cli/plugins/%s", home, bundle.PluginName)
+		return fmt.Sprintf("remove the plugin link first: %s, %s, then run beadle bundles disable antigravity",
+			filepath.Join(home, ".gemini", "antigravity-cli", "plugins", bundle.PluginName),
+			filepath.Join(home, ".gemini", "config", "plugins", bundle.PluginName))
 	}
+}
+
+func bundleRetry(host bundle.Host) string {
+	return fmt.Sprintf("run beadle bundles enable %s", host)
 }
 
 func (e *Engine) BundlesEnable(ctx context.Context, hostName string) (Report, error) {
@@ -137,15 +159,28 @@ func (e *Engine) BundlesEnable(ctx context.Context, hostName string) (Report, er
 	}
 
 	dir := filepath.Join(e.vault.BundlesDir(), string(host))
+
+	if note, ok := e.validateBundle(host, dir); !ok {
+		report.Bundles = append(report.Bundles, BundleResult{
+			Host: string(host), Action: bundleFailed, Version: result.Version,
+			Note: joinBundleNotes(note, bundleRetry(host)),
+		})
+		report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: the %s bundle did not validate; nothing was registered", host))
+
+		return report, nil
+	}
+
 	entry := st.Bundles[string(host)]
 	entry.Enabled = true
 
 	action, note := e.registerBundle(host, dir, &entry, result.Version, &report)
 
-	if entry.Registered {
-		if err := e.disableBundleKinds(host, &entry); err != nil {
-			return report, err
-		}
+	tier, probeNote := e.bundleVerification(host, dir, result.Version, entry.Registered)
+	entry.VerifyTier = tier
+	entry.ProbeNote = probeNote
+
+	if entry.Registered && tier == state.VerifyExecuted {
+		return e.enableVerifiedBundle(ctx, host, st, req, entry, result, action, note, &report)
 	}
 
 	st.Bundles[string(host)] = entry
@@ -154,19 +189,77 @@ func (e *Engine) BundlesEnable(ctx context.Context, hostName string) (Report, er
 		return report, err
 	}
 
-	version := result.Version
-	if note != "" && entry.Version != "" {
-		version = entry.Version
+	if tier == state.VerifyFailed {
+		action = bundleFailed
+		note = joinBundleNotes(note, probeNote, bundleRetry(host))
+	} else if note == "" {
+		note = probeNote
 	}
 
-	report.Bundles = append(report.Bundles, BundleResult{Host: string(host), Action: action, Version: version, Registered: entry.Registered, Note: note})
+	report.Bundles = append(report.Bundles, BundleResult{
+		Host: string(host), Action: action, Version: reportedVersion(entry, result),
+		Registered: entry.Registered, Tier: tier, Note: note,
+	})
 
 	return report, nil
 }
 
+// reportedVersion prefers the version the host actually serves over the
+// freshly rendered one, so a failed update does not claim the new version.
+func reportedVersion(entry state.BundleState, result bundle.Result) string {
+	if entry.Version != "" {
+		return entry.Version
+	}
+
+	return result.Version
+}
+
+func (e *Engine) enableVerifiedBundle(
+	ctx context.Context, host bundle.Host, st *state.State, req bundle.Request,
+	entry state.BundleState, result bundle.Result, action, note string, report *Report,
+) (Report, error) {
+	plans, kept, warnList := e.planBundleWithdrawal(ctx, host, st, req)
+	report.Warnings = append(report.Warnings, warnList...)
+
+	planned := plannedWithdrawn(plans)
+
+	// Checkpoint the plan before anything is flipped or deleted: a crash or
+	// a failed write must leave enough state for disable to restore.
+	entry.PendingWithdrawal = true
+	entry.Withdrawn = mergeWithdrawn(entry.Withdrawn, planned)
+	st.Bundles[string(host)] = entry
+
+	if err := st.Save(e.vault.StatePath()); err != nil {
+		return *report, err
+	}
+
+	if err := e.disableBundleKinds(host, &entry, report); err != nil {
+		return *report, err
+	}
+
+	withdrawn, applyWarns, complete := e.applyBundleWithdrawal(ctx, plans)
+	report.Warnings = append(report.Warnings, applyWarns...)
+
+	entry.PendingWithdrawal = !complete
+	entry.Withdrawn = mergeWithdrawn(entry.Withdrawn, withdrawn)
+
+	st.Bundles[string(host)] = entry
+
+	if err := st.Save(e.vault.StatePath()); err != nil {
+		return *report, err
+	}
+
+	report.Bundles = append(report.Bundles, BundleResult{
+		Host: string(host), Action: action, Version: result.Version, Registered: true,
+		Tier: entry.VerifyTier, Note: note, Withdrawn: withdrawNames(withdrawn), Kept: kept,
+	})
+
+	return *report, nil
+}
+
 func (e *Engine) registerBundle(host bundle.Host, dir string, entry *state.BundleState, version string, report *Report) (string, string) {
 	switch {
-	case host == bundle.Antigravity:
+	case host == bundle.Antigravity && e.binaryMissing(host):
 		entry.Registered = e.antigravityLinked()
 		if !entry.Registered {
 			report.Warnings = append(report.Warnings, "bundles: antigravity plugin is not linked yet")
@@ -214,6 +307,20 @@ func (e *Engine) registerBundle(host bundle.Host, dir string, entry *state.Bundl
 	}
 }
 
+func (e *Engine) bundleVerification(host bundle.Host, dir, version string, registered bool) (string, string) {
+	switch {
+	case registered:
+		return e.probeBundle(host, dir, version)
+	case host == bundle.Antigravity && e.binaryMissing(host):
+		// Antigravity linking without the CLI is manual by design.
+		return state.VerifyUnverifiable, "the antigravity plugin is not linked yet"
+	case e.binaryMissing(host):
+		return state.VerifyUnverifiable, host.Binary() + " CLI not found; the bundle stays unverified"
+	default:
+		return state.VerifyFailed, "the registration command failed"
+	}
+}
+
 func (e *Engine) BundlesDisable(ctx context.Context, hostName string) (Report, error) {
 	var report Report
 
@@ -243,6 +350,19 @@ func (e *Engine) BundlesDisable(ctx context.Context, hostName string) (Report, e
 
 	dir := filepath.Join(e.vault.BundlesDir(), string(host))
 
+	restored, restoreWarns, err := e.rematerializeBundle(ctx, host, entry)
+	report.Warnings = append(report.Warnings, restoreWarns...)
+
+	if err != nil {
+		report.Bundles = append(report.Bundles, BundleResult{
+			Host: string(host), Action: bundleFailed, Version: entry.Version,
+			Registered: entry.Registered, Tier: entry.VerifyTier,
+			Note: joinBundleNotes(err.Error(), fmt.Sprintf("run beadle bundles disable %s again", host)),
+		})
+
+		return report, nil
+	}
+
 	unregistered, note := e.unregisterBundle(host, dir, entry, &report)
 
 	if !unregistered {
@@ -253,12 +373,12 @@ func (e *Engine) BundlesDisable(ctx context.Context, hostName string) (Report, e
 			return report, err
 		}
 
-		report.Bundles = append(report.Bundles, BundleResult{Host: string(host), Action: bundleFailed, Version: entry.Version, Registered: entry.Registered, Note: note})
+		report.Bundles = append(report.Bundles, BundleResult{Host: string(host), Action: bundleFailed, Version: entry.Version, Registered: entry.Registered, Tier: entry.VerifyTier, Note: note})
 
 		return report, nil
 	}
 
-	if err := e.restoreBundleKinds(host, entry); err != nil {
+	if err := e.restoreBundleKinds(host, &entry, &report); err != nil {
 		return report, err
 	}
 
@@ -268,18 +388,30 @@ func (e *Engine) BundlesDisable(ctx context.Context, hostName string) (Report, e
 		return report, err
 	}
 
-	report.Bundles = append(report.Bundles, BundleResult{Host: string(host), Action: bundleDisabled, Version: entry.Version, Note: note})
+	report.Bundles = append(report.Bundles, BundleResult{
+		Host: string(host), Action: bundleDisabled, Version: entry.Version,
+		Registered: entry.Registered, Tier: entry.VerifyTier,
+		Note: joinBundleNotes(note, restoredNote(restored)),
+	})
 
 	return report, nil
 }
 
+func restoredNote(restored []string) string {
+	if len(restored) == 0 {
+		return ""
+	}
+
+	return "restored: " + strings.Join(restored, ", ")
+}
+
 func (e *Engine) unregisterBundle(host bundle.Host, dir string, entry state.BundleState, report *Report) (bool, string) {
 	switch {
-	case host == bundle.Antigravity:
+	case host == bundle.Antigravity && e.binaryMissing(host):
 		if e.antigravityLinked() {
 			report.Warnings = append(report.Warnings, "bundles: the antigravity plugin is still linked")
 
-			return false, fmt.Sprintf("remove the plugin link first: rm %s/.gemini/antigravity-cli/plugins/%s, then run beadle bundles disable %s", e.home, bundle.PluginName, host)
+			return false, bundleUnregisterInstructions(host, dir, e.home)
 		}
 
 		return true, ""
@@ -300,6 +432,12 @@ func (e *Engine) unregisterBundle(host bundle.Host, dir string, entry state.Bund
 		}
 	}
 
+	if host == bundle.Antigravity && e.antigravityLinked() {
+		report.Warnings = append(report.Warnings, "bundles: the antigravity plugin is still linked")
+
+		return false, bundleUnregisterInstructions(host, dir, e.home)
+	}
+
 	return true, ""
 }
 
@@ -309,8 +447,15 @@ func (e *Engine) binaryMissing(host bundle.Host) bool {
 	return err != nil
 }
 
+func (e *Engine) antigravityLinks() []string {
+	return []string{
+		filepath.Join(e.home, ".gemini", "antigravity-cli", "plugins", bundle.PluginName),
+		filepath.Join(e.home, ".gemini", "config", "plugins", bundle.PluginName),
+	}
+}
+
 func (e *Engine) antigravityLinked() bool {
-	return isDir(filepath.Join(e.home, ".gemini", "antigravity-cli", "plugins", bundle.PluginName))
+	return slices.ContainsFunc(e.antigravityLinks(), isDir)
 }
 
 func (e *Engine) runBundleCommands(host bundle.Host, commands [][]string) (bool, string) {
@@ -319,16 +464,48 @@ func (e *Engine) runBundleCommands(host bundle.Host, commands [][]string) (bool,
 	for _, args := range commands {
 		stdout, code, err := bundlesRunner.Run(binary, args, nil)
 		if err != nil || code != 0 {
-			output := strings.TrimSpace(string(stdout))
-			if err != nil {
-				output = fmt.Sprintf("%v: %s", err, output)
-			}
-
-			return false, output
+			return false, runOutput(err, stdout)
 		}
 	}
 
 	return true, ""
+}
+
+// runOutput renders one runner result without leaking more than the caller
+// asked for.
+func runOutput(err error, stdout []byte) string {
+	output := strings.TrimSpace(string(stdout))
+	if err != nil {
+		output = fmt.Sprintf("%v: %s", err, output)
+	}
+
+	return truncateNote(output)
+}
+
+func truncateNote(note string) string {
+	note = strings.TrimSpace(note)
+	if len(note) <= bundleNoteLimit {
+		return note
+	}
+
+	cut := bundleNoteLimit
+	for cut > 0 && !utf8.RuneStart(note[cut]) {
+		cut--
+	}
+
+	return note[:cut] + "…"
+}
+
+func joinBundleNotes(notes ...string) string {
+	var kept []string
+
+	for _, note := range notes {
+		if note = strings.TrimSpace(note); note != "" {
+			kept = append(kept, note)
+		}
+	}
+
+	return strings.Join(kept, "; ")
 }
 
 func (e *Engine) bundleRequest(host bundle.Host) (bundle.Request, []string, error) {
@@ -408,8 +585,12 @@ func bundleSkills(items kind.Items) (map[string]map[string][]byte, []string) {
 	return skills, warns
 }
 
-func (e *Engine) refreshBundles(st *state.State, report *Report, opts SyncOptions) {
-	if e.home == "" || opts.DryRun || opts.Direction == config.ModePull {
+func fullForwardSync(opts SyncOptions) bool {
+	return (opts.Direction == "" || opts.Direction == config.ModeSync) && len(opts.Kinds) == 0
+}
+
+func (e *Engine) refreshBundles(ctx context.Context, st *state.State, report *Report, opts SyncOptions) {
+	if e.home == "" || opts.DryRun || !fullForwardSync(opts) {
 		return
 	}
 
@@ -440,16 +621,90 @@ func (e *Engine) refreshBundles(st *state.State, report *Report, opts SyncOption
 
 		if err != nil {
 			report.Warnings = append(report.Warnings, "bundles: "+err.Error())
+
+			continue
 		}
+
+		if !entry.Registered {
+			continue
+		}
+
+		e.refreshBundleHost(host, dirOf(e.vault.BundlesDir(), host), entry, result, st, report)
 	}
 }
 
-func (e *Engine) disableBundleKinds(host bundle.Host, entry *state.BundleState) error {
+func (e *Engine) refreshBundleHost(host bundle.Host, dir string, entry state.BundleState, result bundle.Result, st *state.State, report *Report) {
+	if entry.Version == result.Version {
+		if entry.VerifyTier == state.VerifyExecuted {
+			return
+		}
+
+		tier, note := e.probeBundle(host, dir, result.Version)
+		entry.VerifyTier, entry.ProbeNote = tier, note
+		st.Bundles[string(host)] = entry
+
+		if tier == state.VerifyFailed {
+			report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: %s bundle probe failed: %s; %s", host, note, bundleRetry(host)))
+		}
+
+		return
+	}
+
+	if note, ok := e.validateBundle(host, dir); !ok {
+		entry.VerifyTier = state.VerifyFailed
+		entry.ProbeNote = note
+		st.Bundles[string(host)] = entry
+
+		report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: the %s bundle did not validate; %s", host, bundleRetry(host)))
+		report.Bundles = append(report.Bundles, BundleResult{Host: string(host), Action: bundleFailed, Version: entry.Version, Registered: true, Tier: entry.VerifyTier, Note: note})
+
+		return
+	}
+
+	ok, output := e.runBundleCommands(host, bundleUpdateCommands(host, dir))
+	if !ok {
+		entry.VerifyTier = state.VerifyFailed
+		entry.ProbeNote = truncateNote(output)
+		st.Bundles[string(host)] = entry
+
+		report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: updating %s failed: %s; %s", host, output, bundleRetry(host)))
+		report.Bundles = append(report.Bundles, BundleResult{Host: string(host), Action: bundleFailed, Version: entry.Version, Registered: true, Tier: entry.VerifyTier, Note: output})
+
+		return
+	}
+
+	tier, note := e.probeBundle(host, dir, result.Version)
+
+	entry.Version = result.Version
+	entry.VerifyTier = tier
+	entry.ProbeNote = note
+
+	st.Bundles[string(host)] = entry
+
+	if tier != state.VerifyExecuted {
+		report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: %s bundle updated to %s but not verified: %s; %s", host, result.Version, note, bundleRetry(host)))
+	}
+
+	report.Bundles = append(report.Bundles, BundleResult{Host: string(host), Action: bundleEnabled, Version: result.Version, Registered: true, Tier: tier, Note: note})
+}
+
+func dirOf(root string, host bundle.Host) string {
+	return filepath.Join(root, string(host))
+}
+
+func (e *Engine) disableBundleKinds(host bundle.Host, entry *state.BundleState, report *Report) error {
 	if entry.SavedModes == nil {
 		saved := map[kind.ID]config.Mode{}
 
 		for _, k := range host.Kinds() {
-			saved[k] = e.agentMode(host.AgentID(), k)
+			mode := e.agentMode(host.AgentID(), k)
+			if mode == config.ModeOff {
+				mode = e.surfaceDefaultMode(host.AgentID(), k)
+				report.Warnings = append(report.Warnings, fmt.Sprintf(
+					"bundles: restoring the default %s mode %q for %s (the previous off is indistinguishable from bundle-managed)", k, mode, host))
+			}
+
+			saved[k] = mode
 		}
 
 		entry.SavedModes = saved
@@ -462,8 +717,15 @@ func (e *Engine) disableBundleKinds(host bundle.Host, entry *state.BundleState) 
 	return e.config.Save(e.vault.ConfigPath())
 }
 
-func (e *Engine) restoreBundleKinds(host bundle.Host, entry state.BundleState) error {
-	for k, mode := range entry.SavedModes {
+func (e *Engine) restoreBundleKinds(host bundle.Host, entry *state.BundleState, report *Report) error {
+	for _, k := range host.Kinds() {
+		mode, ok := entry.SavedModes[k]
+		if !ok || mode == config.ModeOff {
+			mode = e.surfaceDefaultMode(host.AgentID(), k)
+			report.Warnings = append(report.Warnings, fmt.Sprintf(
+				"bundles: restoring the default %s mode %q for %s (the saved mode was off and is indistinguishable from bundle-managed)", k, mode, host))
+		}
+
 		e.config.SetMode(host.AgentID(), k, mode)
 	}
 
@@ -471,33 +733,99 @@ func (e *Engine) restoreBundleKinds(host bundle.Host, entry state.BundleState) e
 }
 
 func (e *Engine) agentMode(agentID string, k kind.ID) config.Mode {
-	fallback := config.ModeSync
+	return e.config.ModeFor(agentID, k, e.surfaceDefaultMode(agentID, k))
+}
 
+func (e *Engine) surfaceDefaultMode(agentID string, k kind.ID) config.Mode {
 	if a := agent.ByID(e.agents, agentID); a != nil {
 		if surface := a.Surface(k); surface != nil {
-			fallback = surface.Traits().DefaultMode
+			return surface.Traits().DefaultMode
 		}
 	}
 
-	return e.config.ModeFor(agentID, k, fallback)
+	return config.ModeSync
+}
+
+type validationIssue struct {
+	Message string `json:"message"`
+}
+
+type validationContent struct {
+	Type   string            `json:"type"`
+	Errors []validationIssue `json:"errors"`
+}
+
+type validationReport struct {
+	Success  bool `json:"success"`
+	Manifest struct {
+		Errors []validationIssue `json:"errors"`
+	} `json:"manifest"`
+	Contents []validationContent `json:"contents"`
+}
+
+func (e *Engine) validateBundle(host bundle.Host, dir string) (string, bool) {
+	if host != bundle.Claude || e.binaryMissing(host) {
+		return "", true
+	}
+
+	return e.validateClaudeBundle(dir)
 }
 
 func (e *Engine) validateClaudeBundle(dir string) (string, bool) {
-	stdout, code, err := bundlesRunner.Run("claude", []string{cliPlugin, "validate", dir}, nil)
+	// The plugin directory is what Claude Code loads; the marketplace root is
+	// validated as well, because `claude plugin validate` does not descend
+	// into its plugins on its own.
+	for _, target := range []string{filepath.Join(dir, "plugins", bundle.PluginName), dir} {
+		stdout, code, err := bundlesRunner.Run("claude", []string{cliPlugin, "validate", "--json", "--strict", target}, nil)
 
-	output := strings.TrimSpace(string(stdout))
-	if err != nil {
-		output = fmt.Sprintf("%v: %s", err, output)
+		message, valid := parseClaudeValidation(stdout)
+
+		switch {
+		case !valid:
+			if message == "" {
+				message = "claude plugin validate reported a failure"
+			}
+
+			return message, false
+		case err != nil || code != 0:
+			return runOutput(err, stdout), false
+		}
 	}
 
-	if err != nil || code != 0 {
-		return output, false
-	}
-
-	return output, true
+	return "", true
 }
 
-func (e *Engine) bundleIssues() []Issue {
+func parseClaudeValidation(stdout []byte) (string, bool) {
+	var report validationReport
+
+	if err := json.Unmarshal(stdout, &report); err != nil {
+		return truncateNote("claude plugin validate output is not parseable: " + err.Error()), false
+	}
+
+	if report.Success {
+		return "", true
+	}
+
+	var messages []string
+
+	for _, issue := range report.Manifest.Errors {
+		messages = append(messages, issue.Message)
+	}
+
+	for _, content := range report.Contents {
+		for _, issue := range content.Errors {
+			messages = append(messages, fmt.Sprintf("%s: %s", content.Type, issue.Message))
+		}
+	}
+
+	if len(messages) == 0 {
+		messages = append(messages, "claude plugin validate reported a failure")
+	}
+
+	return truncateNote(strings.Join(messages, "; ")), false
+}
+
+func (e *Engine) bundleIssues(ctx context.Context) []Issue {
 	if e.home == "" {
 		return nil
 	}
@@ -525,22 +853,201 @@ func (e *Engine) bundleIssues() []Issue {
 		}
 	}
 
-	for _, hostName := range slices.Sorted(maps.Keys(st.Bundles)) {
-		entry := st.Bundles[hostName]
-		if !entry.Enabled {
-			if entry.Registered {
-				issues = append(issues, Issue{Severity: SeverityWarn, Message: fmt.Sprintf("bundle %s is still registered; run beadle bundles disable %s", hostName, hostName)})
-			}
+	for _, host := range bundle.Hosts() {
+		hostName := string(host)
+		entry, exists := st.Bundles[hostName]
 
-			continue
-		}
-
-		issues = append(issues, e.bundleHostIssues(hostName, entry)...)
+		issues = append(issues, e.bundleHostStateIssues(ctx, host, hostName, entry, exists)...)
 	}
 
 	issues = append(issues, e.validateActiveClaudeBundle(st)...)
 
 	return issues
+}
+
+func (e *Engine) bundleHostStateIssues(ctx context.Context, host bundle.Host, hostName string, entry state.BundleState, exists bool) []Issue {
+	issues := e.bundleZeroDeliveryIssues(host, hostName, entry, exists)
+
+	if !exists {
+		return issues
+	}
+
+	if !entry.Enabled {
+		if entry.Registered {
+			issues = append(issues, Issue{Severity: SeverityWarn, Message: fmt.Sprintf("bundle %s is still registered; run beadle bundles disable %s", hostName, hostName)})
+		}
+
+		return issues
+	}
+
+	issues = append(issues, e.bundleRegistrationIssues(hostName, host, entry)...)
+
+	req, _, err := e.bundleRequest(host)
+	if err != nil {
+		return append(issues, Issue{Severity: SeverityWarn, Message: "bundles: " + err.Error()})
+	}
+
+	fresh, _, err := bundle.Plan(req)
+	if err != nil {
+		return append(issues, Issue{Severity: SeverityWarn, Message: "bundles: " + err.Error()})
+	}
+
+	if entry.Registered && entry.Version != fresh.Version {
+		issues = append(issues, Issue{Severity: SeverityWarn, Message: fmt.Sprintf("bundle %s is stale (registered %s, canon %s); run beadle sync", hostName, entry.Version, fresh.Version)})
+	}
+
+	issues = append(issues, e.bundlePresentationIssues(ctx, host, hostName, entry, req)...)
+
+	return issues
+}
+
+func (e *Engine) bundleZeroDeliveryIssues(host bundle.Host, hostName string, entry state.BundleState, exists bool) []Issue {
+	if exists && entry.Registered {
+		// A registered bundle may still serve its last installed copy even
+		// when the fresh probe failed: the presentation issues warn about it.
+		return nil
+	}
+
+	var issues []Issue
+
+	for _, k := range host.Kinds() {
+		if e.agentMode(host.AgentID(), k) != config.ModeOff {
+			continue
+		}
+
+		issues = append(issues, Issue{
+			Severity: SeverityError, Kind: k, Agent: host.AgentID(),
+			Message: e.zeroDeliveryMessage(host, hostName, k),
+		})
+	}
+
+	return issues
+}
+
+func (e *Engine) zeroDeliveryMessage(host bundle.Host, hostName string, k kind.ID) string {
+	if e.binaryMissing(host) {
+		return fmt.Sprintf("bundle %s is off for %s and nothing delivers the canon; install the %s CLI and %s, or restore the %s mode",
+			hostName, k, host.Binary(), bundleRetry(host), k)
+	}
+
+	return fmt.Sprintf("bundle %s is off for %s and nothing delivers the canon; %s", hostName, k, bundleRetry(host))
+}
+
+func (e *Engine) bundlePresentationIssues(ctx context.Context, host bundle.Host, hostName string, entry state.BundleState, req bundle.Request) []Issue {
+	if !entry.Registered {
+		return nil
+	}
+
+	var issues []Issue
+
+	switch entry.VerifyTier {
+	case state.VerifyExecuted:
+		for _, k := range host.Kinds() {
+			if e.agentMode(host.AgentID(), k) != config.ModeOff {
+				issues = append(issues, Issue{
+					Severity: SeverityError, Kind: k, Agent: host.AgentID(),
+					Message: fmt.Sprintf("bundle %s is registered but %s is still synced as files; %s", hostName, k, bundleRetry(host)),
+				})
+			}
+		}
+
+		alive, readIssues := e.canonAliveInSurface(ctx, host, req)
+		issues = append(issues, readIssues...)
+
+		for _, element := range alive {
+			issues = append(issues, Issue{
+				Severity: SeverityWarn, Kind: element.kind, Agent: host.AgentID(),
+				Message: fmt.Sprintf("bundle %s is verified but %s %s is still present in the file surface (double delivery); %s",
+					hostName, element.kind, element.name, bundleRetry(host)),
+			})
+		}
+
+		if entry.PendingWithdrawal {
+			issues = append(issues, Issue{Severity: SeverityWarn, Message: fmt.Sprintf(
+				"bundle %s left a withdrawal unfinished; %s", hostName, bundleRetry(host))})
+		}
+	default:
+		message := fmt.Sprintf("bundle %s is registered but unverified, modes left on; %s", hostName, bundleRetry(host))
+		if entry.ProbeNote != "" {
+			message += " (" + entry.ProbeNote + ")"
+		}
+
+		issues = append(issues, Issue{Severity: SeverityWarn, Message: message})
+	}
+
+	return issues
+}
+
+type aliveElement struct {
+	kind kind.ID
+	name string
+}
+
+func (e *Engine) canonAliveInSurface(ctx context.Context, host bundle.Host, req bundle.Request) ([]aliveElement, []Issue) {
+	var (
+		alive  []aliveElement
+		issues []Issue
+	)
+
+	for _, k := range host.Kinds() {
+		surface := e.bundleSurface(host, k)
+		if surface == nil {
+			continue
+		}
+
+		snap, err := surface.Read(ctx)
+		if err != nil {
+			issues = append(issues, Issue{
+				Severity: SeverityWarn, Kind: k, Agent: host.AgentID(),
+				Message: fmt.Sprintf("bundles: cannot read the %s surface: %v", k, err),
+			})
+
+			continue
+		}
+
+		for _, name := range e.canonNames(k, req) {
+			if surfaceHasName(snap.Items, k, name) {
+				alive = append(alive, aliveElement{kind: k, name: name})
+			}
+		}
+	}
+
+	return alive, issues
+}
+
+func (e *Engine) canonNames(k kind.ID, req bundle.Request) []string {
+	if k == kind.Skills {
+		return slices.Sorted(maps.Keys(req.Skills))
+	}
+
+	return slices.Sorted(maps.Keys(req.Servers))
+}
+
+func surfaceHasName(items kind.Items, k kind.ID, name string) bool {
+	if k == kind.Skills {
+		prefix := name + "/"
+
+		for key := range items {
+			if strings.HasPrefix(key, prefix) {
+				return true
+			}
+		}
+
+		return false
+	}
+
+	_, ok := items[name]
+
+	return ok
+}
+
+func (e *Engine) bundleSurface(host bundle.Host, k kind.ID) agent.Surface {
+	a := agent.ByID(e.agents, host.AgentID())
+	if a == nil {
+		return nil
+	}
+
+	return a.Surface(k)
 }
 
 func (e *Engine) validateActiveClaudeBundle(st *state.State) []Issue {
@@ -582,42 +1089,6 @@ func (e *Engine) bundleRegistrationIssues(hostName string, host bundle.Host, ent
 	}
 
 	return nil
-}
-
-func (e *Engine) bundleHostIssues(hostName string, entry state.BundleState) []Issue {
-	host, err := bundle.ParseHost(hostName)
-	if err != nil {
-		return nil
-	}
-
-	var issues []Issue
-
-	issues = append(issues, e.bundleRegistrationIssues(hostName, host, entry)...)
-
-	for _, k := range host.Kinds() {
-		if entry.Registered && e.agentMode(host.AgentID(), k) != config.ModeOff {
-			issues = append(issues, Issue{
-				Severity: SeverityError, Kind: k, Agent: host.AgentID(),
-				Message: fmt.Sprintf("bundle %s is registered but %s is still synced as files; run beadle bundles enable %s", hostName, k, hostName),
-			})
-		}
-	}
-
-	req, _, err := e.bundleRequest(host)
-	if err != nil {
-		return append(issues, Issue{Severity: SeverityWarn, Message: "bundles: " + err.Error()})
-	}
-
-	fresh, _, err := bundle.Plan(req)
-	if err != nil {
-		return append(issues, Issue{Severity: SeverityWarn, Message: "bundles: " + err.Error()})
-	}
-
-	if entry.Registered && entry.Version != fresh.Version {
-		issues = append(issues, Issue{Severity: SeverityWarn, Message: fmt.Sprintf("bundle %s is stale (registered %s, canon %s); run beadle bundles enable %s", hostName, entry.Version, fresh.Version, hostName)})
-	}
-
-	return issues
 }
 
 func bundlePluginKey() string {

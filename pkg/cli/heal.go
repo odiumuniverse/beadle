@@ -50,6 +50,10 @@ func (a *app) newHealCmd() *cobra.Command {
 					line += fmt.Sprintf(" retired=%d", result.Retired)
 				}
 
+				if result.Pruned > 0 {
+					line += fmt.Sprintf(" pruned=%d", result.Pruned)
+				}
+
 				if result.Note != "" {
 					line += " — " + result.Note
 				}

@@ -89,12 +89,41 @@ type Drift struct {
 	Last  time.Time `json:"last"`
 }
 
+const (
+	// VerifyExecuted marks a bundle the host CLI confirmed.
+	VerifyExecuted = "executed"
+	// VerifyUnverifiable marks a bundle rendered from the documented
+	// contracts but not confirmed, because the host CLI is missing.
+	VerifyUnverifiable = "unverifiable"
+	// VerifyFailed marks a bundle the host rejected or could not confirm.
+	VerifyFailed = "failed"
+)
+
+// WithdrawnItem records one canon element the bundle enable pass removed
+// from a host file surface, so disable can materialize it again.
+type WithdrawnItem struct {
+	Kind   kind.ID   `json:"kind"`
+	Name   string    `json:"name"`
+	Digest cas.Hash  `json:"digest,omitempty"`
+	At     time.Time `json:"at"`
+}
+
 // BundleState records one host's native bundle registration.
 type BundleState struct {
-	Enabled    bool                    `json:"enabled"`
-	Version    string                  `json:"version,omitempty"`
-	Registered bool                    `json:"registered,omitempty"`
-	SavedModes map[kind.ID]config.Mode `json:"saved_modes,omitempty"`
+	Enabled           bool                    `json:"enabled"`
+	Version           string                  `json:"version,omitempty"`
+	Registered        bool                    `json:"registered,omitempty"`
+	VerifyTier        string                  `json:"verify_tier,omitempty"`
+	ProbeNote         string                  `json:"probe_note,omitempty"`
+	PendingWithdrawal bool                    `json:"pending_withdrawal,omitempty"`
+	Withdrawn         []WithdrawnItem         `json:"withdrawn,omitempty"`
+	SavedModes        map[kind.ID]config.Mode `json:"saved_modes,omitempty"`
+}
+
+// Verified reports whether the host confirmed the bundle, or the contracts
+// were at least validated while the host CLI was unavailable.
+func (b BundleState) Verified() bool {
+	return b.Registered && (b.VerifyTier == VerifyExecuted || b.VerifyTier == VerifyUnverifiable)
 }
 
 // Refusal records one conflict resolution the engine declined to apply.

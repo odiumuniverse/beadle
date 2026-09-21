@@ -23,6 +23,7 @@ type HealResult struct {
 	Migrated int    `json:"migrated,omitempty"`
 	Cleaned  int    `json:"cleaned,omitempty"`
 	Retired  int    `json:"retired,omitempty"`
+	Pruned   int    `json:"pruned,omitempty"`
 	Note     string `json:"note,omitempty"`
 }
 
@@ -71,6 +72,7 @@ func (e *Engine) Heal(ctx context.Context, dryRun bool) ([]HealResult, error) {
 		changed = true
 	}
 
+	results = append(results, e.healLegacyOrphans(ledger, dryRun)...)
 	results = mergeMigrations(results, migrations)
 
 	if !changed {
@@ -86,6 +88,43 @@ func (e *Engine) Heal(ctx context.Context, dryRun bool) ([]HealResult, error) {
 	}
 
 	return results, nil
+}
+
+func (e *Engine) healLegacyOrphans(ledger pluginLedger, dryRun bool) []HealResult {
+	pivots, links, _ := e.convergeLegacyOrphans(ledger, dryRun)
+
+	merged := map[string]*HealResult{}
+
+	entryFor := func(key string) *HealResult {
+		if entry, ok := merged[key]; ok {
+			return entry
+		}
+
+		entry := &HealResult{Key: key}
+		merged[key] = entry
+
+		return entry
+	}
+
+	for _, pivot := range pivots {
+		entry := entryFor(pivot.Key)
+		entry.Retired++
+		entry.Note = joinNotes([]string{entry.Note, pivot.Note})
+	}
+
+	for _, link := range links {
+		entry := entryFor(link.Plugin)
+		entry.Pruned += link.Count
+		entry.Note = joinNotes([]string{entry.Note, fmt.Sprintf("%s in %s", link.Note, link.Agent)})
+	}
+
+	results := make([]HealResult, 0, len(merged))
+
+	for _, key := range slices.Sorted(maps.Keys(merged)) {
+		results = append(results, *merged[key])
+	}
+
+	return results
 }
 
 func mergeMigrations(results []HealResult, migrations []MigrateResult) []HealResult {
@@ -111,7 +150,7 @@ func mergeMigrations(results []HealResult, migrations []MigrateResult) []HealRes
 
 	for _, key := range slices.Sorted(maps.Keys(merged)) {
 		entry := merged[key]
-		if entry.Stubs == 0 && entry.Migrated == 0 && entry.Cleaned == 0 && entry.Retired == 0 {
+		if entry.Stubs == 0 && entry.Migrated == 0 && entry.Cleaned == 0 && entry.Retired == 0 && entry.Pruned == 0 {
 			continue
 		}
 

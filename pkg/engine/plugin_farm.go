@@ -70,7 +70,7 @@ type farmPlan struct {
 }
 
 func (e *Engine) syncPluginSurfaces(ctx context.Context, report *Report, active []*agent.Agent, opts SyncOptions) {
-	results, warnings, err := e.reconcilePlugins(ctx)
+	results, warnings, orphansSafe, err := e.reconcilePlugins(ctx)
 
 	report.Warnings = append(report.Warnings, warnings...)
 
@@ -86,8 +86,36 @@ func (e *Engine) syncPluginSurfaces(ctx context.Context, report *Report, active 
 
 	farm, farmWarnings := e.farmPluginSkills(active)
 
+	pruned, pruneWarnings := e.pruneLegacyOrphanLinks(orphansSafe)
+
+	farm = append(farm, pruned...)
+	farmWarnings = append(farmWarnings, pruneWarnings...)
+
+	slices.SortFunc(farm, func(a, b FarmResult) int {
+		return cmp.Or(
+			cmp.Compare(a.Agent, b.Agent),
+			cmp.Compare(a.Plugin, b.Plugin),
+			cmp.Compare(a.Action, b.Action),
+		)
+	})
+
 	report.Farm = farm
 	report.Warnings = append(report.Warnings, farmWarnings...)
+}
+
+// pruneLegacyOrphanLinks runs the orphan farm-link cleanup on every sync
+// that writes agents, regardless of the skill modes.
+func (e *Engine) pruneLegacyOrphanLinks(orphansSafe bool) ([]FarmResult, []string) {
+	if e.home == "" || !orphansSafe {
+		return nil, nil
+	}
+
+	ledger, _, err := loadPluginLedger(e.vault.PluginsLedgerPath())
+	if err != nil {
+		return nil, nil
+	}
+
+	return e.pruneOrphanFarmLinks(ledger, false)
 }
 
 func (e *Engine) farmPluginSkills(active []*agent.Agent) ([]FarmResult, []string) {

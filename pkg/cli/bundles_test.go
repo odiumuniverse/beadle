@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -20,7 +21,19 @@ func TestBundlesCLIStubEndToEnd(t *testing.T) {
 		So(os.MkdirAll(binDir, 0o750), ShouldBeNil)
 
 		logPath := filepath.Join(t.TempDir(), "claude.log")
-		script := "#!/bin/sh\necho \"$@\" >> " + logPath + "\nexit 0\n"
+		script := fmt.Sprintf(`#!/bin/sh
+echo "$@" >> %s
+case "$1 $2" in
+"plugin validate")
+  echo '{"success": true}'
+  ;;
+"plugin list")
+  VER=$(grep '"version"' "$HOME/.beadle/bundles/claude/plugins/beadle-canon/.claude-plugin/plugin.json" | head -1 | cut -d'"' -f4)
+  echo "[{\"id\":\"beadle-canon@beadle\",\"version\":\"$VER\",\"enabled\":true}]"
+  ;;
+esac
+exit 0
+`, logPath)
 		So(os.WriteFile(filepath.Join(binDir, "claude"), []byte(script), 0o700), ShouldBeNil) //nolint:gosec // G306: the stub must stay executable
 
 		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))

@@ -28,6 +28,7 @@ const (
 	PluginName       = "beadle-canon"
 	versionPrefix    = "0.0.0-"
 	keyName          = "name"
+	keyDescription   = "description"
 	canonDescription = "beadle vault canon: skills, MCP servers and approved hooks"
 )
 
@@ -100,13 +101,23 @@ type Result struct {
 	Warnings []string
 }
 
+// renderSeam is a test-only hook over the rendered file set. Production
+// leaves it nil.
+var renderSeam func(Host, map[string][]byte)
+
 func Plan(req Request) (Result, map[string][]byte, error) {
 	files, warns, err := render(req)
 	if err != nil {
 		return Result{}, nil, err
 	}
 
-	version := contentVersion(req)
+	// renderSeam lets tests perturb the rendered bytes; the hash below must
+	// follow the bytes, so any format change still reaches the host cache.
+	if renderSeam != nil {
+		renderSeam(req.Host, files)
+	}
+
+	version := contentVersion(req.Host, files)
 
 	stamp := func(rel string, patch func(doc map[string]any)) error {
 		doc := map[string]any{}
@@ -155,11 +166,9 @@ func Plan(req Request) (Result, map[string][]byte, error) {
 			return Result{}, nil, err
 		}
 	case Antigravity:
-		if err := stamp("plugin.json", func(doc map[string]any) {
-			doc["version"] = version
-		}); err != nil {
-			return Result{}, nil, err
-		}
+		// The Antigravity plugin schema forbids extra properties: the
+		// manifest carries name and description only. The version lives in
+		// state.BundleState.
 	}
 
 	return Result{Version: version, Warnings: warns}, files, nil
@@ -181,36 +190,15 @@ func Render(root string, req Request) (Result, error) {
 	return result, nil
 }
 
-func contentVersion(req Request) string {
+func contentVersion(host Host, files map[string][]byte) string {
 	hash := sha256.New()
 
-	fmt.Fprintf(hash, "host\x00%s\n", req.Host)
+	fmt.Fprintf(hash, "host\x00%s\n", host)
 
-	for _, name := range slices.Sorted(maps.Keys(req.Skills)) {
-		fmt.Fprintf(hash, "skill\x00%s\n", name)
-
-		tree := req.Skills[name]
-
-		for _, path := range slices.Sorted(maps.Keys(tree)) {
-			fmt.Fprintf(hash, "file\x00%s\x00", path)
-			hash.Write(tree[path])
-			hash.Write([]byte{'\n'})
-		}
-	}
-
-	for _, name := range slices.Sorted(maps.Keys(req.Servers)) {
-		fmt.Fprintf(hash, "server\x00%s\x00", name)
-		hash.Write(req.Servers[name])
+	for _, rel := range slices.Sorted(maps.Keys(files)) {
+		fmt.Fprintf(hash, "file\x00%s\x00", rel)
+		hash.Write(files[rel])
 		hash.Write([]byte{'\n'})
-	}
-
-	for _, name := range slices.Sorted(maps.Keys(req.Hooks)) {
-		if !req.Approved[name] {
-			continue
-		}
-
-		hook := req.Hooks[name]
-		fmt.Fprintf(hash, "hook\x00%s\x00%s\x00%s\x00%s\x00%d\n", name, hook.Event, hook.Matcher, hook.Command, hook.Timeout)
 	}
 
 	return versionPrefix + hex.EncodeToString(hash.Sum(nil))[:12]
@@ -232,9 +220,9 @@ func render(req Request) (map[string][]byte, []string, error) {
 	switch req.Host {
 	case Claude:
 		marketplace, err := encodeJSON(map[string]any{
-			keyName:       MarketplaceName,
-			"owner":       map[string]any{keyName: MarketplaceName},
-			"description": canonDescription,
+			keyName:        MarketplaceName,
+			"owner":        map[string]any{keyName: MarketplaceName},
+			keyDescription: canonDescription,
 			"plugins": []any{map[string]any{
 				keyName:  PluginName,
 				"source": "./plugins/" + PluginName,
@@ -245,9 +233,9 @@ func render(req Request) (map[string][]byte, []string, error) {
 		}
 
 		manifest, err := encodeJSON(map[string]any{
-			keyName:       PluginName,
-			"description": canonDescription,
-			"author":      map[string]any{keyName: MarketplaceName},
+			keyName:        PluginName,
+			keyDescription: canonDescription,
+			"author":       map[string]any{keyName: MarketplaceName},
 		})
 		if err != nil {
 			return nil, nil, err
@@ -266,9 +254,9 @@ func render(req Request) (map[string][]byte, []string, error) {
 		addSkills(files, "plugins/"+PluginName+"/skills", req.Skills)
 	case Gemini:
 		manifest, err := encodeJSON(map[string]any{
-			keyName:       PluginName,
-			"description": "beadle vault canon: MCP servers and approved hooks",
-			"mcpServers":  servers,
+			keyName:        PluginName,
+			keyDescription: "beadle vault canon: MCP servers and approved hooks",
+			"mcpServers":   servers,
 		})
 		if err != nil {
 			return nil, nil, err
@@ -277,7 +265,7 @@ func render(req Request) (map[string][]byte, []string, error) {
 		files["gemini-extension.json"] = manifest
 		files["hooks/hooks.json"] = hookDoc
 	case Antigravity:
-		manifest, err := encodeJSON(map[string]any{keyName: PluginName})
+		manifest, err := encodeJSON(map[string]any{keyName: PluginName, keyDescription: canonDescription})
 		if err != nil {
 			return nil, nil, err
 		}

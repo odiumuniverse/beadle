@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
+	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/plugin"
 )
 
@@ -45,6 +46,13 @@ const (
 	PluginRepointed   PluginAction = "repointed"
 	PluginSkipped     PluginAction = "skipped"
 	PluginQuarantined PluginAction = "quarantined"
+	PluginRetired     PluginAction = "retired"
+)
+
+const (
+	noteOrphanPivot       = "orphan pivot (not in the plugin ledger)"
+	noteOrphanPivotUnsafe = "the orphan pivot holds regular files; left in place"
+	noteOrphanLink        = "pruned an orphan farm link"
 )
 
 type PluginResult struct {
@@ -76,30 +84,35 @@ type pluginGroup struct {
 	Plugins     []plugin.Plugin
 }
 
-func (e *Engine) reconcilePlugins(_ context.Context) ([]PluginResult, []string, error) {
+// reconcilePlugins parks installed plugins and reports whether orphan
+// cleanup is safe this run (a malformed ledger knows nothing about
+// ownership).
+func (e *Engine) reconcilePlugins(_ context.Context) ([]PluginResult, []string, bool, error) {
 	var warns []string
 
 	if err := e.vault.EnsureGitIgnore(); err != nil {
-		return nil, []string{"plugins: " + err.Error()}, nil //nolint:nilerr // a broken .gitignore must not fail the whole sync; nothing plugin-related is written without it
+		return nil, []string{"plugins: " + err.Error()}, false, nil //nolint:nilerr // a broken .gitignore must not fail the whole sync; nothing plugin-related is written without it
 	}
 
 	if e.home == "" {
-		return nil, warns, nil
+		return nil, warns, false, nil
 	}
 
 	manifest, manifestWarns, err := stableManifest(e.home)
 	warns = append(warns, manifestWarns...)
 
 	if err != nil {
-		return nil, warns, err
+		return nil, warns, false, err
 	}
 
 	ledger, ledgerWarns, err := loadPluginLedger(e.vault.PluginsLedgerPath())
 	warns = append(warns, ledgerWarns...)
 
-	dirty := err != nil
-	if err != nil {
-		warns = append(warns, "plugins: "+err.Error())
+	ledgerBroken := err != nil
+
+	dirty := ledgerBroken
+	if ledgerBroken {
+		warns = append(warns, "plugins: "+err.Error()+" (nothing destructive runs against it; rebuilding it from the registry)")
 		ledger = emptyPluginLedger()
 	}
 
@@ -141,17 +154,40 @@ func (e *Engine) reconcilePlugins(_ context.Context) ([]PluginResult, []string, 
 
 	dirty = dirty || removedDirty
 
-	warns = append(warns, e.reconcilePinPivots(ledger)...)
+	orphanResults, orphanWarns := e.reconcileOrphanEdges(&ledger, ledgerBroken, dirty, e.vault.PluginsLedgerPath())
+
+	results = append(results, orphanResults...)
+	warns = append(warns, orphanWarns...)
+
+	slices.SortFunc(results, func(a, b PluginResult) int { return cmp.Compare(a.Key, b.Key) })
+
+	return results, warns, !ledgerBroken, nil //nolint:nilerr // a broken ledger is a warning, not a failed sync: it is rebuilt from the registry
+}
+
+// reconcileOrphanEdges retires orphan pivots, prunes pin pivots and saves
+// the ledger. An unreadable ledger knows nothing about ownership, so nothing
+// destructive runs against it; it is still rebuilt from the registry.
+func (e *Engine) reconcileOrphanEdges(ledger *pluginLedger, ledgerBroken, dirty bool, path string) ([]PluginResult, []string) {
+	var (
+		retired []PluginResult
+		warns   []string
+	)
+
+	if !ledgerBroken {
+		var retireWarns []string
+
+		retired, retireWarns = e.retireOrphanPivots(*ledger, e.pinnedVersions(), false)
+		warns = append(warns, retireWarns...)
+		warns = append(warns, e.reconcilePinPivots(*ledger)...)
+	}
 
 	if dirty {
-		if err := ledger.save(e.vault.PluginsLedgerPath()); err != nil {
+		if err := ledger.save(path); err != nil {
 			warns = append(warns, "plugins: "+err.Error())
 		}
 	}
 
-	slices.SortFunc(results, func(a, b PluginResult) int { return cmp.Compare(a.Key, b.Key) })
-
-	return results, warns, nil
+	return retired, warns
 }
 
 func (e *Engine) quarantineRemoved(installed map[string]struct{}, ledger *pluginLedger) ([]PluginResult, bool) {
@@ -185,6 +221,211 @@ func (e *Engine) quarantineRemoved(installed map[string]struct{}, ledger *plugin
 	}
 
 	return results, dirty
+}
+
+// convergeLegacyOrphans retires vault pivots whose plugin key is missing
+// from the ledger and prunes the farm links pointing into them. Cleanup is
+// independent of the skill modes: it neither delivers nor owns anything.
+func (e *Engine) convergeLegacyOrphans(ledger pluginLedger, dryRun bool) ([]PluginResult, []FarmResult, []string) {
+	pinned := e.pinnedVersions()
+
+	retired, warns := e.retireOrphanPivots(ledger, pinned, dryRun)
+	pruned, pruneWarns := e.pruneOrphanFarmLinks(ledger, dryRun)
+
+	warns = append(warns, pruneWarns...)
+
+	return retired, pruned, warns
+}
+
+func (e *Engine) retireOrphanPivots(ledger pluginLedger, pinned map[string][]string, dryRun bool) ([]PluginResult, []string) {
+	var (
+		results []PluginResult
+		warns   []string
+	)
+
+	for _, dir := range e.orphanPivotDirs(ledger, pinned) {
+		key := pluginKey(filepath.Base(filepath.Dir(dir)), filepath.Base(dir))
+
+		if note, safe := orphanPivotSafe(dir); !safe {
+			warns = append(warns, fmt.Sprintf("plugins: %s pivot is not retired: %s", key, note))
+
+			continue
+		}
+
+		results = append(results, PluginResult{Key: key, Action: PluginRetired, Note: noteOrphanPivot})
+
+		if dryRun {
+			continue
+		}
+
+		if err := os.RemoveAll(dir); err != nil {
+			warns = append(warns, fmt.Sprintf("plugins: cannot retire the %s pivot: %v", key, err))
+
+			results = results[:len(results)-1]
+		}
+	}
+
+	return results, warns
+}
+
+func (e *Engine) orphanPivotDirs(ledger pluginLedger, pinned map[string][]string) []string {
+	marketplaces, err := os.ReadDir(e.vault.PluginsDir())
+	if err != nil {
+		return nil
+	}
+
+	var dirs []string
+
+	for _, marketplace := range marketplaces {
+		if !marketplace.IsDir() || marketplace.Name() == quarantineDirName {
+			continue
+		}
+
+		names, err := os.ReadDir(filepath.Join(e.vault.PluginsDir(), marketplace.Name()))
+		if err != nil {
+			continue
+		}
+
+		for _, name := range names {
+			if !name.IsDir() {
+				continue
+			}
+
+			key := pluginKey(marketplace.Name(), name.Name())
+
+			if _, parked := ledger.Plugins[key]; parked {
+				continue
+			}
+
+			if len(pinned[key]) > 0 {
+				continue
+			}
+
+			dir := filepath.Join(e.vault.PluginsDir(), marketplace.Name(), name.Name())
+			if !hasOrphanPivot(dir) {
+				continue
+			}
+
+			dirs = append(dirs, dir)
+		}
+	}
+
+	slices.Sort(dirs)
+
+	return dirs
+}
+
+func hasOrphanPivot(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+
+	for _, entry := range entries {
+		if pivotEntryName(entry.Name()) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// orphanPivotSafe only allows removing a pivot directory made of symlinks:
+// a directory holding real files is not beadle's to delete.
+func orphanPivotSafe(dir string) (string, bool) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err.Error(), false
+	}
+
+	for _, entry := range entries {
+		if entry.Type()&fs.ModeSymlink == 0 {
+			return noteOrphanPivotUnsafe, false
+		}
+	}
+
+	return "", true
+}
+
+// pruneOrphanFarmLinks removes skill links whose plugin key has no live
+// ledger record, in every host skills directory. It runs regardless of the
+// skill modes.
+func (e *Engine) pruneOrphanFarmLinks(ledger pluginLedger, dryRun bool) ([]FarmResult, []string) {
+	pruned := map[string]int{}
+
+	var warns []string
+
+	for _, a := range e.agents {
+		surface := a.Surface(kind.Skills)
+		if surface == nil {
+			continue
+		}
+
+		entries, err := os.ReadDir(surface.Path())
+		if err != nil {
+			continue
+		}
+
+		for _, entry := range entries {
+			if entry.Type()&fs.ModeSymlink == 0 {
+				continue
+			}
+
+			path := filepath.Join(surface.Path(), entry.Name())
+
+			link, err := os.Readlink(path)
+			if err != nil {
+				continue
+			}
+
+			key, skillName, ok := e.farmLinkOwner(link)
+			if !ok || skillName != entry.Name() || !orphanFarmKey(ledger, key) {
+				continue
+			}
+
+			if dryRun {
+				pruned[a.ID+"\x00"+key]++
+
+				continue
+			}
+
+			if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				warns = append(warns, fmt.Sprintf("plugins: cannot prune the orphan link %s: %v", displayHomePath(path, e.home), err))
+
+				continue
+			}
+
+			pruned[a.ID+"\x00"+key]++
+		}
+	}
+
+	return orphanFarmResults(pruned), warns
+}
+
+func orphanFarmKey(ledger pluginLedger, key string) bool {
+	rec, parked := ledger.Plugins[key]
+	if !parked {
+		return true
+	}
+
+	if !rec.QuarantinedAt.IsZero() {
+		// Quarantined plugins turn their links into talking stubs.
+		return false
+	}
+
+	return !rec.RetiredAt.IsZero()
+}
+
+func orphanFarmResults(pruned map[string]int) []FarmResult {
+	results := make([]FarmResult, 0, len(pruned))
+
+	for _, key := range slices.Sorted(maps.Keys(pruned)) {
+		agentID, plugin, _ := strings.Cut(key, "\x00")
+
+		results = append(results, FarmResult{Agent: agentID, Plugin: plugin, Action: FarmPruned, Count: pruned[key], Note: noteOrphanLink})
+	}
+
+	return results
 }
 
 func (e *Engine) pinnedVersions() map[string][]string {

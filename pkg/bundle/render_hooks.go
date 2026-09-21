@@ -16,6 +16,7 @@ type hookTarget struct {
 const (
 	keyType    = "type"
 	keyCommand = "command"
+	keyHooks   = "hooks"
 )
 
 var hookEvents = map[Host]map[string]hookTarget{
@@ -78,7 +79,7 @@ func renderHooks(req Request) ([]byte, []string, error) {
 		return data, warns, err
 	}
 
-	doc := map[string]any{}
+	events := map[string]any{}
 
 	for _, name := range names {
 		hook := req.Hooks[name]
@@ -104,10 +105,15 @@ func renderHooks(req Request) ([]byte, []string, error) {
 			handler["name"] = name
 		}
 
-		doc[target.event] = appendAny(doc[target.event], map[string]any{
+		events[target.event] = appendAny(events[target.event], map[string]any{
 			"matcher": matcherOf(hook),
 			"hooks":   []any{handler},
 		})
+	}
+
+	doc := map[string]any{keyHooks: events}
+	if req.Host == Claude {
+		doc[keyDescription] = canonDescription
 	}
 
 	data, err := encodeJSON(doc)

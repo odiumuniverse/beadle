@@ -625,12 +625,13 @@ func TestPluginReconcileNoQuarantineWithoutRecord(t *testing.T) {
 
 		_, quarantineErr := os.Stat(quarantineDir(f, "acme", "tool"))
 		_, ledgerErr := os.Stat(f.vault.PluginsLedgerPath())
+		_, pivotErr := os.Lstat(filepath.Join(f.vault.PluginsDir(), "acme", "tool"))
 
 		Convey("When sync runs", func() {
-			Convey("Then nothing is quarantined without ownership", func() {
+			Convey("Then nothing is quarantined without ownership and the unowned pivot is retired", func() {
 				So(result.Action, ShouldEqual, engine.PluginSkipped)
 				So(result.Note, ShouldEqual, "install path is missing")
-				So(pivotLink(t, f, "acme", "tool"), ShouldEqual, missing)
+				So(errors.Is(pivotErr, fs.ErrNotExist), ShouldBeTrue)
 				So(errors.Is(quarantineErr, fs.ErrNotExist), ShouldBeTrue)
 				So(errors.Is(ledgerErr, fs.ErrNotExist), ShouldBeTrue)
 			})
