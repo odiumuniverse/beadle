@@ -17,6 +17,31 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # One-time setup: base64 of the self-signed .p12 in MACOS_SIGN_P12, its password
+      # in MACOS_SIGN_P12_PASSWORD, any throwaway keychain password in
+      # MACOS_SIGN_KEYCHAIN_PASSWORD. Until then releases are ad-hoc signed.
+      - name: Import the signing identity
+        env:
+          SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          SIGN_P12_PASSWORD: ${{ secrets.MACOS_SIGN_P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.MACOS_SIGN_KEYCHAIN_PASSWORD }}
+        run: |
+          if [ -z "$SIGN_P12" ]; then
+            echo "::warning::MACOS_SIGN_P12 is not set; releases fall back to ad-hoc signing"
+            exit 0
+          fi
+          {
+            echo "$SIGN_P12" | base64 --decode > signing.p12
+            security create-keychain -p "$KEYCHAIN_PASSWORD" signing.keychain
+            security unlock-keychain -p "$KEYCHAIN_PASSWORD" signing.keychain
+            security set-keychain-settings -lut 3600 signing.keychain
+            security import signing.p12 -k signing.keychain -P "$SIGN_P12_PASSWORD" \
+              -T /usr/bin/codesign -T /usr/bin/security
+            security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" signing.keychain >/dev/null
+            security list-keychains -d user -s signing.keychain $(security list-keychains -d user | tr -d '"')
+            rm -f signing.p12
+          } || echo "::warning::could not import the signing identity; releases fall back to ad-hoc signing"
+
       - name: Build the universal tarball
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -24,6 +49,14 @@ jobs:
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -mod=vendor -ldflags "-X main.version=${version}" -o build/arm64/beadle ./cmd/beadle
           CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -mod=vendor -ldflags "-X main.version=${version}" -o build/amd64/beadle ./cmd/beadle
           lipo -create -output dist/beadle build/arm64/beadle build/amd64/beadle
+          # Sign after lipo: merging architectures invalidates an earlier signature, and
+          # the identifier must be set because codesign would default a Go binary to a.out.
+          if codesign --force --sign "odiumuniverse code signing" --timestamp=none --identifier com.odiumuniverse.beadle dist/beadle 2>/dev/null; then
+            codesign --verify --strict dist/beadle
+            echo "signed dist/beadle"
+          else
+            echo "::warning::no signing identity; dist/beadle stays ad-hoc signed"
+          fi
           tar -czf "dist/beadle-${version}-darwin-universal.tar.gz" -C dist beadle
 
       - name: Create the GitHub release

@@ -3,13 +3,31 @@ GO=go
 VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS=-ldflags "-X main.version=$(VERSION)"
 
-.PHONY: all build clean test test-short lint lint-fix fmt vet run mod audit help
+# A self-signed code signing identity pins the designated requirement to the
+# certificate instead of the cdhash, so it is stable across rebuilds. Without it the
+# build falls back to ad-hoc. The identifier matters too: codesign defaults a Go binary
+# to "a.out".
+SIGN_IDENTITY?=odiumuniverse code signing
+SIGN_ID?=com.odiumuniverse.$(BINARY_NAME)
+
+.PHONY: all build sign clean test test-short lint lint-fix fmt vet run mod audit help
 
 all: fmt lint test build
 
 build:
 	@echo "Building $(BINARY_NAME)..."
 	$(GO) build $(LDFLAGS) -o bin/$(BINARY_NAME) ./cmd/beadle
+
+## codesign the built binary, ad-hoc when the identity is absent
+sign: build
+	@if codesign --force --sign "$(SIGN_IDENTITY)" --timestamp=none --identifier $(SIGN_ID) bin/$(BINARY_NAME) 2>/dev/null; then \
+	  :; \
+	else \
+	  echo "warning: cannot sign with '$(SIGN_IDENTITY)'; signing ad-hoc"; \
+	  codesign --force --sign - --identifier $(SIGN_ID) bin/$(BINARY_NAME); \
+	fi
+	codesign --verify --strict bin/$(BINARY_NAME)
+	@echo "signed bin/$(BINARY_NAME): $$(codesign -dvvv bin/$(BINARY_NAME) 2>&1 | grep -m1 Authority | cut -d= -f2- || echo ad-hoc)"
 
 clean:
 	rm -rf bin/ coverage.out coverage.html
