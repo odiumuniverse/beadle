@@ -1,14 +1,30 @@
-# Beadle
+<div align="center">
 
-Beadle keeps your AI coding agents configured from one place, so switching
-tools or machines doesn't mean starting over.
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/beadle-dark.svg">
+    <img src="assets/beadle-light.svg" width="72" height="72" alt="beadle">
+  </picture>
+
+  <h1>beadle</h1>
+
+  <p><b>One configuration for every AI coding agent.</b><br>
+  Merges, not overwrites — nothing you wrote is deleted without a decision.</p>
+
+  <p>
+    <a href="https://github.com/odiumuniverse/beadle/releases"><img alt="release" src="https://img.shields.io/github/v/release/odiumuniverse/beadle?style=flat-square&color=3E6E5C&labelColor=1F2328"></a>
+    <a href="https://github.com/odiumuniverse/beadle/actions/workflows/ci.yml"><img alt="ci" src="https://img.shields.io/github/actions/workflow/status/odiumuniverse/beadle/ci.yml?branch=master&style=flat-square&label=ci&color=3E6E5C&labelColor=1F2328"></a>
+    <img alt="go" src="https://img.shields.io/badge/go-1.27-3E6E5C?style=flat-square&labelColor=1F2328">
+    <img alt="license" src="https://img.shields.io/badge/license-MIT-3E6E5C?style=flat-square&labelColor=1F2328">
+  </p>
+
+</div>
 
 Every agent stores its own instructions, MCP servers, skills and permission
-rules in its own format. Use two agents, or one agent on two machines, and
-you start copying the same config by hand and fixing the drift. Beadle keeps
-that configuration in a private vault of plain files you own, syncs it both
-ways with a git-style three-way merge, and leaves everything it doesn't
-manage alone.
+rules in its own format; use two agents, or one agent on two machines, and the
+same config gets copied by hand and starts to drift. Beadle keeps that
+configuration in **a private vault of plain files you own**, syncs it both ways
+with a **git-style three-way merge**, and leaves **everything it does not
+manage** alone.
 
 ```
 ~/.beadle/                  your vault — the only thing you edit
@@ -28,118 +44,54 @@ manage alone.
   + Antigravity CLI + Codex CLI + Pi + Kilo Code
 ```
 
-[Why use it](#why-use-it) · [What it does](#what-it-does) ·
-[Supported agents](#supported-agents) · [Install](#install) ·
-[Quick start](#quick-start) · [Commands](#commands) · [Principles](#principles)
+[Why use it](#why-use-it) · [Supported agents](#supported-agents) ·
+[Install](#install) · [Quick start](#quick-start) ·
+[How it works](#how-it-works) · [Reference](#reference) ·
+[Commands](#commands)
 
 ## Why use it
 
 - **One config, several agents.** Edit rules, servers or skills in whichever
-  agent you happen to be in — or directly in the vault — and the rest follow.
-- **Merges, not overwrites.** Real files with a three-way merge against each
-  agent's last known state; disagreements become explicit conflicts instead of
-  silent losses. Nothing you wrote is deleted without a decision.
-- **Multiple machines.** The vault is a directory; put it in git (or your own
-  sync) and every machine shares the same canon. Credential values stay out of
-  it.
-- **Your own repository is respected.** Project scope is opt-in per repo and
+  agent you are in — or directly in the vault — and the rest follow.
+- **Merges, not overwrites.** Three-way merges against each agent's last known
+  state; disagreement becomes an explicit conflict, not a silent loss.
+- **Multiple machines.** The vault is a directory: put it in git (or your own
+  sync) and every machine shares the same canon. Credential values stay out.
+- **Your repository is respected.** Project scope is opt-in per repo and
   leak-aware: secret values only land in gitignored files, generated blocks
   skip tracked files, and unmanaged entries are never rewritten.
-
-## What it does
-
-- **Rules and instructions** — one markdown canon rendered into each agent's
-  rules file (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`). *Why:* the thing agents
-  read first is usually the thing most out of date.
-- **MCP servers** — one portable canonical form; agent-only fields (`timeout`,
-  `oauth`, `enabled`, `trust`, …) stay in the agent's own file and survive every
-  rewrite. New entries are rendered with the file's own indentation (a minified
-  file stays minified). *Why:* server lists drift across agents and machines
-  fastest.
-- **Secrets** — values are extracted into `mcp/secrets.json` (0600, never
-  committed) or the OS keychain (`secrets migrate keyring`); files carry
-  `{secret:NAME}` references, and shareable files render `${NAME}` instead of a
-  value. The gate covers MCP, memory and project files; rules, skills and
-  permissions are not scanned (`doctor` warns about secret-like lines in
-  rules). *Why:* configs get copied and committed; credentials shouldn't.
-- **Skills** — whole directory trees, merged file by file. Plugin caches are
-  skipped, symlinked skills are read but never overwritten, and plugin skills
-  are farmed through a stable pivot so upgrades don't break links. *Why:*
-  skills are the biggest pile of files to keep in sync.
-- **Plugin pins** — pin one plugin to a cached version per agent (`plugins pin
-  <key> <version> --agent <id>`). The pin travels in the vault; the farm, MCP
-  paths and `heal` follow it, and a version missing from the cache is reported
-  instead of silently upgraded. *Why:* an upgrade can break a plugin's skills
-  or MCP servers mid-task.
-- **Native bundles and hooks** — approved lifecycle hooks and the vault canon
-  are rendered into native host bundles (a Claude marketplace plugin, a Gemini
-  extension, an Antigravity plugin) whose version follows the rendered bytes.
-  Registration goes through the host CLIs when they exist, and the result is
-  verified before beadle retires the file copies; without the CLI the canon
-  keeps arriving as files. `bundles disable` materializes everything back.
-  beadle writes hook files but never runs them. *Why:* native plugins survive
-  upgrades and keep hooks in one audited place.
-- **Project scope** — opt-in per repository: `.mcp.json`, `.cursor/mcp.json`,
-  `.cursor/rules/*.mdc`, `.agents/mcp_config.json`, `AGENTS.md`, `GEMINI.md`.
-  The project identity comes from the git origin, so clones and worktrees
-  converge; a missing file is never treated as a deletion (`project forget`
-  removes scope). *Why:* the config that matters most is per-repo, and repos
-  are where a personal vault can leak.
-- **Claude memory** — per-project notes sync through the vault; a budget-capped
-  digest lands in project files for the other agents; other agents' inbox lines
-  become notes; a secret gate runs before anything is adopted. *Why:* only one
-  agent remembers your project, and everyone else should benefit.
-- **Permissions** (opt-in) — tool/shell/MCP rules as a set, merged with
-  `deny > ask > allow`; agent-local defaults and path globs stay local. Keys
-  must be canonical (`tool:` names lowercase); `doctor` warns about keys no
-  codec can apply. *Why:* permission policy is currently retyped in every
-  agent.
-- **Diagnostics and recovery** — `doctor` reports broken links, drift,
-  collisions and half-finished states; `conflicts`/`resolve` settle
-  disagreements; `history`/`restore` roll kinds back; `heal` clears quarantined
-  plugins. *Why:* sync tools are only trusted if you can see and undo what they
-  did.
-- **Git mergetool audit mode** (opt-in) — `beadle resolve <id> --mergetool`
-  materializes a text conflict as a real git merge state inside the vault: the
-  three sides become git objects under `refs/beadle/mergetool/<id>/{base,vault,local}`
-  (kept forever), the target path gets index stages 1/2/3, `MERGE_HEAD` and
-  conflict markers, so you can settle it with `git mergetool` or by hand.
-  `beadle resolve <id> --mergetool-abort` removes the merge state (the audit
-  refs stay). While the merge is active, `sync`/`diff`/`status`/`doctor` refuse
-  with `mergetool-active` so the marker file is never read as canon. Only
-  file-backed kinds are supported; JSON kinds are refused with
-  `mergetool-unsupported`, and applying the result still goes through the normal
-  `--from`/`--take file` path. *Why:* the commit graph becomes the audit trail.
-- **Conflict contract and the `beadle-conflicts` skill** — `beadle conflicts
-  --json` is a stable, secret-redacted view (the three sides plus a unified
-  patch); `beadle resolve --from/--stdin` requires `--expect-base`/`--expect-vault`/`--expect-agent`,
-  so a
-  decision read before the conflict changed is refused as `stale-conflict`
-  instead of applied; risky changes (an MCP `command`/`url`, a new server, any permission
-  rule) need `--allow-risky`, and `resolve --all` never touches permissions.
-  `beadle init` seeds the `beadle-conflicts` skill into `<vault>/skills/` (an
-  existing vault: `beadle skills seed [--force]`), so an agent can walk the loop
-  — status → diff → conflicts --json → resolve → sync → doctor — through the
-  same audited path a human uses. *Why:* resolving disagreements is exactly
-  where an agent should not improvise.
 
 ## Supported agents
 
 | Agent | Rules | MCP | Skills | Permissions |
 |---|---|---|---|---|
-| Claude Code | ✅ `~/.claude/CLAUDE.md` | ✅ `~/.claude.json` | ✅ writes `~/.claude/skills` | ✅ opt-in (tools, shell, MCP) |
-| OpenCode | ✅ `~/.config/opencode/AGENTS.md` (V2 reads AGENTS.md only) | ✅ `opencode.jsonc` — V1 `mcp` и V2 `mcp.servers`, mixed union (comments preserved) | reads Claude/shared dirs natively | ✅ opt-in (V1 `permission` / V2 `permissions`; tools, shell, MCP) |
-| Gemini CLI | ✅ `~/.gemini/GEMINI.md` | ✅ `settings.json` (`httpUrl`) | ✅ `~/.gemini/skills` | ✅ opt-in (shell rules) |
-| Cursor | — (user rules live in the account) | ✅ `~/.cursor/mcp.json` | reads Claude/shared dirs natively | ✅ opt-in (shell, MCP) |
-| Antigravity CLI | — (reads `~/.gemini/GEMINI.md` via the Gemini CLI adapter) | ✅ `~/.gemini/config/mcp_config.json` (`serverUrl`) | — (v1 not managed) | — (not managed: `action(target)` dialect) |
-| Codex CLI | ✅ `~/.codex/AGENTS.md` | ✅ `~/.codex/config.toml` (`mcp_servers`, comments preserved) | reads `~/.agents/skills` natively (**pull**) | — (scalar `approval_policy`/`sandbox_mode`) |
-| Pi | ✅ `~/.pi/agent/AGENTS.md` | ✅ `~/.pi/agent/mcp.json` | reads `~/.agents/skills` natively (**pull**) | — (not documented) |
-| Kilo Code | ✅ `~/.config/kilo/AGENTS.md` | ✅ `kilo.jsonc` (comments preserved) | reads `~/.agents/skills` natively (**pull**) | ✅ opt-in (tools, shell, MCP) |
+| Claude Code | ✓ `~/.claude/CLAUDE.md` | ✓ `~/.claude.json` | ✓ writes `~/.claude/skills` | ✓ opt-in ³ |
+| OpenCode | ✓ `~/.config/opencode/AGENTS.md` ¹ | ✓ `opencode.jsonc` ¹ | reads Claude/shared dirs natively | ✓ opt-in ³ |
+| Gemini CLI | ✓ `~/.gemini/GEMINI.md` | ✓ `settings.json` (`httpUrl`) | ✓ `~/.gemini/skills` | ✓ opt-in ³ |
+| Cursor | — (user rules live in the account) | ✓ `~/.cursor/mcp.json` | reads Claude/shared dirs natively | ✓ opt-in ³ |
+| Antigravity CLI | — (`~/.gemini/GEMINI.md` via the Gemini CLI adapter) | ✓ `~/.gemini/config/mcp_config.json` (`serverUrl`) | — (v1 not managed) | — ³ |
+| Codex CLI | ✓ `~/.codex/AGENTS.md` | ✓ `~/.codex/config.toml` ² | reads `~/.agents/skills` natively | — ³ |
+| Pi | ✓ `~/.pi/agent/AGENTS.md` | ✓ `~/.pi/agent/mcp.json` | reads `~/.agents/skills` natively | — (not documented) |
+| Kilo Code | ✓ `~/.config/kilo/AGENTS.md` | ✓ `kilo.jsonc` ² | reads `~/.agents/skills` natively | ✓ opt-in ³ |
 
-Codex, Pi and Kilo (like OpenCode and Cursor) can also drop free-form lines into
-their own `inbox.md`; a sync turns them into project memory notes.
+¹ OpenCode: V2 reads `AGENTS.md` only; MCP is `mcp.servers` in V2 and `mcp` in
+  V1 — merged as one union, comments in `opencode.jsonc` preserved.
 
-beadle creates only the surfaces marked creatable: the rules files of Claude
+² Codex keeps its servers in the `mcp_servers` table, Kilo under the `/mcp`
+  pointer. Comments and formatting are preserved when beadle edits the file.
+
+³ Permission dialects beadle can apply: Claude Code, Kilo Code and OpenCode
+  (tools, shell and MCP; `permission` in V1, `permissions` in V2) — Gemini CLI
+  takes shell rules, Cursor shell and MCP. Antigravity's `action(target)`
+  dialect and Codex's scalar `approval_policy`/`sandbox_mode` are not managed.
+
+A ✓ means beadle writes that surface. `reads …` means the agent reads a
+shared directory itself (`~/.claude/skills`, `~/.agents/skills`), and those
+skills surfaces default to the `pull` mode — the agent's own skills directory
+is not written. The shared `~/.agents/skills` is a surface of its own, not
+enabled by `beadle init`; enable it with `beadle agents`.
+
+Beadle creates only the surfaces marked creatable: the rules files of Claude
 Code and Gemini CLI, their skills directories, the Codex `config.toml` and the
 shared `~/.agents/skills` directory. Every other surface is written only when
 its config file already exists — an agent discovered by its directory alone is
@@ -208,6 +160,129 @@ that waits for a human or an agent (`beadle conflicts`, `beadle resolve`)
 instead of overwriting either side; files beadle does not manage are untouched.
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the picture.
 
+## Reference
+
+What beadle manages, one line per kind; open a block for the mechanics and the
+limits.
+
+<details>
+<summary><b>Rules and instructions</b> — one markdown canon rendered into every agent's rules file</summary>
+
+`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`. *Why:* the thing agents read first is
+usually the thing most out of date.
+
+</details>
+
+<details>
+<summary><b>MCP servers</b> — one portable canonical form; agent-only fields survive every rewrite</summary>
+
+`timeout`, `oauth`, `enabled`, `trust` and the like stay in the agent's own
+file. New entries are rendered with the file's own indentation — a minified
+file stays minified. *Why:* server lists drift across agents and machines
+fastest.
+
+</details>
+
+<details>
+<summary><b>Secrets</b> — credential values live outside the canon, files carry <code>{secret:NAME}</code> references</summary>
+
+The gate covers MCP, memory and project files; rules, skills and permissions
+are not scanned, and `doctor` warns about secret-like lines in rules.
+*Why:* configs get copied and committed; credentials should not.
+
+See [Secrets](#secrets).
+
+</details>
+
+<details>
+<summary><b>Skills</b> — whole directory trees, merged file by file</summary>
+
+Plugin caches are skipped; symlinked skills are read but never overwritten;
+plugin skills are farmed through a stable pivot so upgrades do not break
+links. *Why:* skills are the biggest pile of files to keep in sync.
+
+</details>
+
+<details>
+<summary><b>Plugin pins</b> — pin one plugin to a cached version per agent</summary>
+
+`beadle plugins pin <key> <version> --agent <id>`. The pin travels in the
+vault; the farm, MCP paths and `heal` follow it, and a version missing from the
+cache is reported instead of silently upgraded. *Why:* an upgrade can break a
+plugin's skills or MCP servers mid-task.
+
+</details>
+
+<details>
+<summary><b>Native bundles and hooks</b> — approved lifecycle hooks and the canon rendered into host plugins</summary>
+
+A Claude marketplace plugin, a Gemini extension, an Antigravity plugin; the
+bundle version follows the rendered bytes. Registration goes through the host
+CLIs when they exist, and the result is verified before beadle retires the file
+copies; without the CLI the canon keeps arriving as files.
+`bundles disable` materializes everything back. Beadle writes hook files but
+never runs them. *Why:* native plugins survive upgrades and keep hooks in one
+audited place.
+
+</details>
+
+<details>
+<summary><b>Project scope</b> — opt-in per repository; without a policy nothing is touched</summary>
+
+[Project scope](#project-scope) names the files and the commands.
+
+</details>
+
+<details>
+<summary><b>Claude memory</b> — per-project notes sync through the vault</summary>
+
+A budget-capped digest lands in project files for the other agents; other
+agents' inbox lines become notes; a secret gate runs before anything is
+adopted. Codex, Pi and Kilo (like OpenCode and Cursor) can drop free-form
+lines into their own `inbox.md`, and a sync turns them into project memory
+notes. *Why:* only one agent remembers your project, and everyone else should
+benefit.
+
+</details>
+
+<details>
+<summary><b>Permissions</b> (opt-in) — tool, shell and MCP rules as one set, merged with <code>deny &gt; ask &gt; allow</code></summary>
+
+Agent-local defaults and path globs stay local; keys must be canonical
+(`tool:` names lowercase), and `doctor` warns about keys no codec can apply.
+*Why:* permission policy is currently retyped in every agent.
+
+</details>
+
+<details>
+<summary><b>Diagnostics and recovery</b> — see and undo what a sync did</summary>
+
+`doctor` reports broken links, drift, collisions and half-finished states;
+`conflicts`/`resolve` settle disagreements; `history`/`restore` roll kinds
+back; `heal` clears quarantined plugins.
+
+</details>
+
+<details>
+<summary><b>Git mergetool audit mode</b> (opt-in) — a conflict materialized as a real git merge state</summary>
+
+The three sides become git objects under
+`refs/beadle/mergetool/<id>/{base,vault,local}`, kept forever, and the commit
+graph becomes the audit trail. File-backed kinds only. Details:
+[ARCHITECTURE.md](ARCHITECTURE.md#mergetool-audit-mode).
+
+</details>
+
+<details>
+<summary><b>Conflict contract</b> — a stable, secret-redacted view and a decision fingerprint</summary>
+
+`beadle conflicts --json` shows the three sides plus a unified patch;
+`resolve --from/--stdin` refuses a decision read before the conflict changed
+(`stale-conflict`), and risky changes need `--allow-risky`. Details:
+[ARCHITECTURE.md](ARCHITECTURE.md#conflict-contract).
+
+</details>
+
 ## Commands
 
 ### Core
@@ -254,13 +329,21 @@ the file in the vault-side policy of the current project, and
 a repository is touched; `doctor` keeps reporting foreign `.mcp.json` /
 `projects.*` collisions.
 
+The files are `.mcp.json`, `.cursor/mcp.json`, `.cursor/rules/*.mdc`,
+`.agents/mcp_config.json`, `AGENTS.md` and `GEMINI.md`. Project identity comes
+from the git origin, so clones and worktrees converge; a missing file is never
+treated as a deletion — `project forget` removes scope, a sync never does.
+*Why:* the config that matters most is per-repo, and repos are where a
+personal vault can leak.
+
 ## Secrets
 
 The gate extracts credential values out of the canon into `mcp/secrets.json`
-(0600, never committed) or the OS keychain, and files carry `{secret:NAME}`
-references — its scope (MCP, memory and project files; rules, skills and
-permissions are not scanned) is described under [What it does](#what-it-does).
-With `backend: keyring` the store is fail-closed: an unavailable keyring yields
+(0600, never committed) or the OS keychain (`secrets migrate keyring`); files
+carry `{secret:NAME}` references, and shareable files render `${NAME}` instead
+of a value. The scope (MCP, memory and project files; rules, skills and
+permissions are not scanned) is described under [Reference](#reference). With
+`backend: keyring` the store is fail-closed: an unavailable keyring yields
 skips and warnings, never a plaintext fallback.
 
 ## Principles
@@ -272,19 +355,15 @@ skips and warnings, never a plaintext fallback.
 - **Nothing is deleted silently.** Deletions propagate only relative to each
   agent's own base, mass deletions wait as conflicts, and project files that
   disappear (a branch switch, `git clean`) are reported as `kept`, not removed.
-- **JSONC is kept JSONC.** Comments and formatting of untouched parts survive
-  edits.
 - **Atomic writes.** tmp file + fsync + rename in the target directory, then
   fsync of the directory; the file mode is preserved.
 - **Local stays local.** OAuth state, hooks, plugins, UI settings, folder trust
   — untouched. Secrets never reach the synced canon, the object store or git
-  history; with `backend: keyring` the store itself is fail-closed — an
-  unavailable keyring yields skips and warnings, never a plaintext fallback.
-- **Formats are guests.** `pkg/kind` defines how each resource merges;
-  `pkg/agent` translates an agent's own format and keeps everything it does not
-  own.
+  history; the keyring backend is fail-closed — skips and warnings, never a
+  plaintext fallback.
 
-## Development
+<details>
+<summary><b>Development</b> — build, test and the package layout</summary>
 
 ```bash
 make test    # go test -race ./...
@@ -295,6 +374,8 @@ make mod     # go mod tidy && go mod vendor (deps are vendored)
 
 Layout: `cmd/beadle`,
 `pkg/{cli,vault,config,state,cas,fsutil,merge,kind,agent,engine,project,lock,watch,daemon,history,secret,mcp,skill,permission}`.
+
+</details>
 
 ## License
 

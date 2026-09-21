@@ -32,3 +32,46 @@ of overwriting either side; the rest of the sync continues.
 Credential values never travel in the canon: they are extracted into
 `mcp/secrets.json` (0600, never committed) or the OS keychain, and files
 carry `{secret:NAME}` references.
+
+## Mergetool audit mode
+
+Opt-in per conflict: `beadle resolve <id> --mergetool` materializes a text
+conflict as a real git merge state inside the vault.
+
+- The three sides become git objects under
+  `refs/beadle/mergetool/<id>/{base,vault,local}` — kept forever, so the
+  commit graph is the audit trail.
+- The target path gets index stages 1/2/3, `MERGE_HEAD` and conflict markers,
+  so the conflict can be settled with `git mergetool` or by hand.
+- `beadle resolve <id> --mergetool-abort` removes the merge state; the audit
+  refs stay.
+- While the merge is active, `sync`/`diff`/`status`/`doctor` refuse with
+  `mergetool-active`, so the marker file is never read as canon.
+- Only file-backed kinds are supported. JSON kinds are refused with
+  `mergetool-unsupported`, and applying the result still goes through the
+  normal `--from`/`--take file` path.
+
+## Conflict contract
+
+`beadle conflicts --json` is a stable, secret-redacted view of an open
+conflict: the three sides plus a unified patch. A decision carries the state it
+was made against:
+
+- `beadle resolve --from/--stdin` requires `--expect-base`, `--expect-vault`
+  and `--expect-agent`; a decision read before the conflict changed is refused
+  as `stale-conflict` instead of applied.
+- Risky changes — an MCP `command`/`url`, a new server, any permission
+  rule — need `--allow-risky`.
+- `resolve --all` never touches permissions.
+
+`beadle init` seeds the `beadle-conflicts` skill into `<vault>/skills/` (for an
+existing vault: `beadle skills seed [--force]`), so an agent can walk the loop
+— status → diff → `conflicts --json` → resolve → sync → doctor — through
+the same audited path a human uses: resolving disagreements is exactly where
+an agent should not improvise.
+
+## Formats are guests
+
+`pkg/kind` defines how each resource merges; `pkg/agent` translates an agent's
+own format and keeps everything it does not own. JSONC stays JSONC: comments
+and formatting of untouched parts survive edits.
