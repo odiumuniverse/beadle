@@ -9,21 +9,59 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
 )
 
-// ConflictsName is the canonical skill name seeded into the vault.
-const ConflictsName = "beadle-conflicts"
+// The built-in skills seeded into the vault.
+const (
+	ConflictsName = "beadle-conflicts"
+	BeadleName    = "beadle"
+)
 
 //go:embed assets/beadle-conflicts/SKILL.md
 var conflictsSkill []byte
+
+//go:embed assets/beadle/SKILL.md
+var beadleSkill []byte
 
 // Conflicts returns a copy of the embedded beadle-conflicts skill.
 func Conflicts() []byte {
 	return slices.Clone(conflictsSkill)
 }
 
-// Seed writes the beadle-conflicts skill into skillsDir. It never clobbers an
-// existing skill unless force is set, and reports whether it wrote the file.
-func Seed(skillsDir string, force bool) (bool, error) {
-	file := filepath.Join(skillsDir, ConflictsName, "SKILL.md")
+// Beadle returns a copy of the embedded beadle skill.
+func Beadle() []byte {
+	return slices.Clone(beadleSkill)
+}
+
+// builtins lists the embedded skills in seed order.
+var builtins = []struct {
+	name string
+	body []byte
+}{
+	{ConflictsName, conflictsSkill},
+	{BeadleName, beadleSkill},
+}
+
+// Seed writes the built-in skills into skillsDir and returns the names it
+// wrote. It never clobbers an existing skill unless force is set.
+func Seed(skillsDir string, force bool) ([]string, error) {
+	var written []string
+
+	for _, skill := range builtins {
+		ok, err := seedOne(skillsDir, skill.name, skill.body, force)
+		if err != nil {
+			return written, err
+		}
+
+		if ok {
+			written = append(written, skill.name)
+		}
+	}
+
+	return written, nil
+}
+
+// seedOne writes one skill and reports whether it wrote the file.
+func seedOne(skillsDir, name string, body []byte, force bool) (bool, error) {
+	file := filepath.Join(skillsDir, name, "SKILL.md")
 	if fsutil.Exists(file) && !force {
 		return false, nil
 	}
@@ -36,7 +74,7 @@ func Seed(skillsDir string, force bool) (bool, error) {
 		return false, err
 	}
 
-	if err := fsutil.WriteFileAtomic(file, conflictsSkill, 0o600); err != nil {
+	if err := fsutil.WriteFileAtomic(file, body, 0o600); err != nil {
 		return false, err
 	}
 

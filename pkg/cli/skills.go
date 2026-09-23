@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -25,7 +26,7 @@ func (a *app) newSkillsSeedCmd() *cobra.Command {
 
 	seed := &cobra.Command{
 		Use:   "seed",
-		Short: "Copy the built-in beadle-conflicts skill into the vault canon",
+		Short: "Copy the built-in beadle skills into the vault canon",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			v, err := a.resolveVault()
@@ -40,13 +41,13 @@ func (a *app) newSkillsSeedCmd() *cobra.Command {
 
 			out := cmd.OutOrStdout()
 
-			if !written {
-				fmt.Fprintln(out, "beadle-conflicts is already in the vault (use --force to overwrite)")
+			if len(written) == 0 {
+				fmt.Fprintln(out, "the built-in skills are already in the vault (use --force to overwrite)")
 
 				return nil
 			}
 
-			fmt.Fprintln(out, "seeded beadle-conflicts")
+			fmt.Fprintln(out, "seeded "+strings.Join(written, ", "))
 
 			return nil
 		},

@@ -115,9 +115,11 @@ func TestExportAgentPluginsEndToEnd(t *testing.T) {
 
 		vaultDir := filepath.Join(home, ".beadle")
 
-		// init seeds the built-in skill; the fixture canon is what this test
+		// init seeds the built-in skills; the fixture canon is what this test
 		// exports.
-		So(os.RemoveAll(filepath.Join(vaultDir, "skills", "beadle-conflicts")), ShouldBeNil)
+		for _, name := range []string{"beadle-conflicts", "beadle"} {
+			So(os.RemoveAll(filepath.Join(vaultDir, "skills", name)), ShouldBeNil)
+		}
 
 		writeFile(t, filepath.Join(vaultDir, "skills", "alpha", "SKILL.md"), exportSkillDoc("alpha"))
 		writeFile(t, filepath.Join(vaultDir, "skills", "beta", "SKILL.md"), exportSkillDoc("beta"))

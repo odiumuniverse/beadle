@@ -36,7 +36,8 @@ func newRootCmd(opts Options) *cobra.Command {
 		Long: "beadle keeps the rules, MCP servers, skills and permissions of your AI coding\n" +
 			"agents (Claude Code, OpenCode, Gemini CLI, Cursor, ...) in sync through a vault\n" +
 			"you own. Change them in any agent: the others follow. Real files, 3-way merges,\n" +
-			"no symlinks; conflicts wait for you instead of being guessed.",
+			"no symlinks; conflicts wait for you instead of being guessed.\n\n" +
+			"Are you an AI agent? Run `beadle guide`.",
 		Version: opts.Version,
 		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
 			a.errOut = cmd.ErrOrStderr()
@@ -53,6 +54,7 @@ func newRootCmd(opts Options) *cobra.Command {
 
 	root.AddCommand(
 		a.newInitCmd(),
+		a.newGuideCmd(),
 		a.newStatusCmd(),
 		a.newSyncCmd(),
 		a.newPullCmd(),

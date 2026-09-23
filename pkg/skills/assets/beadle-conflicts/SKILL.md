@@ -35,6 +35,7 @@ instead of overwriting either side. This skill walks the safe resolution loop.
 </workflow>
 
 <command>
+- `beadle guide`                          the full rules for agents (start here)
 - `beadle status`
 - `beadle diff`
 - `beadle conflicts`                      list open conflicts (human view)
@@ -51,7 +52,9 @@ instead of overwriting either side. This skill walks the safe resolution loop.
 - `beadle resolve --all --kind permissions --take vault`
 - `beadle resolve --all --take vault --json`
 - `beadle sync`
-- `beadle doctor`
+- `beadle doctor`                         read-only diagnosis; plugin farm findings; hooks need approve
+- `beadle hooks approve --plugin <marketplace>/<name>`
+- `beadle export`                         render the canon with secret references intact
 </command>
 
 <never>
@@ -64,6 +67,11 @@ instead of overwriting either side. This skill walks the safe resolution loop.
   value from the vault, the agent, or the merged content you validated.
 - Never edit `state.json` or the conflict files by hand.
 </never>
+
+<related>
+- `beadle guide` — the full agent guide (rules, defaults, plugin flow).
+- The `beadle` skill — the command map and the approve/defaults notes.
+</related>
 
 <prevention>
 - Write to the right kind: notes → `memory`, MCP servers → `mcp`, agent

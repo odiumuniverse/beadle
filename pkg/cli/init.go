@@ -260,6 +260,8 @@ func printInitNext(out io.Writer, daemonHint bool) {
 		next += "  beadle daemon install   # keep everything in sync in the background\n"
 	}
 
+	next += "\nAre you an AI agent? Run `beadle guide`.\n"
+
 	fmt.Fprint(out, next)
 }
 

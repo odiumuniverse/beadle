@@ -47,9 +47,21 @@ manage** alone.
 ```
 
 [Why use it](#why-use-it) · [Supported agents](#supported-agents) ·
-[Install](#install) · [Quick start](#quick-start) ·
+[Install](#install) · [Quick start](#quick-start) · [Guides](#guides) ·
 [How it works](#how-it-works) · [Reference](#reference) ·
 [Commands](#commands)
+
+## Guides
+
+- **[For AI agents](guide/ai-agents.md)** — the rules, defaults, plugin flow and
+  workflow an agent needs to work with the vault safely. `beadle guide` prints
+  the same document from the binary.
+- **[For humans](guide/humans.md)** — quick start, what syncs where, plugins,
+  conflicts, secrets and FAQ. `beadle guide --humans` prints it.
+
+![How beadle works](assets/guide-architecture.svg)
+
+![What syncs where](assets/guide-sync-map.svg)
 
 ## Why use it
 
@@ -69,7 +81,7 @@ manage** alone.
 
 | Agent | Rules | MCP | Skills | Permissions | Subagents | Commands |
 |---|---|---|---|---|---|---|
-| Claude Code | ✓ `~/.claude/CLAUDE.md` | ✓ `~/.claude.json` | ✓ writes `~/.claude/skills` | ✓ default on ³ | ✓ `~/.claude/agents/**` | ✓ `~/.claude/commands` (legacy) ⁷ |
+| Claude Code | ✓ `~/.claude/CLAUDE.md` (user) + project `AGENTS.md` (native, v2.1.280) ⁸ | ✓ `~/.claude.json` | ✓ writes `~/.claude/skills` | ✓ default on ³ | ✓ `~/.claude/agents/**` | ✓ `~/.claude/commands` (legacy) ⁷ |
 | OpenCode | ✓ `~/.config/opencode/AGENTS.md` ¹ | ✓ `opencode.jsonc` ¹ | ✓ writes `~/.config/opencode/skills`; reads flat `<name>.md` ⁵ | ✓ default on ³ | ✓ `~/.config/opencode/agents`, legacy `agent/` read ⁶ | ✓ `~/.config/opencode/commands`, legacy `command/` read ⁷ |
 | Gemini CLI | ✓ `~/.gemini/GEMINI.md` | ✓ `settings.json` (`httpUrl`) | ✓ `~/.gemini/skills` | ✓ default on ³ | ✓ `~/.gemini/agents` ⁶ | ✓ `~/.gemini/commands/*.toml` ⁷ |
 | Cursor | — (user rules live in the account) | ✓ `~/.cursor/mcp.json` | reads Claude/shared dirs natively | ✓ default on ³ | ✓ `~/.cursor/agents` (`.md`/`.mdc`/`.markdown`) | — (not supported yet) |
@@ -115,6 +127,13 @@ manage** alone.
   and skips a host whose dialect cannot express a placeholder (doctor
   explains). Codex prompts are deprecated: beadle pulls them into the vault
   but never writes them back; Cursor file commands are not supported yet.
+
+⁸ Claude Code v2.1.280 reads the project `AGENTS.md` natively (the `agents-md`
+  banner). Beadle manages that one file and never touches a project
+  `CLAUDE.md`/`CLAUDE.local.md`: `doctor` reports a differing twin
+  (double-load) or an unmanaged legacy file with the `beadle project enable
+  AGENTS.md` hint, and
+  stays silent when the two files are identical.
 
 A ✓ means beadle writes that surface. `reads …` means the agent reads a
 shared directory itself (`~/.claude/skills`, `~/.agents/skills`), and those
@@ -294,11 +313,19 @@ wrapper and the closed transport union (`stdio`, `streamable-http`, `sse`).
 Servers are portable only when they stay inside the package: `${PLUGIN_ROOT}`
 and relative references (in `command`, `args`, `env`, including behind spaces,
 flags or `=`) must not climb above the root, and `command` must be a bare name
-or a `./relative` path — it is never interpolated. `${VAR}` secrets are kept as
-references, never expanded, and a client-side reference in `url`/`headers`/`env`
-draws a warning: portable clients do not expand it, so that authentication stays
-the client's own. The render is deterministic and idempotent, beadle-owned stale
-files are removed on re-export, and a foreign file in `DIR` is never touched.
+or a `./relative` path without whitespace — it is never interpolated. Remote
+urls must be `https` without user-info or a fragment (plain `http` is accepted
+on loopback only). `${VAR}`
+secrets are kept as references, never expanded: a reference in `url` or
+`headers` always draws a warning (those fields are never interpolated), and in
+`args`/`env` any placeholder other than `${PLUGIN_ROOT}`/`${PLUGIN_DATA}` does —
+portable clients do not expand it, so that authentication stays the client's
+own. The render is deterministic and idempotent; a re-export removes the
+manifest, `mcp.json` and the `SKILL.md` of any skill that is no longer rendered
+(a directory is removed only when that left it empty) — beadle cannot tell a
+foreign skill directory from its own previous render, so a leftover directory
+keeps its other files and is reported as a warning; loose files, stale tree
+files and foreign directories are never deleted.
 Commands, hooks, agents, rules and plugin-sourced components are outside the v1
 pilot. *Why:* one conformant package a portable host can install, without
 handing it your secrets.
@@ -396,7 +423,7 @@ graph becomes the audit trail. File-backed kinds only. Details:
 | `plugins pins\|pin\|unpin` | per-agent plugin version pins |
 | `export agent-plugins --out DIR` | render the canon (skills + MCP) as an Agent Plugins v1.0.0 package |
 | `hooks list\|add\|rm\|approve\|revoke` | lifecycle hooks canon: rendered into native bundles and the Cursor/Codex hooks files (never executed by beadle); `approve --plugin <key>` adopts the command hooks of an installed plugin |
-| `skills seed\|adopt\|unadopt` | the built-in skill, foreign-copy adoption and its restore |
+| `skills seed\|adopt\|unadopt` | the built-in skills (`beadle-conflicts` + `beadle`), foreign-copy adoption and its restore |
 | `explain <skill>` | which copy of a canon skill each host can read |
 | `bundles status\|enable [host]\|disable [host]` | native host bundles and their registration |
 | `rulings list\|show\|trust\|forget` | remembered conflict decisions applied only on an exact, non-blast-radius match |

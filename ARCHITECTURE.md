@@ -64,11 +64,11 @@ was made against:
   rule — need `--allow-risky`.
 - `resolve --all` never touches permissions.
 
-`beadle init` seeds the `beadle-conflicts` skill into `<vault>/skills/` (for an
-existing vault: `beadle skills seed [--force]`), so an agent can walk the loop
-— status → diff → `conflicts --json` → resolve → sync → doctor — through
-the same audited path a human uses: resolving disagreements is exactly where
-an agent should not improvise.
+`beadle init` seeds the built-in skills — `beadle-conflicts` and the umbrella
+`beadle` — into `<vault>/skills/` (for an existing vault: `beadle skills seed
+[--force]`), so an agent can walk the loop — status → diff → `conflicts --json`
+→ resolve → sync → doctor — through the same audited path a human uses:
+resolving disagreements is exactly where an agent should not improvise.
 
 ## Formats are guests
 
