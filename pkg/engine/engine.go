@@ -506,6 +506,10 @@ func (e *Engine) projectTargets(active []*agent.Agent) []projectTarget {
 	var targets []projectTarget
 
 	identity := e.projectIdentity()
+	// One digest target per file: several hosts read the same project rules
+	// (AGENTS.md), and the first eligible surface owns the single writer — the
+	// same surface the owners dedup picks for the kind.
+	seen := map[string]bool{}
 
 	for _, a := range active {
 		for _, surface := range a.SurfacesOf(kind.Projects) {
@@ -525,6 +529,13 @@ func (e *Engine) projectTargets(active []*agent.Agent) []projectTarget {
 			if e.config.ModeFor(a.ID, kind.Projects, surface.Traits().DefaultMode) == config.ModeOff {
 				continue
 			}
+
+			realPath := agent.RealPath(surface.Path())
+			if seen[realPath] {
+				continue
+			}
+
+			seen[realPath] = true
 
 			dir := filepath.Dir(surface.Path())
 			slug := memory.Slug(dir)

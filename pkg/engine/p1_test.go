@@ -238,6 +238,7 @@ func TestProjectWithoutClaudeCode(t *testing.T) {
 					So(issue.Severity, ShouldNotEqual, engine.SeverityError)
 				}
 
+				// Claude Code is not detected here: OpenCode owns the file.
 				So(report.Action(kind.Projects, agent.OpenCodeID), ShouldEqual, engine.ActionNoop)
 				So(report.Kind(kind.Memory).Agents, ShouldBeEmpty)
 			})
@@ -387,7 +388,7 @@ func TestProjectNoImplicitDelete(t *testing.T) {
 			report = f.sync(t)
 
 			So(errors.Is(repoErr, fs.ErrNotExist), ShouldBeTrue)
-			So(report.Action(kind.Projects, agent.OpenCodeID), ShouldEqual, engine.ActionNoop)
+			So(report.Action(kind.Projects, agent.ClaudeCodeID), ShouldEqual, engine.ActionNoop)
 
 			gitIn(t, repo, "checkout", "-q", "-")
 

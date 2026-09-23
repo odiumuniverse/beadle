@@ -176,7 +176,7 @@ func TestProjectsSyncRoundTrip(t *testing.T) {
 
 			report = f.sync(t)
 			So(report.Kind(kind.Projects).VaultChanged, ShouldBeFalse)
-			So(report.Action(kind.Projects, agent.OpenCodeID), ShouldEqual, engine.ActionNoop)
+			So(report.Action(kind.Projects, agent.ClaudeCodeID), ShouldEqual, engine.ActionNoop)
 
 			write(t, vaultProject(f, repo, "AGENTS.md"), "# canon edit\n")
 			f.sync(t)
@@ -196,7 +196,7 @@ func TestProjectsSyncRoundTrip(t *testing.T) {
 				So(read(t, vaultProject(f, repo, "AGENTS.md")), ShouldEqual, "# local edit\n")
 				So(errors.Is(repoErr, fs.ErrNotExist), ShouldBeTrue)
 				So(report.Kind(kind.Projects).Kept, ShouldNotBeEmpty)
-				So(report.Action(kind.Projects, agent.OpenCodeID), ShouldEqual, engine.ActionNoop)
+				So(report.Action(kind.Projects, agent.ClaudeCodeID), ShouldEqual, engine.ActionNoop)
 			})
 		})
 	})
@@ -250,13 +250,13 @@ func TestProjectsConflictResolvedInEditor(t *testing.T) {
 		report := f.sync(t)
 		So(report.ConflictsOf(kind.Projects), ShouldHaveLength, 1)
 
-		c := f.conflict(t, kind.Projects, agent.OpenCodeID)
+		c := f.conflict(t, kind.Projects, agent.ClaudeCodeID)
 
 		file, err := f.engine.ConflictFile(c)
 		So(err, ShouldBeNil)
 		So(filepath.Ext(file), ShouldEqual, ".md")
-		So(filepath.Base(file), ShouldContainSubstring, "projects-opencode-")
-		So(read(t, file), ShouldContainSubstring, ">>>>>>> agent:opencode")
+		So(filepath.Base(file), ShouldContainSubstring, "projects-claude-code-")
+		So(read(t, file), ShouldContainSubstring, ">>>>>>> agent:claude-code")
 
 		write(t, file, "# resolved\n")
 
@@ -325,7 +325,7 @@ func TestProjectsConflictTakeAgent(t *testing.T) {
 		write(t, vaultProject(f, repo, "AGENTS.md"), "vault-edit\n")
 		f.sync(t)
 
-		f.resolve(t, kind.Projects, agent.OpenCodeID, engine.TakeAgent)
+		f.resolve(t, kind.Projects, agent.ClaudeCodeID, engine.TakeAgent)
 
 		Convey("When resolved", func() {
 			Convey("Then the agent value wins everywhere", func() {
@@ -362,11 +362,11 @@ func TestProjectsFenceBlindNoop(t *testing.T) {
 
 			So(canon, ShouldEqual, "# repo rules\n")
 			So(canon, ShouldNotContainSubstring, digest.BeginPrefix)
-			So(string(baseBlob(t, f, kind.Projects, agent.OpenCodeID, repoID(repo)+"/AGENTS.md")), ShouldNotContainSubstring, digest.BeginPrefix)
+			So(string(baseBlob(t, f, kind.Projects, agent.ClaudeCodeID, repoID(repo)+"/AGENTS.md")), ShouldNotContainSubstring, digest.BeginPrefix)
 
 			report = f.sync(t)
 			So(report.Digest, ShouldBeEmpty)
-			So(report.Action(kind.Projects, agent.OpenCodeID), ShouldEqual, engine.ActionNoop)
+			So(report.Action(kind.Projects, agent.ClaudeCodeID), ShouldEqual, engine.ActionNoop)
 
 			writeMemoryCanon(t, f, repo, "feedback.md", "---\ndescription: second\n---\nbody\n")
 
@@ -412,7 +412,7 @@ func TestProjectsFenceOnlyFileSurvives(t *testing.T) {
 			_, fileErr := os.Stat(repoFile(repo))
 
 			Convey("Then the fence-only file is never deleted", func() {
-				So(report.Action(kind.Projects, agent.OpenCodeID), ShouldEqual, engine.ActionNoop)
+				So(report.Action(kind.Projects, agent.ClaudeCodeID), ShouldEqual, engine.ActionNoop)
 				So(fileErr, ShouldBeNil)
 			})
 		})
@@ -477,6 +477,9 @@ func TestDigestGates(t *testing.T) {
 			So(read(t, repoFile(repo)), ShouldNotContainSubstring, digest.BeginPrefix)
 
 			f.config.SetKind(kind.Projects, config.ModeSync)
+			f.config.SetMode(agent.ClaudeCodeID, kind.Projects, config.ModeOff)
+			// Two hosts read AGENTS.md: the fence stops only when every
+			// eligible surface is off.
 			f.config.SetMode(agent.OpenCodeID, kind.Projects, config.ModeOff)
 			f.sync(t)
 
@@ -574,7 +577,7 @@ func TestDigestDriftHoldAndRefresh(t *testing.T) {
 				So(read(t, repoFile(repo)), ShouldNotContainSubstring, "hand edit")
 				So(st.Drift[repoFile(repo)].Count, ShouldEqual, 0)
 
-				So(f.sync(t).Action(kind.Projects, agent.OpenCodeID), ShouldEqual, engine.ActionNoop)
+				So(f.sync(t).Action(kind.Projects, agent.ClaudeCodeID), ShouldEqual, engine.ActionNoop)
 			})
 		})
 	})

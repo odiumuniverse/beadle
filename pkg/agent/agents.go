@@ -92,6 +92,7 @@ func ClaudeCode(home, cwd string) *Agent {
 			},
 			&projectMCPSurface{dir: cwd, rel: ".mcp.json", id: id},
 			&claudeRulesSurface{dir: cwd, id: id},
+			&projectRulesSurface{dir: cwd, file: agentsMarkdown, id: id},
 		},
 	}
 }

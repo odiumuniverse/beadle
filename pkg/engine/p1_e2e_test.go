@@ -144,7 +144,7 @@ func TestProjectE2EClonesAndWorktree(t *testing.T) {
 			report, err := eB.Sync(t.Context(), engine.SyncOptions{})
 			So(err, ShouldBeNil)
 			So(report.Action(kind.Projects, agent.ClaudeCodeID), ShouldEqual, engine.ActionNoop)
-			So(report.Action(kind.Projects, agent.OpenCodeID), ShouldEqual, engine.ActionNoop)
+			So(report.Action(kind.Projects, agent.OpenCodeID), ShouldEqual, engine.ActionAlias)
 
 			write(t, canon("AGENTS.md"), "# rules v2\n")
 
@@ -152,7 +152,7 @@ func TestProjectE2EClonesAndWorktree(t *testing.T) {
 			So(err, ShouldBeNil)
 
 			Convey("Then clone B pulls and pushes and the worktree shares the identity", func() {
-				So(report.Action(kind.Projects, agent.OpenCodeID), ShouldEqual, engine.ActionPushed)
+				So(report.Action(kind.Projects, agent.ClaudeCodeID), ShouldEqual, engine.ActionPushed)
 				So(read(t, filepath.Join(cloneB, "AGENTS.md")), ShouldEqual, "# rules v2\n")
 
 				worktree := filepath.Join(work, "wt")
@@ -164,7 +164,7 @@ func TestProjectE2EClonesAndWorktree(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				Convey("And a worktree deletion keeps the canon while forget removes it", func() {
-					So(report.Action(kind.Projects, agent.OpenCodeID), ShouldEqual, engine.ActionNoop)
+					So(report.Action(kind.Projects, agent.ClaudeCodeID), ShouldEqual, engine.ActionNoop)
 					So(sha256Of(t, filepath.Join(cloneA, "AGENTS.md")), ShouldEqual, hashA)
 
 					So(os.Remove(filepath.Join(worktree, "AGENTS.md")), ShouldBeNil)

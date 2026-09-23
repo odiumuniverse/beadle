@@ -91,6 +91,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.projectScopeIssues(ctx, active)...)
 	issues = append(issues, e.projectPolicyIssues(active)...)
 	issues = append(issues, e.claudeUserRulesIssues(active)...)
+	issues = append(issues, e.claudeProjectRulesIssues(active)...)
 	issues = append(issues, e.pluginRefIssues(active)...)
 	issues = append(issues, e.pluginPivotIssues(ctx)...)
 	issues = append(issues, e.orphanPivotIssues()...)
@@ -1388,7 +1389,18 @@ func (e *Engine) projectPolicyIssues(active []*agent.Agent) []Issue {
 
 	issues := []Issue{{Severity: SeverityInfo, Kind: kind.Projects, Message: projectIdentityMessage(identity)}}
 
+	// One file, one diagnostic: several hosts read the same project rules
+	// (AGENTS.md), and the first surface already reports the shared path.
+	seen := map[string]bool{}
+
 	for _, surface := range projectSurfaces(active) {
+		realPath := agent.RealPath(surface.Path())
+		if seen[realPath] {
+			continue
+		}
+
+		seen[realPath] = true
+
 		issues = append(issues, e.projectSurfaceIssues(surface, policy)...)
 	}
 
