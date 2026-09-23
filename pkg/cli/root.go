@@ -71,6 +71,7 @@ func newRootCmd(opts Options) *cobra.Command {
 		a.newHooksCmd(),
 		a.newBundlesCmd(),
 		a.newSkillsCmd(),
+		a.newExportCmd(),
 		a.newExplainCmd(),
 		a.newWatchCmd(),
 		a.newDaemonCmd(),
