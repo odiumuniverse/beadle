@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 
@@ -114,6 +115,7 @@ func TestInitDaemonFlags(t *testing.T) {
 			Convey("Then nothing is installed and no hint is printed", func() {
 				So(unitFileExists(t, daemonUnitPath(t, home)), ShouldBeFalse)
 				So(calls, ShouldEqual, 0)
+				So(out, ShouldContainSubstring, "daemon: skipped (--no-daemon)")
 				So(out, ShouldNotContainSubstring, "daemon install")
 				So(out, ShouldNotContainSubstring, "installed and started")
 			})
@@ -123,10 +125,11 @@ func TestInitDaemonFlags(t *testing.T) {
 			out, err := gwsRun(t, "init")
 			So(err, ShouldBeNil)
 
-			Convey("Then it hints at daemon install without installing", func() {
-				So(unitFileExists(t, daemonUnitPath(t, home)), ShouldBeFalse)
-				So(calls, ShouldEqual, 0)
-				So(out, ShouldContainSubstring, "beadle daemon install")
+			Convey("Then the watcher is installed by default", func() {
+				So(unitFileExists(t, daemonUnitPath(t, home)), ShouldBeTrue)
+				So(calls, ShouldBeGreaterThan, 0)
+				So(out, ShouldContainSubstring, "daemon: installed and started")
+				So(out, ShouldNotContainSubstring, "beadle daemon install")
 			})
 		})
 
@@ -136,6 +139,35 @@ func TestInitDaemonFlags(t *testing.T) {
 			Convey("Then it is rejected", func() {
 				So(err, ShouldBeError)
 				So(err.Error(), ShouldContainSubstring, "--daemon")
+			})
+		})
+	})
+}
+
+func TestInitDaemonSkipsExistingService(t *testing.T) {
+	Convey("Given an existing service file", t, func() {
+		home := gwsHome(t)
+
+		calls := 0
+
+		fakeDaemonRunner(t, func(context.Context, string, ...string) error {
+			calls++
+
+			return nil
+		})
+
+		path := daemonUnitPath(t, home)
+		So(os.MkdirAll(filepath.Dir(path), 0o750), ShouldBeNil)
+		So(os.WriteFile(path, []byte("plist"), 0o600), ShouldBeNil)
+
+		Convey("When init runs", func() {
+			out, err := gwsRun(t, "init")
+			So(err, ShouldBeNil)
+
+			Convey("Then the existing watcher is left alone", func() {
+				So(calls, ShouldEqual, 0)
+				So(out, ShouldContainSubstring, "daemon: already installed")
+				So(out, ShouldNotContainSubstring, "installed and started")
 			})
 		})
 	})

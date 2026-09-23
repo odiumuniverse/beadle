@@ -32,7 +32,9 @@ manage** alone.
 ├── mcp/servers.json            MCP servers (canonical, portable form)
 ├── mcp/secrets.json            credential values (0600, never committed)
 ├── skills/<name>/              skills, whole trees
-├── permissions/rules.json      permission policy (opt-in)
+├── subagents/<name>.md         custom subagents (all supported hosts)
+├── commands/<name>.md          custom commands / prompt templates
+├── permissions/rules.json      permission policy (default on)
 ├── memory/<slug>/              Claude per-project notes
 ├── projects/<repo-id>/         per-repository files and policy
 ├── objects/                    content-addressed history
@@ -57,22 +59,25 @@ manage** alone.
   state; disagreement becomes an explicit conflict, not a silent loss.
 - **Multiple machines.** The vault is a directory: put it in git (or your own
   sync) and every machine shares the same canon. Credential values stay out.
-- **Your repository is respected.** Project scope is opt-in per repo and
-  leak-aware: secret values only land in gitignored files, generated blocks
-  skip tracked files, and unmanaged entries are never rewritten.
+- **Your repository is respected.** Project scope is leak-aware: `init`
+  enables the files already present in a git checkout, secret values only land
+  in gitignored files (a tracked file needs an explicit per-file opt-in),
+  generated blocks skip tracked files, and unmanaged entries are never
+  rewritten.
 
 ## Supported agents
 
-| Agent | Rules | MCP | Skills | Permissions |
-|---|---|---|---|---|
-| Claude Code | ✓ `~/.claude/CLAUDE.md` | ✓ `~/.claude.json` | ✓ writes `~/.claude/skills` | ✓ opt-in ³ |
-| OpenCode | ✓ `~/.config/opencode/AGENTS.md` ¹ | ✓ `opencode.jsonc` ¹ | reads Claude/shared dirs natively | ✓ opt-in ³ |
-| Gemini CLI | ✓ `~/.gemini/GEMINI.md` | ✓ `settings.json` (`httpUrl`) | ✓ `~/.gemini/skills` | ✓ opt-in ³ |
-| Cursor | — (user rules live in the account) | ✓ `~/.cursor/mcp.json` | reads Claude/shared dirs natively | ✓ opt-in ³ |
-| Antigravity CLI | — (`~/.gemini/GEMINI.md` via the Gemini CLI adapter) | ✓ `~/.gemini/config/mcp_config.json` (`serverUrl`) | — (v1 not managed) | — ³ |
-| Codex CLI | ✓ `~/.codex/AGENTS.md` | ✓ `~/.codex/config.toml` ² | reads `~/.agents/skills` natively | — ³ |
-| Pi | ✓ `~/.pi/agent/AGENTS.md` | ✓ `~/.pi/agent/mcp.json` | reads `~/.agents/skills` natively | — (not documented) |
-| Kilo Code | ✓ `~/.config/kilo/AGENTS.md` | ✓ `kilo.jsonc` ² | reads `~/.agents/skills` natively | ✓ opt-in ³ |
+| Agent | Rules | MCP | Skills | Permissions | Subagents | Commands |
+|---|---|---|---|---|---|---|
+| Claude Code | ✓ `~/.claude/CLAUDE.md` | ✓ `~/.claude.json` | ✓ writes `~/.claude/skills` | ✓ default on ³ | ✓ `~/.claude/agents/**` | ✓ `~/.claude/commands` (legacy) ⁷ |
+| OpenCode | ✓ `~/.config/opencode/AGENTS.md` ¹ | ✓ `opencode.jsonc` ¹ | ✓ writes `~/.config/opencode/skills`; reads flat `<name>.md` ⁵ | ✓ default on ³ | ✓ `~/.config/opencode/agents`, legacy `agent/` read ⁶ | ✓ `~/.config/opencode/commands`, legacy `command/` read ⁷ |
+| Gemini CLI | ✓ `~/.gemini/GEMINI.md` | ✓ `settings.json` (`httpUrl`) | ✓ `~/.gemini/skills` | ✓ default on ³ | ✓ `~/.gemini/agents` ⁶ | ✓ `~/.gemini/commands/*.toml` ⁷ |
+| Cursor | — (user rules live in the account) | ✓ `~/.cursor/mcp.json` | reads Claude/shared dirs natively | ✓ default on ³ | ✓ `~/.cursor/agents` (`.md`/`.mdc`/`.markdown`) | — (not supported yet) |
+| Antigravity CLI | — (`~/.gemini/GEMINI.md` via the Gemini CLI adapter) | ✓ `~/.gemini/config/mcp_config.json` (`serverUrl`) | — (v1 not managed) | — ³ | ✓ `~/.gemini/config/agents` (global) | — (v1 not managed) |
+| Codex CLI | ✓ `~/.codex/AGENTS.md` | ✓ `~/.codex/config.toml` ² | reads `~/.agents/skills` natively | — ³ | ✓ `~/.codex/agents/*.toml` (span-edit) | ✓ pull-only `~/.codex/prompts` (deprecated) ⁷ |
+| Pi | ✓ `~/.pi/agent/AGENTS.md` | ✓ `~/.pi/agent/mcp.json` ⁴ | reads `~/.agents/skills` natively; flat `<name>.md` ⁵ | — (not documented) | — (no sub-agents by design) | ✓ `~/.pi/agent/prompts` ⁷ |
+| Kilo Code | ✓ `~/.config/kilo/AGENTS.md` | ✓ `kilo.jsonc` ² | reads `~/.agents/skills` natively | ✓ default on ³ | ✓ `~/.config/kilo/agents`, legacy `agent/` and `mode(s)/` read ⁶ | ✓ `~/.config/kilo/commands`, legacy `command/` read ⁷ |
+| DeepSeek Harness | ✓ `~/.dsh/AGENTS.md` (write) + project chain `AGENTS.md`/`CLAUDE.md` (pull, root → cwd) | — (non-goal, A-41; `cordis.patch.yml` — Q-16) | reads `~/.dsh/skills` (pull-only until A-39) | — (runtime knobs, non-goal A-41) | — (code providers, non-goal A-41) | — (plugin code, non-goal A-41) |
 
 ¹ OpenCode: V2 reads `AGENTS.md` only; MCP is `mcp.servers` in V2 and `mcp` in
   V1 — merged as one union, comments in `opencode.jsonc` preserved.
@@ -84,16 +89,45 @@ manage** alone.
   (tools, shell and MCP; `permission` in V1, `permissions` in V2) — Gemini CLI
   takes shell rules, Cursor shell and MCP. Antigravity's `action(target)`
   dialect and Codex's scalar `approval_policy`/`sandbox_mode` are not managed.
+  The permissions kind is synchronized by default since config v3; opt out with
+  `beadle kinds disable permissions`.
+
+⁴ Pi has no built-in MCP: beadle writes `~/.pi/agent/mcp.json`, which only the
+  third-party `pi-mcp-adapter` reads; `doctor` warns when managed servers are
+  present and the adapter is not detected.
+
+⁵ Flat skills: OpenCode and Pi also read a `<name>.md` file in their own skills
+  directory as a skill named by the file. Beadle adopts such copies into the
+  canon and keeps delivering directories; when a same-name directory exists,
+  it wins and the file is left untouched (`doctor` reports both).
+
+⁶ Subagents: the canon is `<vault>/subagents/<name>.md` (frontmatter + system
+  prompt). OpenCode and Kilo Code get a strict V2 frontmatter (`permissions`
+  instead of `tools`); nested ids and inline `agents` in `opencode.json(c)` are
+  not synced yet, `doctor` reports both. Gemini `kind: remote` agents and the
+  workspace subagent directories (`.gemini/agents`, `.agents/agents`,
+  `.cursor/agents`, `.codex/agents`) are v1 non-goals. Codex files are edited
+  surgically — comments and foreign keys stay.
+
+⁷ Commands: the canon is `<vault>/commands/<name>.md` (frontmatter +
+  template). Beadle shifts positional arguments between Claude's 0-based `$0`
+  and the 1-based canon, translates Gemini's `{{args}}`/`!{cmd}`/`@{path}`,
+  and skips a host whose dialect cannot express a placeholder (doctor
+  explains). Codex prompts are deprecated: beadle pulls them into the vault
+  but never writes them back; Cursor file commands are not supported yet.
 
 A ✓ means beadle writes that surface. `reads …` means the agent reads a
 shared directory itself (`~/.claude/skills`, `~/.agents/skills`), and those
 skills surfaces default to the `pull` mode — the agent's own skills directory
-is not written. The shared `~/.agents/skills` is a surface of its own, not
-enabled by `beadle init`; enable it with `beadle agents`.
+is not written. The shared `~/.agents/skills` surface is enabled by `beadle
+init` and the config v3 migration (mode `sync`): it is the delivery channel for
+the agents that read it natively. Opt out with `beadle agents disable shared`.
 
 Beadle creates only the surfaces marked creatable: the rules files of Claude
-Code and Gemini CLI, their skills directories, the Codex `config.toml` and the
-shared `~/.agents/skills` directory. Every other surface is written only when
+Code and Gemini CLI, their skills directories, the Codex `config.toml`, the
+subagent directories of Claude Code, OpenCode, Kilo Code, Codex, Gemini CLI,
+Antigravity and Cursor, and the shared `~/.agents/skills` directory. Every
+other surface is written only when
 its config file already exists — an agent discovered by its directory alone is
 skipped with `no config file to write into; create <path> first` until the file
 appears (an empty file is enough).
@@ -121,7 +155,7 @@ make build          # bin/beadle
 ## Quick start
 
 ```bash
-beadle init                 # detect agents, create the vault
+beadle init                 # create the vault, enable detected agents, wire the defaults
 beadle sync                 # pull every agent into the vault, push the union back
 beadle status               # resources, conflicts, agents
 beadle diff                 # what a sync would change, item by item
@@ -129,9 +163,20 @@ beadle conflicts            # what waits for a decision
 beadle doctor               # broken symlinks, permissions, drift, collisions
 ```
 
-`beadle init --daemon` installs the background watcher right away (and
-`--no-daemon` opts out explicitly); `beadle daemon install` does the same
-later.
+`beadle init` wires the defaults on a fresh machine: detected agents are
+enabled, the native bundles of detected hosts are rendered and registered (a
+host without its CLI gets the registration command instead and keeps file
+sync), the present project files of a git checkout are enabled with secrets
+kept out, and the background watcher is installed unless one is already there.
+`--no-daemon` skips the watcher; `--daemon` reinstalls it even when a service
+file exists. `beadle daemon install` does the same later.
+
+Upgrading from config v2: the first command that saves the config flips
+`kinds.permissions` to `sync` and enables the shared skills surface once, with
+a `config: …` line on stderr; hooks already in the vault canon are approved in
+the same pass (a `note: …` line). Opt out per feature: `beadle kinds disable
+permissions`, `beadle agents disable shared`, `beadle hooks revoke <name>`,
+`beadle bundles disable <host>`.
 
 `config.json` is created with explicit defaults; the optional settings
 (`permissions`, `history`, `secrets`) are always visible.
@@ -199,7 +244,11 @@ See [Secrets](#secrets).
 
 Plugin caches are skipped; symlinked skills are read but never overwritten;
 plugin skills are farmed through a stable pivot so upgrades do not break
-links. *Why:* skills are the biggest pile of files to keep in sync.
+links. Plugin agents and commands are farmed the same way (`<plugin>--<name>.md`
+for markdown hosts, a rendered TOML copy for Codex agents and Gemini commands;
+Claude reads plugin agents and commands natively, Codex prompts are pull-only).
+*Why:* skills are the biggest pile of files to keep
+in sync.
 
 </details>
 
@@ -217,17 +266,47 @@ plugin's skills or MCP servers mid-task.
 <summary><b>Native bundles and hooks</b> — approved lifecycle hooks and the canon rendered into host plugins</summary>
 
 A Claude marketplace plugin, a Gemini extension, an Antigravity plugin; the
-bundle version follows the rendered bytes. Registration goes through the host
+bundle version follows the rendered bytes. A full forward sync makes one
+unattended attempt per host that was never touched: render → validate →
+register → probe → flip the file kinds off. Registration goes through the host
 CLIs when they exist, and the result is verified before beadle retires the file
-copies; without the CLI the canon keeps arriving as files.
-`bundles disable` materializes everything back. Beadle writes hook files but
-never runs them. *Why:* native plugins survive upgrades and keep hooks in one
-audited place.
+copies; without the CLI the canon keeps arriving as files and the registration
+command is printed (`unverifiable`). A failed or unverified attempt is not
+retried on every sync — the retry is explicit, `beadle bundles enable <host>`,
+and a rendered canon change reopens it once; a host you disabled by hand stays
+disabled until you enable it again. `bundles disable` materializes everything
+back. Beadle writes hook files but never runs them. Cursor and Codex have no
+bundle host: their approved hooks render into the user-level
+`~/.cursor/hooks.json` and `~/.codex/hooks.json` instead, foreign hooks are
+kept, and Codex asks you to review new hooks in `/hooks` before they run.
+*Why:* native plugins survive upgrades and keep hooks in one audited place.
 
 </details>
 
 <details>
-<summary><b>Project scope</b> — opt-in per repository; without a policy nothing is touched</summary>
+<summary><b>Agent Plugins export</b> — the canon as a portable Agent Plugins v1.0.0 package (skills + MCP)</summary>
+
+`beadle export agent-plugins --out DIR` renders the canon into the portable
+format: a closed-schema `plugin.json`, the skill trees (`skills/<name>/**`;
+discovery is the immediate child with a `SKILL.md`, the rest of the tree — scripts,
+references — is copied along), and `mcp.json` with its `$schema`/`mcpServers`
+wrapper and the closed transport union (`stdio`, `streamable-http`, `sse`).
+Servers are portable only when they stay inside the package: `${PLUGIN_ROOT}`
+and relative references (in `command`, `args`, `env`, including behind spaces,
+flags or `=`) must not climb above the root, and `command` must be a bare name
+or a `./relative` path — it is never interpolated. `${VAR}` secrets are kept as
+references, never expanded, and a client-side reference in `url`/`headers`/`env`
+draws a warning: portable clients do not expand it, so that authentication stays
+the client's own. The render is deterministic and idempotent, beadle-owned stale
+files are removed on re-export, and a foreign file in `DIR` is never touched.
+Commands, hooks, agents, rules and plugin-sourced components are outside the v1
+pilot. *Why:* one conformant package a portable host can install, without
+handing it your secrets.
+
+</details>
+
+<details>
+<summary><b>Project scope</b> — per repository; <code>init</code> enables the present files, secrets stay out</summary>
 
 [Project scope](#project-scope) names the files and the commands.
 
@@ -246,11 +325,13 @@ benefit.
 </details>
 
 <details>
-<summary><b>Permissions</b> (opt-in) — tool, shell and MCP rules as one set, merged with <code>deny &gt; ask &gt; allow</code></summary>
+<summary><b>Permissions</b> (default on) — tool, shell and MCP rules as one set, merged with <code>deny &gt; ask &gt; allow</code></summary>
 
 Agent-local defaults and path globs stay local; keys must be canonical
 (`tool:` names lowercase), and `doctor` warns about keys no codec can apply.
-*Why:* permission policy is currently retyped in every agent.
+Since config v3 the permissions kind is synchronized by default; opt out with
+`beadle kinds disable permissions`. *Why:* permission policy is currently
+retyped in every agent.
 
 </details>
 
@@ -289,7 +370,7 @@ graph becomes the audit trail. File-backed kinds only. Details:
 
 | Command | Purpose |
 |---|---|
-| `init [--agents a,b]` | create the vault, register detected agents |
+| `init [--agents a,b] [--no-daemon] [--daemon]` | create the vault, enable detected agents, wire the defaults (bundles, project files, watcher) |
 | `sync [--dry-run] [--kind k]` | full cycle: pull, merge, push |
 | `pull` / `push` | one direction only (`push` overwrites local agent edits) |
 | `status [--check]` / `diff [--agent id]` | agents, modes and conflicts / what a sync would change |
@@ -313,8 +394,11 @@ graph becomes the audit trail. File-backed kinds only. Details:
 | `watch` / `daemon` | background sync, autostart service |
 | `secrets list\|set\|rm\|prune\|migrate` | credential values; never printed |
 | `plugins pins\|pin\|unpin` | per-agent plugin version pins |
-| `hooks list\|add\|rm\|approve\|revoke` | lifecycle hooks canon (never executed by beadle) |
-| `bundles status\|enable\|disable` | native host bundles and their registration |
+| `export agent-plugins --out DIR` | render the canon (skills + MCP) as an Agent Plugins v1.0.0 package |
+| `hooks list\|add\|rm\|approve\|revoke` | lifecycle hooks canon: rendered into native bundles and the Cursor/Codex hooks files (never executed by beadle); `approve --plugin <key>` adopts the command hooks of an installed plugin |
+| `skills seed\|adopt\|unadopt` | the built-in skill, foreign-copy adoption and its restore |
+| `explain <skill>` | which copy of a canon skill each host can read |
+| `bundles status\|enable [host]\|disable [host]` | native host bundles and their registration |
 | `rulings list\|show\|trust\|forget` | remembered conflict decisions applied only on an exact, non-blast-radius match |
 | `project status\|enable <file>\|disable <file>\|forget <file>` | per-repository project scope; nothing happens without an enabled policy |
 
@@ -323,14 +407,17 @@ Global flags: `--vault` (default `~/.beadle`, or `$BEADLE_HOME`), `--verbose`,
 
 ## Project scope
 
-Project scope is opt-in per repository: `beadle project enable <file>` records
-the file in the vault-side policy of the current project, and
-`beadle project status|disable|forget` manages it. Without a policy nothing in
-a repository is touched; `doctor` keeps reporting foreign `.mcp.json` /
-`projects.*` collisions.
+`beadle init` in a git checkout enables the project files that are present on
+disk, with secrets kept out; `beadle project enable <file>` records a file
+manually, and `beadle project status|disable|forget` manages the policy.
+Without a policy (or outside a git checkout) nothing in a repository is
+touched; `doctor` keeps reporting foreign `.mcp.json` / `projects.*`
+collisions. Secret values materialize only in gitignored files; a git-tracked
+file needs the explicit per-file opt-in (`beadle project enable <file>
+--allow-secrets`).
 
-The files are `.mcp.json`, `.cursor/mcp.json`, `.cursor/rules/*.mdc`,
-`.agents/mcp_config.json`, `AGENTS.md` and `GEMINI.md`. Project identity comes
+The files are `.mcp.json`, `.claude/rules/*.md`, `.cursor/mcp.json`,
+`.cursor/rules/*.mdc`, `.agents/mcp_config.json`, `AGENTS.md` and `GEMINI.md`. Project identity comes
 from the git origin, so clones and worktrees converge; a missing file is never
 treated as a deletion — `project forget` removes scope, a sync never does.
 *Why:* the config that matters most is per-repo, and repos are where a
@@ -373,7 +460,7 @@ make mod     # go mod tidy && go mod vendor (deps are vendored)
 ```
 
 Layout: `cmd/beadle`,
-`pkg/{cli,vault,config,state,cas,fsutil,merge,kind,agent,engine,project,lock,watch,daemon,history,secret,mcp,skill,permission}`.
+`pkg/{cli,vault,config,state,cas,fsutil,merge,kind,agent,engine,project,lock,watch,daemon,history,secret,mcp,skill,permission,subagent,command,frontmatter,bundle,digest,hooks,inbox,plugin,rulings,skills}`.
 
 </details>
 

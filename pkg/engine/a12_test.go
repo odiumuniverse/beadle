@@ -44,7 +44,9 @@ func TestSkillShadowWarnsOnDivergentContent(t *testing.T) {
 		f := newFixture(t)
 		f.emptyConfigs(t)
 
-		write(t, f.openCodeSkill("alpha"), "# one\n")
+		cursorHost(t, f)
+
+		write(t, filepath.Join(f.home, ".cursor", "skills", "alpha", "SKILL.md"), "# one\n")
 		write(t, f.sharedSkill("alpha"), "# two\n")
 
 		issue := findShadowIssue(t, shadowIssues(t, f), "alpha")
@@ -52,8 +54,8 @@ func TestSkillShadowWarnsOnDivergentContent(t *testing.T) {
 		Convey("When doctor runs", func() {
 			Convey("Then a warning names both directories", func() {
 				So(issue.Severity, ShouldEqual, engine.SeverityWarn)
-				So(issue.Agent, ShouldEqual, agent.OpenCodeID)
-				So(issue.Message, ShouldContainSubstring, "~/.config/opencode/skills")
+				So(issue.Agent, ShouldEqual, agent.CursorID)
+				So(issue.Message, ShouldContainSubstring, "~/.cursor/skills")
 				So(issue.Message, ShouldContainSubstring, "~/.agents/skills")
 				So(issue.Message, ShouldContainSubstring, "keep one copy or align the contents")
 			})
@@ -68,7 +70,9 @@ func TestSkillShadowSilentOnIdenticalContent(t *testing.T) {
 		f := newFixture(t)
 		f.emptyConfigs(t)
 
-		write(t, f.openCodeSkill("alpha"), "# one\n")
+		cursorHost(t, f)
+
+		write(t, filepath.Join(f.home, ".cursor", "skills", "alpha", "SKILL.md"), "# one\n")
 		write(t, f.sharedSkill("alpha"), "# one\n")
 
 		Convey("When doctor runs", func() {
@@ -86,7 +90,9 @@ func TestSkillShadowSilentOnSingleCopy(t *testing.T) {
 		f := newFixture(t)
 		f.emptyConfigs(t)
 
-		write(t, f.openCodeSkill("alpha"), "# one\n")
+		cursorHost(t, f)
+
+		write(t, filepath.Join(f.home, ".cursor", "skills", "alpha", "SKILL.md"), "# one\n")
 
 		issues := shadowIssues(t, f)
 
@@ -109,7 +115,9 @@ func TestSkillShadowSkipsJunkTails(t *testing.T) {
 		f := newFixture(t)
 		f.emptyConfigs(t)
 
-		write(t, f.openCodeSkill("alpha"), "# one\n")
+		cursorHost(t, f)
+
+		write(t, filepath.Join(f.home, ".cursor", "skills", "alpha", "SKILL.md"), "# one\n")
 		write(t, f.sharedSkill("alpha"), "# one\n")
 		write(t, filepath.Join(f.home, ".agents", "skills", "alpha", ".DS_Store"), "junk\n")
 
@@ -127,10 +135,7 @@ func TestSkillShadowPerAgent(t *testing.T) {
 
 		f := newFixture(t)
 		f.emptyConfigs(t)
-		f.config.Enable(agent.CursorID)
-		So(f.config.Save(f.vault.ConfigPath()), ShouldBeNil)
-
-		write(t, filepath.Join(f.home, ".cursor", "mcp.json"), `{"mcpServers": {}}`)
+		cursorHost(t, f)
 
 		write(t, filepath.Join(f.home, ".claude", "skills", "alpha", "SKILL.md"), "# one\n")
 		write(t, f.sharedSkill("alpha"), "# two\n")
@@ -146,8 +151,11 @@ func TestSkillShadowPerAgent(t *testing.T) {
 		}
 
 		Convey("When doctor runs", func() {
-			Convey("Then each affected agent gets its own issue", func() {
-				So(agents, ShouldResemble, map[string]int{agent.OpenCodeID: 1, agent.CursorID: 1})
+			Convey("Then the fail-open agent warns and the verified one collapses", func() {
+				// OpenCode v2.0.12 keeps one copy (the .agents one wins), so
+				// the divergent .claude copy is invisible there (A-20).
+				So(agents, ShouldResemble, map[string]int{agent.CursorID: 1})
+				So(agents, ShouldNotContainKey, agent.OpenCodeID)
 			})
 		})
 	})

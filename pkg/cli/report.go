@@ -53,8 +53,70 @@ func printReport(w io.Writer, report *engine.Report) {
 
 	printRulingEvents(w, report)
 
+	printBundleSection(w, report.Bundles)
+
+	for _, note := range report.Notes {
+		fmt.Fprintf(w, "note: %s\n", note)
+	}
+
 	for _, warning := range report.Warnings {
 		fmt.Fprintf(w, "warning: %s\n", warning)
+	}
+}
+
+// bundleLines renders one line per bundle action; the same lines serve
+// `beadle sync`, `beadle init` and `beadle bundles`.
+func bundleLines(results []engine.BundleResult) []string {
+	var lines []string
+
+	for _, result := range results {
+		line := fmt.Sprintf("  %-13s %s", result.Host, result.Action)
+
+		if result.Auto {
+			line += " (auto)"
+		}
+
+		if result.Version != "" {
+			line += " " + result.Version
+		}
+
+		if result.Registered {
+			line += " (registered)"
+		}
+
+		if result.Tier != "" {
+			line += " " + result.Tier
+		}
+
+		if result.Note != "" {
+			line += ": " + result.Note
+		}
+
+		lines = append(lines, line)
+
+		if len(result.Withdrawn) > 0 {
+			lines = append(lines, "    withdrew: "+strings.Join(result.Withdrawn, ", "))
+		}
+
+		if len(result.Kept) > 0 {
+			lines = append(lines, "    kept: "+strings.Join(result.Kept, ", "))
+		}
+	}
+
+	return lines
+}
+
+// printBundleSection renders the bundle lines of a report with a header.
+func printBundleSection(w io.Writer, results []engine.BundleResult) {
+	lines := bundleLines(results)
+	if len(lines) == 0 {
+		return
+	}
+
+	fmt.Fprintln(w, "\nbundles")
+
+	for _, line := range lines {
+		fmt.Fprintln(w, line)
 	}
 }
 
@@ -121,13 +183,13 @@ func pluginLines(results []engine.PluginResult, farm []engine.FarmResult) []stri
 	for _, result := range farm {
 		switch result.Action {
 		case engine.FarmLinked:
-			lines = append(lines, fmt.Sprintf("  ⇢ %-13s %s: linked %d", result.Agent, result.Plugin, result.Count))
+			lines = append(lines, fmt.Sprintf("  ⇢ %-13s %-9s %s: linked %d", result.Agent, result.Kind, result.Plugin, result.Count))
 		case engine.FarmStubbed:
-			lines = append(lines, fmt.Sprintf("  ⚑ %-13s %s: stubbed %d", result.Agent, result.Plugin, result.Count))
+			lines = append(lines, fmt.Sprintf("  ⚑ %-13s %-9s %s: stubbed %d", result.Agent, result.Kind, result.Plugin, result.Count))
 		case engine.FarmPruned:
-			lines = append(lines, fmt.Sprintf("  ⇠ %-13s %s: pruned %d", result.Agent, result.Plugin, result.Count))
+			lines = append(lines, fmt.Sprintf("  ⇠ %-13s %-9s %s: pruned %d", result.Agent, result.Kind, result.Plugin, result.Count))
 		case engine.FarmSkipped:
-			lines = append(lines, fmt.Sprintf("  ! %-13s %s: skipped (%s)", result.Agent, result.Plugin, result.Note))
+			lines = append(lines, fmt.Sprintf("  ! %-13s %-9s %s: skipped (%s)", result.Agent, result.Kind, result.Plugin, result.Note))
 		case engine.FarmNoop:
 		}
 	}

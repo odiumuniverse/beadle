@@ -50,6 +50,8 @@ var dirs = []string{
 	"rulings",
 	"skills",
 	"state",
+	"subagents",
+	"commands",
 }
 
 type Vault struct {
@@ -119,6 +121,16 @@ func (v *Vault) SkillsDir() string {
 
 func (v *Vault) MemoryDir() string {
 	return filepath.Join(v.root, "memory")
+}
+
+// SubagentsDir returns the vault directory holding the subagent canon.
+func (v *Vault) SubagentsDir() string {
+	return filepath.Join(v.root, "subagents")
+}
+
+// CommandsDir returns the vault directory holding the command canon.
+func (v *Vault) CommandsDir() string {
+	return filepath.Join(v.root, "commands")
 }
 
 // ProjectsDir returns the vault directory holding the project rules canon.

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -80,12 +79,13 @@ func (a *app) newBundlesToggleCmd(enable bool) *cobra.Command {
 	var host string
 
 	cmd := &cobra.Command{
-		Use:   use,
+		Use:   use + " [host]",
 		Short: short,
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			if host == "" {
-				return errors.New("--host is required")
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			host, err := bundleHostArg(args, host)
+			if err != nil {
+				return err
 			}
 
 			e, err := a.engine()
@@ -111,42 +111,34 @@ func (a *app) newBundlesToggleCmd(enable bool) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&host, "host", "", "bundle host: claude, gemini or antigravity")
+	cmd.Flags().StringVar(&host, "host", "", "bundle host: claude, gemini or antigravity (positional works too)")
 
 	return cmd
+}
+
+// bundleHostArg accepts the host positionally (the form every hint prints) or
+// through --host; the two must not disagree.
+func bundleHostArg(args []string, host string) (string, error) {
+	if len(args) == 0 {
+		if host == "" {
+			return "", errors.New("host is required: beadle bundles enable claude")
+		}
+
+		return host, nil
+	}
+
+	if host != "" && host != args[0] {
+		return "", fmt.Errorf("host %q does not match --host %q", args[0], host)
+	}
+
+	return args[0], nil
 }
 
 func printBundleReport(cmd *cobra.Command, report engine.Report) {
 	out := cmd.OutOrStdout()
 
-	for _, result := range report.Bundles {
-		line := fmt.Sprintf("  %-13s %s", result.Host, result.Action)
-
-		if result.Version != "" {
-			line += " " + result.Version
-		}
-
-		if result.Registered {
-			line += " (registered)"
-		}
-
-		if result.Tier != "" {
-			line += " " + result.Tier
-		}
-
-		if result.Note != "" {
-			line += ": " + result.Note
-		}
-
+	for _, line := range bundleLines(report.Bundles) {
 		fmt.Fprintln(out, line)
-
-		if len(result.Withdrawn) > 0 {
-			fmt.Fprintln(out, "    withdrew: "+strings.Join(result.Withdrawn, ", "))
-		}
-
-		if len(result.Kept) > 0 {
-			fmt.Fprintln(out, "    kept: "+strings.Join(result.Kept, ", "))
-		}
 	}
 
 	for _, warning := range report.Warnings {

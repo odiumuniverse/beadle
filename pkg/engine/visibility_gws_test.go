@@ -49,25 +49,48 @@ func setSkillMode(t *testing.T, f *fixture, agentID string, mode config.Mode) {
 	}
 }
 
+// cursorHost enables Cursor with its config file and skills directory on
+// disk. Cursor is the fail-open multi-directory host: it reads
+// ~/.claude/skills and ~/.agents/skills without collapsing them.
+func cursorHost(t *testing.T, f *fixture) {
+	t.Helper()
+
+	f.config.Enable(agent.CursorID)
+
+	if err := f.config.Save(f.vault.ConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	write(t, filepath.Join(f.home, ".cursor", "mcp.json"), `{"mcpServers": {}}`)
+
+	if err := os.MkdirAll(filepath.Join(f.home, ".cursor", "skills"), 0o750); err != nil {
+		t.Fatalf("mkdir cursor skills: %v", err)
+	}
+}
+
+// cursorWritesSkills enables Cursor as a writing skills host.
+func cursorWritesSkills(t *testing.T, f *fixture) {
+	t.Helper()
+
+	cursorHost(t, f)
+	setSkillMode(t, f, agent.CursorID, config.ModeSync)
+	setSkillMode(t, f, agent.ClaudeCodeID, config.ModeOff)
+}
+
 func TestSyncReleasesForeignCoveredOwnCopy(t *testing.T) {
-	Convey("Given an opencode host that writes skills and a foreign copy of the canon name", t, func() {
+	Convey("Given a cursor host that writes skills and a foreign copy of the canon name", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := newFixture(t)
 		f.emptyConfigs(t)
 
-		setSkillMode(t, f, agent.OpenCodeID, config.ModeSync)
-		setSkillMode(t, f, agent.ClaudeCodeID, config.ModeOff)
+		cursorWritesSkills(t, f)
 
 		write(t, f.vaultSkill("alpha"), "# alpha\n")
 
-		if err := os.MkdirAll(filepath.Join(f.home, ".config", "opencode", "skills"), 0o750); err != nil {
-			t.Fatalf("mkdir opencode skills: %v", err)
-		}
-
 		f.sync(t)
 
-		ownDir := filepath.Join(f.home, ".config", "opencode", "skills", "alpha")
+		ownDir := filepath.Join(f.home, ".cursor", "skills", "alpha")
 		So(fsutil.Exists(ownDir), ShouldBeTrue)
 
 		foreignSkill(t, f, "alpha", "# alpha\n")
@@ -82,7 +105,7 @@ func TestSyncReleasesForeignCoveredOwnCopy(t *testing.T) {
 				So(read(t, filepath.Join(f.home, "skills-src", "alpha", "SKILL.md")), ShouldEqual, "# alpha\n")
 				So(read(t, f.vaultSkill("alpha")), ShouldEqual, "# alpha\n")
 				So(strings.Join(kr.Warnings, " "), ShouldContainSubstring, "is also delivered by")
-				So(f.conflicts(t, kind.Skills, agent.OpenCodeID), ShouldBeEmpty)
+				So(f.conflicts(t, kind.Skills, agent.CursorID), ShouldBeEmpty)
 			})
 
 			Convey("Then a second sync is idempotent", func() {
@@ -106,24 +129,19 @@ func TestSyncReleasesForeignCoveredOwnCopy(t *testing.T) {
 }
 
 func TestSyncKeepsOwnCopyWhenForeignForked(t *testing.T) {
-	Convey("Given an opencode host whose foreign copy drifted", t, func() {
+	Convey("Given a cursor host whose foreign copy drifted", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := newFixture(t)
 		f.emptyConfigs(t)
 
-		setSkillMode(t, f, agent.OpenCodeID, config.ModeSync)
-		setSkillMode(t, f, agent.ClaudeCodeID, config.ModeOff)
+		cursorWritesSkills(t, f)
 
 		write(t, f.vaultSkill("alpha"), "# alpha\n")
 
-		if err := os.MkdirAll(filepath.Join(f.home, ".config", "opencode", "skills"), 0o750); err != nil {
-			t.Fatalf("mkdir opencode skills: %v", err)
-		}
-
 		f.sync(t)
 
-		ownDir := filepath.Join(f.home, ".config", "opencode", "skills", "alpha")
+		ownDir := filepath.Join(f.home, ".cursor", "skills", "alpha")
 		So(fsutil.Exists(ownDir), ShouldBeTrue)
 
 		foreignSkill(t, f, "alpha", "# alpha v2\n")
@@ -167,17 +185,23 @@ func TestDoctorVisibilityIssues(t *testing.T) {
 			issues, err := f.engine.Doctor(t.Context())
 			So(err, ShouldBeNil)
 
-			Convey("Then the fork is reported once per name", func() {
-				forks := 0
+			Convey("Then the fork is reported once, on the shadowing winner", func() {
+				var (
+					forks    int
+					forkWarn string
+				)
 
 				for _, issue := range issues {
 					if issue.Agent == agent.OpenCodeID && issue.Severity == engine.SeverityWarn &&
 						strings.Contains(issue.Message, "differs between the canon") {
 						forks++
+						forkWarn = issue.Message
 					}
 				}
 
 				So(forks, ShouldEqual, 1)
+				So(forkWarn, ShouldContainSubstring, filepath.Join(".agents", "skills", "alpha"))
+				So(forkWarn, ShouldNotContainSubstring, filepath.Join(".claude", "skills", "alpha"))
 			})
 
 			Convey("And the foreign coverage is reported as info", func() {

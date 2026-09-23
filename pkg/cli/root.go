@@ -26,7 +26,7 @@ func Execute(opts Options) error {
 }
 
 func newRootCmd(opts Options) *cobra.Command {
-	a := &app{logger: embedlog.NewDevLogger()}
+	a := &app{logger: embedlog.NewDevLogger(), errOut: os.Stderr}
 
 	var verbose, logJSON bool
 
@@ -38,7 +38,9 @@ func newRootCmd(opts Options) *cobra.Command {
 			"you own. Change them in any agent: the others follow. Real files, 3-way merges,\n" +
 			"no symlinks; conflicts wait for you instead of being guessed.",
 		Version: opts.Version,
-		PersistentPreRun: func(_ *cobra.Command, _ []string) {
+		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
+			a.errOut = cmd.ErrOrStderr()
+
 			if verbose || logJSON {
 				a.logger = embedlog.NewLogger(verbose, logJSON)
 			}

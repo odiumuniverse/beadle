@@ -11,14 +11,17 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/odiumuniverse/beadle/pkg/cas"
+	"github.com/odiumuniverse/beadle/pkg/command"
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/memory"
 	"github.com/odiumuniverse/beadle/pkg/permission"
 	"github.com/odiumuniverse/beadle/pkg/skill"
 	"github.com/odiumuniverse/beadle/pkg/state"
+	"github.com/odiumuniverse/beadle/pkg/subagent"
 )
 
 func (e *Engine) loadVault(k kind.ID) (kind.Items, bool, error) {
@@ -54,6 +57,12 @@ func (e *Engine) loadVault(k kind.ID) (kind.Items, bool, error) {
 		return guarded, extracted > 0, nil
 	case kind.Projects:
 		items, err := e.loadProjects()
+
+		return items, false, err
+	case kind.Subagents, kind.Commands:
+		dir, load := e.flatCanon(k)
+
+		items, err := load(dir)
 
 		return items, false, err
 	default:
@@ -157,6 +166,10 @@ func (e *Engine) saveVault(k kind.ID, items kind.Items) error {
 		return saveNotesDir(e.vault.MemoryDir(), "memory", guarded)
 	case kind.Projects:
 		return e.saveProjects(items)
+	case kind.Subagents, kind.Commands:
+		dir, load := e.flatCanon(k)
+
+		return saveFlatCanon(dir, items, load)
 	case kind.Permissions:
 		rules := make(map[string]string, len(items))
 
@@ -347,6 +360,106 @@ func (e *Engine) blob(hash cas.Hash) ([]byte, error) {
 	}
 
 	return data, nil
+}
+
+// loadFlatCanon reads the markdown canon of a vault directory: every
+// regular `.md` file whose name is a canonical slug and whose contents pass
+// valid. Documentation, symlinks and directories stay out.
+func loadFlatCanon(dir string, valid func(name string, data []byte) bool) (kind.Items, error) {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return kind.Items{}, nil
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", dir, err)
+	}
+
+	items := kind.Items{}
+
+	for _, entry := range entries {
+		name := entry.Name()
+
+		if !entry.Type().IsRegular() || !strings.HasSuffix(name, ".md") {
+			continue
+		}
+
+		path := filepath.Join(dir, name)
+
+		data, err := os.ReadFile(path) //nolint:gosec // vault paths are resolved by the vault package
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+
+		if valid(strings.TrimSuffix(name, ".md"), data) {
+			items[name] = data
+		}
+	}
+
+	return items, nil
+}
+
+// loadSubagents reads the vault subagent canon: the frontmatter name must be
+// a valid slug and match the file name.
+func loadSubagents(dir string) (kind.Items, error) {
+	return loadFlatCanon(dir, func(name string, data []byte) bool {
+		doc, err := subagent.Parse(data)
+
+		return err == nil && subagent.ValidName(doc.Name) && doc.Name == name
+	})
+}
+
+// loadCommands reads the vault command canon: the file name is the identity,
+// so the name itself must be a valid slug.
+func loadCommands(dir string) (kind.Items, error) {
+	return loadFlatCanon(dir, func(name string, data []byte) bool {
+		if !command.ValidName(name) {
+			return false
+		}
+
+		_, err := command.Parse(data)
+
+		return err == nil
+	})
+}
+
+// saveFlatCanon writes the items as markdown files and removes the regular
+// files that are no longer part of the canon. load reads the current canon.
+func saveFlatCanon(dir string, items kind.Items, load func(string) (kind.Items, error)) error {
+	current, err := load(dir)
+	if err != nil {
+		return err
+	}
+
+	for _, name := range slices.Sorted(maps.Keys(current)) {
+		if _, keep := items[name]; keep {
+			continue
+		}
+
+		path := filepath.Join(dir, name)
+
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("remove %s: %w", path, err)
+		}
+	}
+
+	for _, name := range slices.Sorted(maps.Keys(items)) {
+		if err := writeVaultFile(filepath.Join(dir, name), items[name]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// flatCanon returns the vault directory and the loader of a flat markdown
+// canon.
+func (e *Engine) flatCanon(k kind.ID) (string, func(string) (kind.Items, error)) {
+	if k == kind.Commands {
+		return e.vault.CommandsDir(), loadCommands
+	}
+
+	return e.vault.SubagentsDir(), loadSubagents
 }
 
 func readOptional(path string) ([]byte, bool, error) {

@@ -192,6 +192,42 @@ func TestResolveVisibility(t *testing.T) {
 	}
 }
 
+func TestVisibleBundleFallback(t *testing.T) {
+	canon := canonTrees()
+	digest := skill.TreeDigest(canon["alpha"])
+
+	caps := agent.SkillCaps{Shadowing: true, NamespacedBundle: false}
+
+	Convey("Given a shadowing host with only an un-namespaced bundle copy", t, func() {
+		vis := resolveVisibility(canon, []provider{alphaProvider(classBundle, "/bundle", digest)}, caps, channels{bundle: true})
+
+		Convey("When the visible set is computed", func() {
+			visible := vis.Skills["alpha"].visible(caps, vis.order())
+
+			Convey("Then the bundle copy is what the host shows", func() {
+				So(visible, ShouldHaveLength, 1)
+				So(visible[0].class, ShouldEqual, classBundle)
+			})
+		})
+	})
+
+	Convey("Given a shadowing host with a file copy next to the bundle copy", t, func() {
+		vis := resolveVisibility(canon, []provider{
+			alphaProvider(classOwn, "/own", digest),
+			alphaProvider(classBundle, "/bundle", digest),
+		}, caps, channels{bundle: true})
+
+		Convey("When the visible set is computed", func() {
+			visible := vis.Skills["alpha"].visible(caps, vis.order())
+
+			Convey("Then the file winner shadows the un-namespaced bundle copy", func() {
+				So(visible, ShouldHaveLength, 1)
+				So(visible[0].class, ShouldEqual, classOwn)
+			})
+		})
+	})
+}
+
 func TestResolveVisibilityChannels(t *testing.T) {
 	cases := []struct {
 		name   string

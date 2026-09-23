@@ -136,6 +136,7 @@ func TestFarmReportsUnsupportedSymlinks(t *testing.T) {
 				So(warns, ShouldBeEmpty)
 				So(results, ShouldResemble, []FarmResult{{
 					Agent:  agent.ClaudeCodeID,
+					Kind:   kind.Skills,
 					Action: FarmSkipped,
 					Note:   "symlinks are not supported in " + failingDir + "; a copy fallback is intentionally not performed",
 				}})
@@ -149,6 +150,7 @@ func TestFarmReportsUnsupportedSymlinks(t *testing.T) {
 				So(otherWarns, ShouldBeEmpty)
 				So(otherResults, ShouldResemble, []FarmResult{{
 					Agent:  agent.OpenCodeID,
+					Kind:   kind.Skills,
 					Plugin: "acme/tool",
 					Action: FarmLinked,
 					Count:  2,

@@ -45,7 +45,7 @@ func (a *app) newDiffCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringSliceVar(&kinds, "kind", nil, "only these kinds (rules, mcp, skills, permissions, memory, projects)")
+	cmd.Flags().StringSliceVar(&kinds, "kind", nil, "only these kinds (rules, mcp, skills, permissions, memory, projects, subagents, commands)")
 	cmd.Flags().StringVar(&agentID, "agent", "", "only this agent")
 
 	return cmd

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -57,17 +58,37 @@ func (a *app) watchSync(ctx context.Context) error {
 		return err
 	}
 
-	for _, message := range report.Errors() {
-		a.logger.Error(ctx, "sync error", "error", message)
-	}
-
-	if n := len(report.Conflicts); n > 0 {
-		a.logger.Error(ctx, "open conflicts wait for beadle resolve", "conflicts", n)
-	}
+	a.logSyncReport(ctx, report)
 
 	if report.VaultChanged() || report.Pushed() {
 		a.logger.Print(ctx, "synced", "vault_changed", report.VaultChanged(), "pushed", report.Pushed())
 	}
 
 	return nil
+}
+
+// logSyncReport writes the lines a background sync must not lose: the
+// interactive report is not printed there, so warnings and bundle results
+// (including the explicit retry command of a failed probe) would otherwise
+// vanish from the daemon log.
+func (a *app) logSyncReport(ctx context.Context, report *engine.Report) {
+	for _, message := range report.Errors() {
+		a.logger.Error(ctx, "sync error", "error", message)
+	}
+
+	for _, warning := range report.Warnings {
+		a.logger.Print(ctx, "sync warning", "warning", warning)
+	}
+
+	for _, note := range report.Notes {
+		a.logger.Print(ctx, "sync note", "note", note)
+	}
+
+	for _, line := range bundleLines(report.Bundles) {
+		a.logger.Print(ctx, "bundle: "+strings.TrimSpace(line))
+	}
+
+	if n := len(report.Conflicts); n > 0 {
+		a.logger.Error(ctx, "open conflicts wait for beadle resolve", "conflicts", n)
+	}
 }

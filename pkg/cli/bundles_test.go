@@ -112,7 +112,11 @@ func TestBundlesCommands(t *testing.T) {
 
 			_, err = runCLI(t, "bundles", "enable")
 			So(err, ShouldBeError)
-			So(err.Error(), ShouldContainSubstring, "--host is required")
+			So(err.Error(), ShouldContainSubstring, "host is required")
+
+			_, err = runCLI(t, "bundles", "enable", "claude", "--host", "gemini")
+			So(err, ShouldBeError)
+			So(err.Error(), ShouldContainSubstring, "does not match")
 
 			_, err = runCLI(t, "bundles", "enable", "--host", "cursor")
 			So(err, ShouldBeError)

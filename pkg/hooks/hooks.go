@@ -18,16 +18,43 @@ import (
 
 const MaxTimeout = 600
 
+// SourcePluginPrefix marks a canon hook approved from an installed plugin;
+// the rest of the value is the plugin key (<marketplace>/<name>).
+const SourcePluginPrefix = "plugin:"
+
 type Hook struct {
 	Event   string `json:"event"`
 	Matcher string `json:"matcher,omitempty"`
 	Command string `json:"command"`
 	Timeout int    `json:"timeout,omitempty"`
+	// Source records where the hook came from; empty for authored hooks and
+	// "plugin:<marketplace>/<name>" for hooks approved from a plugin.
+	Source string `json:"source,omitempty"`
 }
+
+// PluginKey returns the plugin key of a plugin-sourced hook and whether the
+// hook carries one.
+func (h Hook) PluginKey() (string, bool) {
+	key, ok := strings.CutPrefix(h.Source, SourcePluginPrefix)
+	if !ok || key == "" {
+		return "", false
+	}
+
+	return key, true
+}
+
+// Canon event names; host renderers map them to the host vocabulary.
+const (
+	EventNotification = "notification"
+	EventPostTool     = "post-tool"
+	EventPreTool      = "pre-tool"
+	EventSessionStart = "session-start"
+	EventStop         = "stop"
+)
 
 var (
 	namePattern = regexp.MustCompile(`^[a-z0-9-]+$`)
-	events      = []string{"notification", "post-tool", "pre-tool", "session-start", "stop"}
+	events      = []string{EventNotification, EventPostTool, EventPreTool, EventSessionStart, EventStop}
 )
 
 func Events() []string {

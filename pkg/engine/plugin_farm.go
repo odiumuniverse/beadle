@@ -55,6 +55,7 @@ const (
 
 type FarmResult struct {
 	Agent  string     `json:"agent"`
+	Kind   kind.ID    `json:"kind"`
 	Plugin string     `json:"plugin"`
 	Action FarmAction `json:"action"`
 	Count  int        `json:"count,omitempty"`
@@ -80,11 +81,35 @@ func (e *Engine) syncPluginSurfaces(ctx context.Context, report *Report, active 
 
 	report.Plugins = results
 
-	if opts.Direction == config.ModePull || !selected(opts.Kinds, kind.Skills) {
+	if opts.Direction == config.ModePull {
 		return
 	}
 
-	farm, farmWarnings := e.farmPluginSkills(active)
+	var (
+		farm         []FarmResult
+		farmWarnings []string
+	)
+
+	if selected(opts.Kinds, kind.Skills) {
+		skills, skillsWarnings := e.farmPluginSkills(active)
+
+		farm = append(farm, skills...)
+		farmWarnings = append(farmWarnings, skillsWarnings...)
+	}
+
+	if selected(opts.Kinds, kind.Subagents) {
+		agents, agentWarnings := e.farmPluginAgents(active)
+
+		farm = append(farm, agents...)
+		farmWarnings = append(farmWarnings, agentWarnings...)
+	}
+
+	if selected(opts.Kinds, kind.Commands) {
+		commands, commandWarnings := e.farmPluginCommands(active)
+
+		farm = append(farm, commands...)
+		farmWarnings = append(farmWarnings, commandWarnings...)
+	}
 
 	pruned, pruneWarnings := e.pruneLegacyOrphanLinks(orphansSafe)
 
@@ -457,10 +482,10 @@ func (e *Engine) farmAgentSkills(agentID, dir string, plan farmPlan) ([]FarmResu
 			continue
 		}
 
-		action, err := e.farmLinkSkill(dir, skillName, target)
+		action, err := e.farmLink(filepath.Join(dir, skillName), target)
 		switch {
 		case errors.Is(err, fsutil.ErrSymlinksUnsupported):
-			return []FarmResult{{Agent: agentID, Action: FarmSkipped, Note: symlinkUnsupportedNote(dir)}}, warns
+			return []FarmResult{{Agent: agentID, Kind: kind.Skills, Action: FarmSkipped, Note: symlinkUnsupportedNote(dir)}}, warns
 		case err != nil:
 			warns = append(warns, "plugin farm: "+err.Error())
 		case action == FarmLinked:
@@ -478,12 +503,12 @@ func (e *Engine) farmAgentSkills(agentID, dir string, plan farmPlan) ([]FarmResu
 
 	var results []FarmResult
 
-	results = append(results, farmResults(agentID, FarmStubbed, stubbed)...)
-	results = append(results, farmResults(agentID, FarmLinked, linked)...)
-	results = append(results, farmResults(agentID, FarmPruned, pruned)...)
+	results = append(results, farmResults(agentID, kind.Skills, FarmStubbed, stubbed)...)
+	results = append(results, farmResults(agentID, kind.Skills, FarmLinked, linked)...)
+	results = append(results, farmResults(agentID, kind.Skills, FarmPruned, pruned)...)
 
 	for _, plugin := range slices.Sorted(maps.Keys(skips)) {
-		results = append(results, FarmResult{Agent: agentID, Plugin: plugin, Action: FarmSkipped, Note: summarizeFarmNames(skips[plugin])})
+		results = append(results, FarmResult{Agent: agentID, Kind: kind.Skills, Plugin: plugin, Action: FarmSkipped, Note: summarizeFarmNames(skips[plugin])})
 	}
 
 	return results, warns
@@ -509,11 +534,11 @@ func symlinkUnsupportedNote(dir string) string {
 	return fmt.Sprintf("symlinks are not supported in %s; a copy fallback is intentionally not performed", dir)
 }
 
-func farmResults(agentID string, action FarmAction, counts map[string]int) []FarmResult {
+func farmResults(agentID string, k kind.ID, action FarmAction, counts map[string]int) []FarmResult {
 	results := make([]FarmResult, 0, len(counts))
 
 	for _, plugin := range slices.Sorted(maps.Keys(counts)) {
-		results = append(results, FarmResult{Agent: agentID, Plugin: plugin, Action: action, Count: counts[plugin]})
+		results = append(results, FarmResult{Agent: agentID, Kind: k, Plugin: plugin, Action: action, Count: counts[plugin]})
 	}
 
 	return results
@@ -623,9 +648,9 @@ func stubStillNeeded(plan farmPlan, key, name string) bool {
 	return quarantined
 }
 
-func (e *Engine) farmLinkSkill(dir, skillName, target string) (FarmAction, error) {
-	path := filepath.Join(dir, skillName)
-
+// farmLink presents one plugin item: it replaces beadle's own stale link,
+// keeps an up-to-date one, and leaves foreign entries untouched.
+func (e *Engine) farmLink(path, target string) (FarmAction, error) {
 	link, err := os.Readlink(path)
 	if err == nil {
 		switch {

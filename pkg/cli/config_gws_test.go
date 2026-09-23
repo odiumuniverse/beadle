@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +17,34 @@ import (
 func configFilePath(home string) string {
 	return filepath.Join(home, ".beadle", "config.json")
 }
+
+// gwsRunSplit runs the CLI with stdout and stderr captured separately, so a
+// test can pin which stream a line belongs to.
+func gwsRunSplit(t *testing.T, args ...string) (string, string, error) {
+	t.Helper()
+
+	root := newRootCmd(Options{Version: "test"})
+
+	var stdout, stderr bytes.Buffer
+
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs(args)
+	root.SilenceUsage = true
+
+	err := root.ExecuteContext(t.Context())
+
+	return stdout.String(), stderr.String(), err
+}
+
+const legacyV2Config = `{
+  "version": 2,
+  "permissions": "off",
+  "history": "git",
+  "secrets": "literal",
+  "agents": {"claude-code": {"enabled": true}}
+}
+`
 
 func fileStamp(t *testing.T, path string) (string, time.Time) {
 	t.Helper()
@@ -47,10 +78,141 @@ func TestInitWritesExplicitConfig(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				text := string(data)
-				So(text, ShouldContainSubstring, `"permissions": "off"`)
+				So(text, ShouldContainSubstring, `"permissions": "sync"`)
 				So(text, ShouldContainSubstring, `"history": "git"`)
 				So(text, ShouldContainSubstring, `"secrets": "literal"`)
 				So(text, ShouldContainSubstring, `"claude-code"`)
+			})
+		})
+	})
+}
+
+func TestInitEnablesSharedByDefault(t *testing.T) {
+	Convey("Given a fresh HOME", t, func() {
+		home := gwsHome(t)
+		gwsRules(t, home, "# r\n", "# r\n")
+
+		Convey("When init runs", func() {
+			out, err := gwsRun(t, "init")
+			So(err, ShouldBeNil)
+
+			Convey("Then the shared skills surface is enabled without opt-in", func() {
+				So(out, ShouldContainSubstring, "[x] Shared skills")
+				So(out, ShouldNotContainSubstring, "(opt-in:")
+
+				data, readErr := os.ReadFile(configFilePath(home)) //nolint:gosec // G304: test reads its own temp file
+				So(readErr, ShouldBeNil)
+				So(string(data), ShouldContainSubstring, `"shared": {`)
+				So(string(data), ShouldContainSubstring, `"enabled": true`)
+			})
+		})
+	})
+}
+
+func TestStatusMigrationStaysInMemory(t *testing.T) {
+	Convey("Given an initialized vault with a v2 config", t, func() {
+		home := gwsHome(t)
+		gwsRules(t, home, "# r\n", "# r\n")
+
+		if _, err := gwsRun(t, "init"); err != nil {
+			t.Fatal(err)
+		}
+
+		So(os.WriteFile(configFilePath(home), []byte(legacyV2Config), 0o600), ShouldBeNil)
+
+		before, beforeTime := fileStamp(t, configFilePath(home))
+
+		Convey("When status runs", func() {
+			out, err := gwsRun(t, "status")
+			So(err, ShouldBeNil)
+
+			Convey("Then the flips are rendered once and the file stays as loaded", func() {
+				So(out, ShouldContainSubstring, "config: permissions are synchronized by default now")
+				So(out, ShouldContainSubstring, "config: the shared skills surface")
+
+				after, afterTime := fileStamp(t, configFilePath(home))
+				So(after, ShouldEqual, before)
+				So(afterTime.Equal(beforeTime), ShouldBeTrue)
+			})
+
+			Convey("And --log-json still renders them", func() {
+				jsonOut, err := gwsRun(t, "--log-json", "status")
+				So(err, ShouldBeNil)
+				So(jsonOut, ShouldContainSubstring, "config: permissions are synchronized by default now")
+				So(jsonOut, ShouldContainSubstring, "config: the shared skills surface")
+			})
+
+			Convey("And status --check reports each flip exactly once", func() {
+				checkOut, err := gwsRun(t, "status", "--check")
+				So(err, ShouldBeNil)
+				So(strings.Count(checkOut, "config: permissions are synchronized by default now"), ShouldEqual, 1)
+				So(strings.Count(checkOut, "config: the shared skills surface"), ShouldEqual, 1)
+			})
+
+			Convey("When a real sync runs", func() {
+				syncOut, err := gwsRun(t, "sync")
+				So(err, ShouldBeNil)
+				So(syncOut, ShouldContainSubstring, "config: permissions are synchronized by default now")
+
+				data, readErr := os.ReadFile(configFilePath(home)) //nolint:gosec // G304: test reads its own temp file
+				So(readErr, ShouldBeNil)
+				So(string(data), ShouldContainSubstring, `"version": 3`)
+			})
+		})
+	})
+}
+
+func TestInitRendersMigrationNotes(t *testing.T) {
+	Convey("Given an initialized vault with a v2 config", t, func() {
+		home := gwsHome(t)
+		gwsRules(t, home, "# r\n", "# r\n")
+
+		if _, err := gwsRun(t, "init"); err != nil {
+			t.Fatal(err)
+		}
+
+		So(os.WriteFile(configFilePath(home), []byte(legacyV2Config), 0o600), ShouldBeNil)
+
+		Convey("When init runs again", func() {
+			out, err := gwsRun(t, "init")
+			So(err, ShouldBeNil)
+
+			Convey("Then the flips are rendered and the file carries v3", func() {
+				So(out, ShouldContainSubstring, "config: permissions are synchronized by default now")
+				So(out, ShouldContainSubstring, "config: the shared skills surface")
+
+				data, readErr := os.ReadFile(configFilePath(home)) //nolint:gosec // G304: test reads its own temp file
+				So(readErr, ShouldBeNil)
+				So(string(data), ShouldContainSubstring, `"version": 3`)
+			})
+		})
+	})
+}
+
+// TestMigrationNotesStayOnStderr pins the stream split: the one-time flips go
+// to stderr, so a machine-readable stdout (--json) is never corrupted.
+func TestMigrationNotesStayOnStderr(t *testing.T) {
+	Convey("Given an initialized vault with a v2 config", t, func() {
+		home := gwsHome(t)
+		gwsRules(t, home, "# r\n", "# r\n")
+
+		if _, err := gwsRun(t, "init"); err != nil {
+			t.Fatal(err)
+		}
+
+		So(os.WriteFile(configFilePath(home), []byte(legacyV2Config), 0o600), ShouldBeNil)
+
+		Convey("When a JSON command runs", func() {
+			stdout, stderr, err := gwsRunSplit(t, "conflicts", "--json")
+			So(err, ShouldBeNil)
+
+			Convey("Then the flips are on stderr and stdout stays valid JSON", func() {
+				So(stderr, ShouldContainSubstring, "config: permissions are synchronized by default now")
+				So(stderr, ShouldContainSubstring, "config: the shared skills surface")
+				So(stdout, ShouldNotContainSubstring, "config:")
+
+				var parsed map[string]any
+				So(json.Unmarshal([]byte(stdout), &parsed), ShouldBeNil)
 			})
 		})
 	})
@@ -73,7 +235,7 @@ func TestStatusHealsMissingConfig(t *testing.T) {
 			Convey("Then the config is recreated with defaults and an info line", func() {
 				data, readErr := os.ReadFile(configFilePath(home)) //nolint:gosec // G304: test reads its own temp file
 				So(readErr, ShouldBeNil)
-				So(string(data), ShouldContainSubstring, `"permissions": "off"`)
+				So(string(data), ShouldContainSubstring, `"permissions": "sync"`)
 				So(logs, ShouldContainSubstring, "config.json was missing; recreated with defaults")
 			})
 		})

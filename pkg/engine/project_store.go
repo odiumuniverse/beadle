@@ -283,6 +283,29 @@ func validProjectRel(rel string) bool {
 	return rel != "" && filepath.IsLocal(rel)
 }
 
+// rootRelativeRel reports whether rel belongs to a root-relative project
+// surface and to no cwd-relative one.
+func (e *Engine) rootRelativeRel(rel string) bool {
+	rootRelative, cwdRelative := false, false
+
+	for _, a := range e.agents {
+		for _, surface := range a.SurfacesOf(kind.Projects) {
+			file, ok := surface.(agent.ProjectFile)
+			if !ok || file.ProjectRel() != rel {
+				continue
+			}
+
+			if _, isRoot := surface.(agent.ProjectRootRel); isRoot {
+				rootRelative = true
+			} else {
+				cwdRelative = true
+			}
+		}
+	}
+
+	return rootRelative && !cwdRelative
+}
+
 func (e *Engine) projectPublishable(rel string) (bool, error) {
 	identity := e.projectIdentity()
 	if identity.Slugs {
@@ -300,6 +323,14 @@ func (e *Engine) projectPublishable(rel string) (bool, error) {
 func (e *Engine) projectRelFromRoot(rel string) string {
 	identity := e.projectIdentity()
 	if identity.Root == "" {
+		return rel
+	}
+
+	// A rel that only root-relative surfaces claim (the DSH instruction chain)
+	// already points from the checkout root; prefixing it again would look up
+	// the wrong file. With a cwd-relative surface on the same rel, the
+	// cwd-relative interpretation wins: that surface writes at cwd.
+	if e.rootRelativeRel(rel) {
 		return rel
 	}
 
@@ -418,6 +449,58 @@ func (e *Engine) projectStatus() (ProjectStatus, error) {
 	}
 
 	return status, nil
+}
+
+// ProjectEnableDetected enables every present project file of the known set,
+// keeping the secret policy untouched: secrets stay out unless the user opted
+// in per file (`beadle project enable <file> --allow-secrets`). It is the
+// init-time default for a git checkout; a plain directory is left alone, and
+// no file is created for a rel that is not on disk.
+func (e *Engine) ProjectEnableDetected(ctx context.Context) ([]string, error) {
+	release, err := e.lock(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	defer release()
+
+	if e.projectIdentity().Slugs {
+		return nil, nil
+	}
+
+	identity := e.projectIdentity()
+
+	policy, err := e.loadPolicy(identity.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	var enabled []string
+
+	for _, rel := range e.projectRels() {
+		if !e.projectRelPresent(rel) {
+			continue
+		}
+
+		if file, ok := policy.File(rel); ok && file.Enabled {
+			continue
+		}
+
+		policy = policy.With(rel, true, false)
+		enabled = append(enabled, rel)
+	}
+
+	if len(enabled) == 0 {
+		return nil, nil
+	}
+
+	if err := e.savePolicy(identity.ID, policy); err != nil {
+		return nil, err
+	}
+
+	e.policyLoaded = false
+
+	return enabled, nil
 }
 
 func (e *Engine) ProjectEnable(ctx context.Context, rel string, opts ProjectOptions) (ProjectStatus, error) {
@@ -650,7 +733,16 @@ func (e *Engine) projectRels() []string {
 }
 
 func (e *Engine) projectRelPresent(rel string) bool {
-	_, err := os.Stat(filepath.Join(e.cwd, filepath.FromSlash(rel)))
+	base := e.cwd
+
+	// A root-relative rel (the DSH instruction chain) points from the checkout
+	// root; with a cwd-relative surface on the same rel the cwd wins, like in
+	// projectRelFromRoot. A path-slug identity has no root: fall back to cwd.
+	if root := e.projectIdentity().Root; root != "" && e.rootRelativeRel(rel) {
+		base = root
+	}
+
+	_, err := os.Stat(filepath.Join(base, filepath.FromSlash(rel)))
 
 	return err == nil
 }

@@ -321,7 +321,7 @@ func (e *Engine) adoptable(a *agent.Agent, name string, digest cas.Hash, st *sta
 		return state.Adoption{}, refusalReason(a.ID, name, vis)
 	}
 
-	link, symlink := skillLinkTarget(prov.dir, name)
+	link, symlink := skillLinkTarget(prov.dir, name, prov.file)
 
 	record := state.Adoption{
 		Host:     a.ID,

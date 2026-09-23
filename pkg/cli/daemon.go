@@ -10,9 +10,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/odiumuniverse/beadle/pkg/daemon"
+	"github.com/odiumuniverse/beadle/pkg/secret"
 )
 
-var daemonInstallRunner daemon.Runner = execRunner
+var (
+	daemonInstallRunner daemon.Runner = execRunner
+	daemonCheckRunner   secret.Runner = secret.ExecRunner{}
+)
 
 func (a *app) newDaemonCmd() *cobra.Command {
 	cmd := &cobra.Command{

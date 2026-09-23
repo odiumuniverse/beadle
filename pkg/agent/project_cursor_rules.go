@@ -1,3 +1,4 @@
+//nolint:dupl // mirrored by claudeRulesSurface (.claude/rules, A-32): the two per-file surfaces intentionally share the gates/perms/prune shape
 package agent
 
 import (
@@ -33,6 +34,8 @@ func (s *cursorRulesSurface) Path() string {
 func (s *cursorRulesSurface) WatchPaths() []string { return []string{s.Path()} }
 
 func (s *cursorRulesSurface) ProjectRel() string { return cursorRulesDir }
+
+func (s *cursorRulesSurface) ProjectDirectory() {}
 
 func (s *cursorRulesSurface) Traits() Traits {
 	return Traits{

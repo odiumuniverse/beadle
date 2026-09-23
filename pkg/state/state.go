@@ -108,6 +108,15 @@ type WithdrawnItem struct {
 	At     time.Time `json:"at"`
 }
 
+// AutoAttempt records the single unattended bundle enable attempt made for a
+// host and rendered version, so a failed or unverifiable probe is not retried
+// on every sync; the retry is explicit (`beadle bundles enable <host>`).
+type AutoAttempt struct {
+	Version string    `json:"version"`
+	At      time.Time `json:"at"`
+	Tier    string    `json:"tier"`
+}
+
 // BundleState records one host's native bundle registration.
 type BundleState struct {
 	Enabled           bool                    `json:"enabled"`
@@ -118,6 +127,7 @@ type BundleState struct {
 	PendingWithdrawal bool                    `json:"pending_withdrawal,omitempty"`
 	Withdrawn         []WithdrawnItem         `json:"withdrawn,omitempty"`
 	SavedModes        map[kind.ID]config.Mode `json:"saved_modes,omitempty"`
+	AutoAttempt       *AutoAttempt            `json:"auto_attempt,omitempty"`
 }
 
 // Verified reports whether the host confirmed the bundle, or the contracts
@@ -158,6 +168,38 @@ type State struct {
 	Bundles   map[string]BundleState      `json:"bundles,omitempty"`
 	Refusals  []Refusal                   `json:"refusals,omitempty"`
 	Adoptions []Adoption                  `json:"adoptions,omitempty"`
+	// HookRenders records the hook commands beadle rendered into each host's
+	// user-level hooks file, so a later sync replaces or removes exactly its
+	// own entries and leaves foreign hooks alone.
+	HookRenders map[string][]string `json:"hook_renders,omitempty"`
+	// BundleOptOut lists hosts the user disabled explicitly: the unattended
+	// attempt leaves them alone until `beadle bundles enable <host>`.
+	BundleOptOut []string `json:"bundle_opt_out,omitempty"`
+}
+
+// BundleOptedOut reports that the user disabled this host's bundle by hand.
+func (s *State) BundleOptedOut(host string) bool {
+	return slices.Contains(s.BundleOptOut, host)
+}
+
+// OptOutBundle records the explicit disable of one host bundle.
+func (s *State) OptOutBundle(host string) {
+	if s.BundleOptedOut(host) {
+		return
+	}
+
+	s.BundleOptOut = append(s.BundleOptOut, host)
+	slices.Sort(s.BundleOptOut)
+}
+
+// ClearBundleOptOut forgets the explicit disable, so the host may be enabled
+// again (by hand or by the unattended attempt).
+func (s *State) ClearBundleOptOut(host string) {
+	s.BundleOptOut = slices.DeleteFunc(s.BundleOptOut, func(entry string) bool { return entry == host })
+
+	if len(s.BundleOptOut) == 0 {
+		s.BundleOptOut = nil
+	}
 }
 
 func New() *State {

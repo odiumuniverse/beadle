@@ -20,6 +20,7 @@ const (
 	withdrawKeepUnmanaged   = "unmanaged"
 	withdrawKeepUndelivered = "undelivered"
 	withdrawKeepNoShared    = "kept for other agents"
+	withdrawKeepReadOnly    = "read-only"
 )
 
 // WithdrawDecision is one canon element the withdrawal pass considered for a
@@ -288,6 +289,57 @@ func plannedWithdrawn(plans []withdrawPlan) []state.WithdrawnItem {
 	return records
 }
 
+// warnKeptCopies summarizes the copies withdrawal left on the host. The
+// disable+pull hint belongs to edited copies only: read-only, unmanaged and
+// undelivered ones are not beadle's to restore, and a busy home can keep
+// dozens of names.
+func warnKeptCopies(host bundle.Host, kept []string, report *Report) {
+	if len(kept) == 0 {
+		return
+	}
+
+	counts := map[string]int{}
+
+	var modified []string
+
+	for _, entry := range kept {
+		reason := keptReason(entry)
+
+		counts[reason]++
+
+		if reason == withdrawKeepModified {
+			modified = append(modified, strings.TrimSuffix(entry, " ("+reason+")"))
+		}
+	}
+
+	parts := make([]string, 0, len(counts))
+
+	for _, reason := range slices.Sorted(maps.Keys(counts)) {
+		parts = append(parts, fmt.Sprintf("%d %s", counts[reason], reason))
+	}
+
+	message := fmt.Sprintf("bundles: %s kept %s", host, strings.Join(parts, ", "))
+
+	if len(modified) > 0 {
+		message += fmt.Sprintf("; edited: %s (restore with `beadle bundles disable %s` and then `beadle pull`)",
+			truncateNote(strings.Join(modified, ", ")), host)
+	}
+
+	report.Warnings = append(report.Warnings, message)
+}
+
+// keptReason reads the trailing "(reason)" of a kept entry; an entry without
+// one is a read-only copy.
+func keptReason(entry string) string {
+	open := strings.LastIndexByte(entry, '(')
+
+	if open < 0 || !strings.HasSuffix(entry, ")") {
+		return withdrawKeepReadOnly
+	}
+
+	return entry[open+1 : len(entry)-1]
+}
+
 // writableItems drops the snapshot groups the surface marked read-only (for
 // example a symlinked skill): they cannot be withdrawn and never should be.
 func writableItems(snap agent.Snapshot, k kind.ID) (kind.Items, []string) {
@@ -308,7 +360,7 @@ func writableItems(snap agent.Snapshot, k kind.ID) (kind.Items, []string) {
 	}
 
 	for _, name := range slices.Sorted(maps.Keys(snap.ReadOnly)) {
-		kept = append(kept, fmt.Sprintf("%s %s (read-only)", k, name))
+		kept = append(kept, fmt.Sprintf("%s %s (%s)", k, name, withdrawKeepReadOnly))
 	}
 
 	return out, kept

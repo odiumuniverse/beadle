@@ -386,6 +386,10 @@ func (e *Engine) readViews(
 	var views []*view
 
 	owners := map[string]string{}
+	// chainSeen remembers the content of every enabled chain file per agent,
+	// including the files the owners dedup later drops as aliases: the canon
+	// must hold one element per unique content, whichever surface delivers it.
+	chainSeen := map[string][][]byte{}
 
 	for _, a := range agents {
 		for _, surface := range a.SurfacesOf(spec.ID) {
@@ -414,9 +418,17 @@ func (e *Engine) readViews(
 
 			v.pluginOnly = pluginOnly
 
+			if _, chain := surface.(agent.ProjectRootRel); chain {
+				shadowChainView(chainSeen, a.ID, v)
+			}
+
 			for _, path := range slices.Sorted(maps.Values(v.snap.Unreadable)) {
 				report.Warnings = append(report.Warnings, fmt.Sprintf(
 					"%s/%s: broken symlink %s; the item is left untouched", a.ID, spec.ID, path))
+			}
+
+			for _, warning := range v.snap.Warnings {
+				report.Warnings = append(report.Warnings, fmt.Sprintf("%s/%s: %s", a.ID, spec.ID, warning))
 			}
 
 			if v.snap.Present {
@@ -435,6 +447,45 @@ func (e *Engine) readViews(
 	}
 
 	return views
+}
+
+// shadowChainView drops the items of a chain file whose content an earlier
+// enabled chain file of the same agent already carries: the first file keeps
+// the canon element and identical siblings render nothing. The content is
+// remembered even when the owners dedup later drops the view as an alias, so a
+// file delivered through another agent's rel still collapses its twins.
+// Disabled surfaces never reach this point — readViews skips them — so a
+// disabled predecessor cannot hide an enabled sibling.
+func shadowChainView(seen map[string][][]byte, agentID string, v *view) {
+	data := singleContent(v.snap.Items)
+	if data == nil {
+		return
+	}
+
+	agentSeen := seen[agentID]
+
+	if slices.ContainsFunc(agentSeen, func(prev []byte) bool { return bytes.Equal(prev, data) }) {
+		v.snap.Items = kind.Items{}
+		v.raw = kind.Items{}
+
+		return
+	}
+
+	seen[agentID] = append(agentSeen, data)
+}
+
+// singleContent returns the only value of an item set, or nil when it holds
+// none or several.
+func singleContent(items kind.Items) []byte {
+	if len(items) != 1 {
+		return nil
+	}
+
+	for _, data := range items {
+		return data
+	}
+
+	return nil
 }
 
 func (e *Engine) surfaceEnabled(surface agent.Surface) bool {
@@ -706,7 +757,10 @@ func (e *Engine) pushView(
 		resolved = nil // write() reports the error with the server name
 	}
 
-	if desired.Equal(v.snap.Items) && v.unchangedForm(resolved) {
+	// A snapshot that needs normalizing (host-schema strays) must reach the
+	// surface even when the canon already matches: otherwise the file keeps
+	// its stray keys and the host ignores the rest of the frontmatter.
+	if desired.Equal(v.snap.Items) && v.unchangedForm(resolved) && !v.snap.NeedsRewrite {
 		return v.snap.Items, single
 	}
 
@@ -850,7 +904,9 @@ func (e *Engine) desired(spec kind.Spec, v *view, vaultItems kind.Items) kind.It
 	}
 
 	for key, data := range v.snap.Items {
-		if v.frozen(spec, key) {
+		// A host file whose canon item the surface cannot express is kept:
+		// hiding an item must never read as "delete the host file".
+		if v.frozen(spec, key) || proj.hiddenTarget(key) {
 			out[key] = data
 		}
 	}
@@ -1119,6 +1175,15 @@ func (p projection) targets(key string) []string {
 }
 
 func (p projection) hides(key string) bool {
+	return p.hidden[key]
+}
+
+// hiddenTarget reports whether a host key is a vault item the surface cannot
+// express: the host file is kept instead of being deleted. The check compares
+// keys directly, which is exact for kinds whose item key is the identity
+// (commands, subagents). A kind that remaps keys (permissions) has no forward
+// mapping for a hidden item, so its host file is not recognised here.
+func (p projection) hiddenTarget(key string) bool {
 	return p.hidden[key]
 }
 

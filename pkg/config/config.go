@@ -19,7 +19,15 @@ import (
 
 const FileName = "config.json"
 
-const CurrentVersion = 2
+// CurrentVersion is the schema version this build reads and writes. Version 3
+// migrated the default-on experience: permissions are synchronized and the
+// shared skills surface is enabled unless the user opted out explicitly.
+const CurrentVersion = 3
+
+// SharedAgentID is the agent that owns the shared skills surface
+// (~/.agents/skills); the migration enables it because it is the delivery
+// channel for hosts that read the shared directory natively.
+const SharedAgentID = "shared"
 
 type Mode string
 
@@ -92,6 +100,34 @@ type Config struct {
 	History       string           `json:"history"`
 	Secrets       string           `json:"secrets"`
 	ApprovedHooks []string         `json:"approved_hooks,omitempty"`
+	// migration carries the one-time flips Load applied, so the caller can
+	// report them; it is never serialized.
+	migration []string
+	// migrated records that Load applied the flips in memory only. Save
+	// clears it, so a mutating command can persist the migrated config even
+	// after the notes have already been rendered.
+	migrated bool
+}
+
+// MigrationNotes lists the one-time default flips Load applied. It is empty
+// for a config that was already current.
+func (c *Config) MigrationNotes() []string {
+	return slices.Clone(c.migration)
+}
+
+// Migrated reports that the config was migrated in memory and not yet
+// persisted; the next Save writes the migrated defaults to the vault.
+func (c *Config) Migrated() bool {
+	return c.migrated
+}
+
+// TakeMigrationNotes returns the pending migration notes and clears them, so
+// every flip is reported exactly once.
+func (c *Config) TakeMigrationNotes() []string {
+	notes := c.migration
+	c.migration = nil
+
+	return notes
 }
 
 func (c *Config) KindEnabled(k kind.ID) bool {
@@ -152,7 +188,7 @@ func Default() *Config {
 	return &Config{
 		Version:     CurrentVersion,
 		Agents:      map[string]Agent{},
-		Permissions: permission.ModeOff,
+		Permissions: permission.ModeSync,
 		History:     HistoryGit,
 		Secrets:     secret.ModeLiteral,
 	}
@@ -184,6 +220,36 @@ func (c *Config) Normalize() {
 	}
 }
 
+// migrate applies the one-time default flips introduced by config v3 and
+// reports every flip. It returns changed=true whenever the stored schema
+// version is older, even when no flip happened. The caller decides when the
+// migrated config is persisted: a read-only command must not write the vault.
+func (c *Config) migrate(storedVersion int) ([]string, bool) {
+	if storedVersion >= CurrentVersion {
+		return nil, false
+	}
+
+	var notes []string
+
+	if _, ok := c.Kinds[kind.Permissions]; !ok {
+		c.SetKind(kind.Permissions, ModeSync)
+
+		c.Permissions = permission.ModeSync
+
+		notes = append(notes, "permissions are synchronized by default now; run `beadle kinds disable permissions` to opt out")
+	}
+
+	if _, ok := c.Agents[SharedAgentID]; !ok {
+		c.Enable(SharedAgentID)
+
+		notes = append(notes, "the shared skills surface (~/.agents/skills) is enabled by default now; run `beadle agents disable shared` to opt out")
+	}
+
+	c.Version = CurrentVersion
+
+	return notes, true
+}
+
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // G304: reading the vault config path is the intended function
 	if errors.Is(err, fs.ErrNotExist) {
@@ -199,13 +265,51 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
+	// The stored version is read from the raw document: cfg starts from
+	// Default(), so a legacy file without a version field would otherwise
+	// silently inherit the current one.
+	storedVersion, err := storedConfigVersion(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+
 	cfg.Normalize()
+
+	if storedVersion > CurrentVersion {
+		return nil, fmt.Errorf("config %s has version %d, but this beadle supports up to version %d", path, storedVersion, CurrentVersion)
+	}
 
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
 
+	// The migration stays in memory: read-only commands (status, doctor,
+	// dry runs) must not write the vault. The first command that saves the
+	// config persists it and reports every flip.
+	notes, changed := cfg.migrate(storedVersion)
+	cfg.migration = notes
+	cfg.migrated = changed
+
 	return cfg, nil
+}
+
+// storedConfigVersion reads the version recorded in the file. A missing field
+// counts as version 0, so the legacy config is migrated instead of silently
+// inheriting the current default.
+func storedConfigVersion(data []byte) (int, error) {
+	var stored struct {
+		Version *int `json:"version"`
+	}
+
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return 0, err
+	}
+
+	if stored.Version == nil {
+		return 0, nil
+	}
+
+	return *stored.Version, nil
 }
 
 func (c *Config) validate() error {
@@ -242,6 +346,7 @@ func (c *Config) validate() error {
 
 func (c *Config) Save(path string) error {
 	c.Version = CurrentVersion
+	c.migrated = false
 
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {

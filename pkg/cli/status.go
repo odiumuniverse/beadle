@@ -48,6 +48,8 @@ func (a *app) newStatusCmd() *cobra.Command {
 				return err
 			}
 
+			a.reportConfigMigration(cfg)
+
 			agents, err := allAgents()
 			if err != nil {
 				return err
@@ -74,7 +76,7 @@ func (a *app) newStatusCmd() *cobra.Command {
 				return nil
 			}
 
-			e, err := a.engine()
+			e, err := a.engineWith(v, cfg, agents)
 			if err != nil {
 				return err
 			}

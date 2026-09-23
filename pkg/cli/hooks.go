@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -14,7 +15,7 @@ import (
 func (a *app) newHooksCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "hooks",
-		Short: "Author lifecycle hooks for native bundles (beadle never runs them)",
+		Short: "Author lifecycle hooks for host hooks files and native bundles (beadle never runs them)",
 		Args:  cobra.NoArgs,
 	}
 
@@ -62,7 +63,12 @@ func (a *app) newHooksListCmd() *cobra.Command {
 					state = "approved"
 				}
 
-				fmt.Fprintf(out, "  %-20s %-14s %-10s %-6s %s\n", name, hook.Event, matcher, timeoutText(hook.Timeout), state)
+				line := fmt.Sprintf("  %-20s %-14s %-10s %-6s %s", name, hook.Event, matcher, timeoutText(hook.Timeout), state)
+				if hook.Source != "" {
+					line += "  " + hook.Source
+				}
+
+				fmt.Fprintln(out, line)
 
 				if commands {
 					fmt.Fprintf(out, "      %s\n", hook.Command)
@@ -124,7 +130,7 @@ func (a *app) newHooksAddCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&hook.Event, "event", "", "canonical event: "+strings.Join(hooks.Events(), ", "))
 	cmd.Flags().StringVar(&hook.Matcher, "matcher", "", "tool matcher (default *)")
-	cmd.Flags().StringVar(&hook.Command, "command", "", "shell command rendered into bundles (required)")
+	cmd.Flags().StringVar(&hook.Command, "command", "", "shell command rendered into host hooks files and bundles (required)")
 	cmd.Flags().IntVar(&hook.Timeout, "timeout", 0, "timeout in seconds (0 = host default)")
 
 	return cmd
@@ -170,11 +176,25 @@ func (a *app) newHooksRemoveCmd() *cobra.Command {
 }
 
 func (a *app) newHooksApproveCmd() *cobra.Command {
-	return &cobra.Command{
+	var pluginKey string
+
+	cmd := &cobra.Command{
 		Use:   "approve <name>",
-		Short: "Approve a hook so it is rendered into bundles",
-		Args:  cobra.ExactArgs(1),
+		Short: "Approve a hook (or every hook of a plugin) so it is rendered into host hooks files and native bundles",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if pluginKey != "" {
+				if len(args) != 0 {
+					return errors.New("choose either a hook name or --plugin")
+				}
+
+				return a.approvePluginHooks(cmd, pluginKey)
+			}
+
+			if len(args) != 1 {
+				return errors.New("a hook name is required (or use --plugin <key>)")
+			}
+
 			v, cfg, err := a.loadConfig()
 			if err != nil {
 				return err
@@ -200,6 +220,46 @@ func (a *app) newHooksApproveCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	cmd.Flags().StringVar(&pluginKey, "plugin", "", "approve every expressible command hook of an installed plugin (<marketplace>/<name>)")
+
+	return cmd
+}
+
+// approvePluginHooks copies the command hooks of one installed plugin into the
+// canon and approves them; the scan itself never writes.
+func (a *app) approvePluginHooks(cmd *cobra.Command, key string) error {
+	v, cfg, err := a.loadConfig()
+	if err != nil {
+		return err
+	}
+
+	agents, err := allAgents()
+	if err != nil {
+		return err
+	}
+
+	e, err := a.engineWith(v, cfg, agents)
+	if err != nil {
+		return err
+	}
+
+	report, err := e.ApprovePluginHooks(key)
+	if err != nil {
+		return err
+	}
+
+	out := cmd.OutOrStdout()
+
+	for _, note := range report.Notes {
+		fmt.Fprintln(out, "note: "+note)
+	}
+
+	for _, warning := range report.Warnings {
+		fmt.Fprintln(out, "warning: "+warning)
+	}
+
+	return nil
 }
 
 func (a *app) newHooksRevokeCmd() *cobra.Command {

@@ -7,12 +7,14 @@ import (
 	"os"
 	"runtime"
 	"slices"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/config"
 	daemonpkg "github.com/odiumuniverse/beadle/pkg/daemon"
+	"github.com/odiumuniverse/beadle/pkg/engine"
 	"github.com/odiumuniverse/beadle/pkg/skills"
 	"github.com/odiumuniverse/beadle/pkg/vault"
 )
@@ -27,27 +29,31 @@ func (a *app) newInitCmd() *cobra.Command {
 		Use:   "init",
 		Short: "Create the vault and enable the agents installed on this machine",
 		Long: "init creates the vault (default ~/.beadle) and enables every detected agent.\n" +
-			"It writes nothing into any agent: run `beadle sync --dry-run` to preview the\n" +
-			"first synchronization, then `beadle sync`.\n" +
-			"With --daemon it also installs the background watcher; --no-daemon opts out\n" +
-			"explicitly, and without either flag init only prints the hint.",
+			"Detected hosts with their CLI installed get their native bundle rendered and\n" +
+			"registered; without the CLI, init prints the registration command and leaves\n" +
+			"file sync on. In a git checkout the project files present on disk are enabled\n" +
+			"with secrets kept out, and the background watcher is installed unless it is\n" +
+			"already there. Run `beadle sync --dry-run` to preview the first\n" +
+			"synchronization, then `beadle sync`.\n" +
+			"With --daemon the watcher is (re)installed even if a service file exists;\n" +
+			"--no-daemon skips the watcher and prints the hint.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if daemon && noDaemon {
 				return errors.New("choose either --daemon or --no-daemon")
 			}
 
-			return a.runInit(cmd, agentIDs, daemon, !daemon && !noDaemon)
+			return a.runInit(cmd, agentIDs, daemon, !noDaemon)
 		},
 	}
 
 	cmd.Flags().StringSliceVar(&agentIDs, "agents", nil, "enable exactly these agents instead of the detected ones")
-	cmd.Flags().BoolVar(&daemon, "daemon", false, "install and start the background watcher")
-	cmd.Flags().BoolVar(&noDaemon, "no-daemon", false, "do not install the background watcher, print no hint")
+	cmd.Flags().BoolVar(&daemon, "daemon", false, "install the watcher even if a service file already exists")
+	cmd.Flags().BoolVar(&noDaemon, "no-daemon", false, "do not install the background watcher")
 
 	return cmd
 }
 
-func (a *app) runInit(cmd *cobra.Command, agentIDs []string, withDaemon, daemonHint bool) error {
+func (a *app) runInit(cmd *cobra.Command, agentIDs []string, forceDaemon, installDaemon bool) error {
 	root, err := vault.ResolveRoot(a.vaultPath, os.Getenv(vault.EnvHome))
 	if err != nil {
 		return err
@@ -63,6 +69,8 @@ func (a *app) runInit(cmd *cobra.Command, agentIDs []string, withDaemon, daemonH
 		return err
 	}
 
+	a.reportConfigMigration(cfg)
+
 	agents, err := allAgents()
 	if err != nil {
 		return err
@@ -74,13 +82,16 @@ func (a *app) runInit(cmd *cobra.Command, agentIDs []string, withDaemon, daemonH
 
 	out := cmd.OutOrStdout()
 
-	fmt.Fprintf(out, "vault: %s\n\nagents:\n", v.Root())
-
-	for _, ag := range agents {
-		if err := enableOnInit(out, cfg, ag, agentIDs); err != nil {
-			return err
-		}
+	if err := a.enableAgentsOnInit(out, v, cfg, agents, agentIDs); err != nil {
+		return err
 	}
+
+	e, err := a.engineWith(v, cfg, agents)
+	if err != nil {
+		return err
+	}
+
+	a.applyInitMigrationDefaults(e, out)
 
 	if err := cfg.Save(v.ConfigPath()); err != nil {
 		return err
@@ -90,13 +101,22 @@ func (a *app) runInit(cmd *cobra.Command, agentIDs []string, withDaemon, daemonH
 		return err
 	}
 
+	// The bundle attempt runs before the modes table: a verified bundle turns
+	// skills/mcp off, and the table must show what was just saved.
+	if err := a.autoEnableBundlesOnInit(cmd, e, out); err != nil {
+		return err
+	}
+
+	if err := a.enableProjectDefaultsOnInit(cmd, e, out); err != nil {
+		return err
+	}
+
 	fmt.Fprintln(out)
 	printModes(out, cfg, agents)
 
-	if withDaemon {
-		if err := a.installDaemonOnInit(cmd, out); err != nil {
-			return err
-		}
+	daemonHint, err := a.installDaemonOnInitStep(cmd, out, forceDaemon, installDaemon)
+	if err != nil {
+		return err
 	}
 
 	printInitNext(out, daemonHint)
@@ -104,10 +124,117 @@ func (a *app) runInit(cmd *cobra.Command, agentIDs []string, withDaemon, daemonH
 	return nil
 }
 
-func (a *app) installDaemonOnInit(cmd *cobra.Command, out io.Writer) error {
+// enableAgentsOnInit prints the agent table and enables the selected ones.
+func (a *app) enableAgentsOnInit(out io.Writer, v *vault.Vault, cfg *config.Config, agents []*agent.Agent, requested []string) error {
+	fmt.Fprintf(out, "vault: %s\n\nagents:\n", v.Root())
+
+	for _, ag := range agents {
+		if err := enableOnInit(out, cfg, ag, requested); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// applyInitMigrationDefaults prints the one-time v3 migration lines; the trust
+// lift for canon hooks is persisted by the config save that follows.
+func (a *app) applyInitMigrationDefaults(e *engine.Engine, out io.Writer) {
+	migration := engine.Report{}
+	e.ApproveCanonHooks(&migration)
+
+	for _, note := range migration.Notes {
+		fmt.Fprintln(out, "note: "+note)
+	}
+
+	for _, warning := range migration.Warnings {
+		fmt.Fprintln(out, "warning: "+warning)
+	}
+}
+
+// installDaemonOnInitStep runs the daemon part of init and reports whether the
+// `beadle daemon install` hint belongs in the next steps.
+func (a *app) installDaemonOnInitStep(cmd *cobra.Command, out io.Writer, forceDaemon, installDaemon bool) (bool, error) {
+	switch {
+	case !installDaemon:
+		fmt.Fprintln(out, "\ndaemon: skipped (--no-daemon)")
+
+		return false, nil
+	case forceDaemon:
+		return false, a.installDaemonOnInit(cmd, out, true)
+	}
+
+	if err := a.installDaemonOnInit(cmd, out, false); err != nil {
+		fmt.Fprintf(out, "\ndaemon: not installed (%v); run `beadle daemon install` when ready\n", err)
+
+		return true, nil
+	}
+
+	return false, nil
+}
+
+// autoEnableBundlesOnInit makes the unattended bundle attempt at init time:
+// a host CLI registers the rendered bundle right away, while a host without
+// its CLI gets the instruction instead and keeps file sync on.
+func (a *app) autoEnableBundlesOnInit(cmd *cobra.Command, e *engine.Engine, out io.Writer) error {
+	if !bundleAutoEnable {
+		return nil
+	}
+
+	report, err := e.AutoEnableBundles(cmd.Context())
+	if err != nil {
+		return err
+	}
+
+	printBundleSection(out, report.Bundles)
+
+	for _, warning := range report.Warnings {
+		fmt.Fprintln(out, "  ! "+warning)
+	}
+
+	return nil
+}
+
+// enableProjectDefaultsOnInit enables the present project files of a git
+// checkout, keeping secrets out: the per-file opt-in stays with
+// `beadle project enable <file> --allow-secrets`.
+func (a *app) enableProjectDefaultsOnInit(cmd *cobra.Command, e *engine.Engine, out io.Writer) error {
+	if !projectAutoEnable {
+		return nil
+	}
+
+	enabled, err := e.ProjectEnableDetected(cmd.Context())
+	if err != nil {
+		return err
+	}
+
+	if len(enabled) == 0 {
+		return nil
+	}
+
+	fmt.Fprintf(out, "\nproject: enabled %s (secrets stay out; `beadle project enable <file> --allow-secrets` to materialize them)\n",
+		strings.Join(enabled, ", "))
+
+	return nil
+}
+
+func (a *app) installDaemonOnInit(cmd *cobra.Command, out io.Writer, force bool) error {
 	spec, err := a.daemonSpec()
 	if err != nil {
 		return err
+	}
+
+	if !force {
+		status, err := daemonpkg.Check(spec.Home, spec.Label, daemonCheckRunner)
+		if err != nil {
+			return err
+		}
+
+		if status.Installed {
+			fmt.Fprintf(out, "\ndaemon: already installed (%s)\n", status.Path)
+
+			return nil
+		}
 	}
 
 	path, err := daemonpkg.Install(cmd.Context(), spec, daemonInstallRunner)

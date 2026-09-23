@@ -20,10 +20,31 @@ type Tree map[string][]byte
 
 const skillFileName = "SKILL.md"
 
+// FileName is the skill root file every host reads inside a skill directory.
+const FileName = skillFileName
+
+const flatSuffix = ".md"
+
 var namePattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 func ValidName(name string) bool {
 	return namePattern.MatchString(name)
+}
+
+// FlatName returns the skill name of a flat copy: a file called `<slug>.md`
+// (the skill root file itself, SKILL.md, is not a flat name).
+func FlatName(fileName string) (string, bool) {
+	name, ok := strings.CutSuffix(fileName, flatSuffix)
+	if !ok || !ValidName(name) {
+		return "", false
+	}
+
+	return name, true
+}
+
+// FlatPath returns the flat copy path of a skill name under dir.
+func FlatPath(dir, name string) string {
+	return filepath.Join(dir, name+flatSuffix)
 }
 
 // HasRoot reports whether dir is a skill root: it holds a regular SKILL.md
@@ -110,7 +131,18 @@ func skipJunk(root, path string, entry fs.DirEntry) (bool, error) {
 	return true, nil
 }
 
+// ReadTree reads a skill root: a directory tree, or a flat `<name>.md` file
+// read as the single-file tree `{"SKILL.md": bytes}`.
 func ReadTree(root string) (Tree, error) {
+	if info, err := os.Lstat(root); err == nil && info.Mode().IsRegular() {
+		data, err := os.ReadFile(root) //nolint:gosec // G304: skill paths are resolved by the tool
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", root, err)
+		}
+
+		return Tree{skillFileName: data}, nil
+	}
+
 	tree := Tree{}
 
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {

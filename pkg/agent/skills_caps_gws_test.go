@@ -40,13 +40,27 @@ func TestSkillsSurfaceCaps(t *testing.T) {
 
 		caps := declared.SkillCaps()
 
-		Convey("Then the documented read order is declared without shadowing", func() {
-			So(caps.Shadowing, ShouldBeFalse)
+		Convey("Then the verified read order is declared with shadowing on", func() {
+			So(caps.Shadowing, ShouldBeTrue)
 			So(caps.ReadOrder, ShouldResemble, []string{
 				filepath.Join("/home/u", ".config", "opencode", "skills"),
 				filepath.Join("/home/u", ".agents", "skills"),
 				filepath.Join("/home/u", ".claude", "skills"),
 			})
+			So(caps.NamespacedBundle, ShouldBeFalse)
+		})
+	})
+
+	Convey("Given the cursor skills surface", t, func() {
+		surface := agent.Cursor("/home/u", "/tmp").Surface(kind.Skills)
+
+		declared, ok := surface.(agent.SkillCapsSurface)
+		So(ok, ShouldBeTrue)
+
+		caps := declared.SkillCaps()
+
+		Convey("Then the undocumented precedence stays fail-open", func() {
+			So(caps.Shadowing, ShouldBeFalse)
 		})
 	})
 }

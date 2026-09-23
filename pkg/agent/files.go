@@ -280,33 +280,41 @@ func applyPatch(data []byte, ops []patchOp) ([]byte, error) {
 		return nil, fmt.Errorf("parse json: %w", err)
 	}
 
+	added, replaced := patchTargets(root, ops)
+	inline := inlineParents(root, added)
+
 	patch, err := json.Marshal(ops)
 	if err != nil {
 		return nil, fmt.Errorf("encode patch: %w", err)
 	}
 
-	added := addedOps(root, ops)
-	inline := inlineParents(root, added)
-
 	if err := root.Patch(patch); err != nil {
 		return nil, fmt.Errorf("apply patch: %w", err)
 	}
 
-	formatPatchedValues(&root, added, inline, detectIndent(data))
+	formatPatchedValues(&root, added, replaced, inline, detectIndent(data))
 
 	return root.Pack(), nil
 }
 
-func addedOps(root hujson.Value, ops []patchOp) []patchOp {
-	var added []patchOp
-
+// patchTargets splits the add operations into members the patch creates and
+// members it replaces. Both lists are computed before the patch is applied;
+// a replaced member that gains children in the same patch still needs its
+// value re-rendered from the tree.
+func patchTargets(root hujson.Value, ops []patchOp) (added, replaced []patchOp) {
 	for _, op := range ops {
-		if op.Op == "add" && root.Find(op.Path) == nil {
+		if op.Op != "add" {
+			continue
+		}
+
+		if root.Find(op.Path) == nil {
 			added = append(added, op)
+		} else {
+			replaced = append(replaced, op)
 		}
 	}
 
-	return added
+	return added, replaced
 }
 
 func inlineParents(root hujson.Value, ops []patchOp) map[string]bool {
@@ -351,17 +359,42 @@ func objectInline(obj *hujson.Object) bool {
 	return true
 }
 
-func formatPatchedValues(root *hujson.Value, ops []patchOp, inline map[string]bool, unit string) {
+func formatPatchedValues(root *hujson.Value, added, replaced []patchOp, inline map[string]bool, unit string) {
 	if unit == "" {
 		return
 	}
 
-	for _, op := range ops {
-		formatPatchedValue(root, op, inline, unit)
+	// A replaced member can gain children later in the same patch; its value
+	// comes from the payload in compact form, so re-render it from the tree
+	// to keep the container pretty instead of mixing styles.
+	for _, op := range replaced {
+		if hasAddedDescendant(added, op.Path) {
+			formatPatchedValue(root, op, inline, unit, true)
+		}
+	}
+
+	for _, op := range added {
+		// An added parent keeps its children: re-rendering the current tree
+		// value prints them pretty; a leaf takes its value from the payload.
+		formatPatchedValue(root, op, inline, unit, hasAddedDescendant(added, op.Path))
 	}
 }
 
-func formatPatchedValue(root *hujson.Value, op patchOp, inline map[string]bool, unit string) {
+// hasAddedDescendant reports that another added operation targets a child of
+// path.
+func hasAddedDescendant(ops []patchOp, path string) bool {
+	prefix := path + "/"
+
+	for _, other := range ops {
+		if strings.HasPrefix(other.Path, prefix) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func formatPatchedValue(root *hujson.Value, op patchOp, inline map[string]bool, unit string, fromTree bool) {
 	parent, name, ok := splitPointer(op.Path)
 	if !ok || inline[parent] {
 		return
@@ -382,7 +415,34 @@ func formatPatchedValue(root *hujson.Value, op patchOp, inline map[string]bool, 
 		return
 	}
 
-	formatMember(obj, member, op.Value, unit, pointerDepth(op.Path))
+	value := op.Value
+	if fromTree {
+		current, ok := nodeValue(&member.Value)
+		if !ok {
+			return
+		}
+
+		value = current
+	}
+
+	formatMember(obj, member, value, unit, pointerDepth(op.Path))
+}
+
+// nodeValue decodes a node into a plain Go value so the member can be
+// re-rendered pretty together with the children added in the same patch.
+func nodeValue(v *hujson.Value) (any, bool) {
+	standard, err := hujson.Standardize(v.Pack())
+	if err != nil {
+		return nil, false
+	}
+
+	var out any
+
+	if err := json.Unmarshal(standard, &out); err != nil {
+		return nil, false
+	}
+
+	return out, true
 }
 
 func formatMember(obj *hujson.Object, member *hujson.ObjectMember, value any, unit string, depth int) {
@@ -390,16 +450,6 @@ func formatMember(obj *hujson.Object, member *hujson.ObjectMember, value any, un
 
 	indent, after, ok := memberIndent(obj, member, depth, unit)
 	if !ok || (after != nil && !isWhitespace(obj.AfterExtra)) {
-		return
-	}
-
-	fragment, err := prettyValue(value, indent, unit)
-	if err != nil {
-		return
-	}
-
-	parsed, err := hujson.Parse(fragment)
-	if err != nil {
 		return
 	}
 
@@ -414,6 +464,18 @@ func formatMember(obj *hujson.Object, member *hujson.ObjectMember, value any, un
 		member.Name.BeforeExtra = hujson.Extra(string(bytes.TrimRight(extra, " \t")) + "\n" + indent)
 	}
 
+	fragment, err := prettyValue(value, indent, unit)
+	if err != nil {
+		return
+	}
+
+	parsed, err := hujson.Parse(fragment)
+	if err != nil {
+		return
+	}
+
+	member.Value.Value = parsed.Value
+
 	if len(member.Value.BeforeExtra) == 0 {
 		if extra := colonWhitespace(obj, member); extra != nil {
 			member.Value.BeforeExtra = extra
@@ -425,8 +487,6 @@ func formatMember(obj *hujson.Object, member *hujson.ObjectMember, value any, un
 	if after != nil {
 		obj.AfterExtra = hujson.Extra(*after)
 	}
-
-	member.Value.Value = parsed.Value
 }
 
 func takeSameLineComment(obj *hujson.Object, extra hujson.Extra) hujson.Extra {

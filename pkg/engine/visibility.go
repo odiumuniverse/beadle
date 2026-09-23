@@ -35,6 +35,7 @@ type provider struct {
 	name   string
 	dir    string // the read directory the copy lives in
 	path   string // the copy path shown in reports
+	file   string // the flat `<name>.md` path when the copy is a flat file
 	digest cas.Hash
 }
 
@@ -193,21 +194,26 @@ func (v visibility) foreignCoverage() map[string]provider {
 
 // visible returns the copies the host actually shows. Without shadowing every
 // copy is visible; with shadowing only the highest-precedence file copy wins,
-// and namespaced bundle copies stay visible in addition.
+// and namespaced bundle copies stay visible in addition. An un-namespaced
+// bundle copy is visible while no file copy shadows it: a host whose only
+// content is the bundle still shows the name.
 func (r resolution) visible(caps agent.SkillCaps, order []string) []provider {
 	if !caps.Shadowing {
 		return r.Providers
 	}
 
 	var (
-		winner *provider
-		out    []provider
+		winner  *provider
+		bundles []provider
+		out     []provider
 	)
 
 	for _, p := range r.Providers {
 		if p.class == classBundle {
 			if caps.NamespacedBundle {
 				out = append(out, p)
+			} else {
+				bundles = append(bundles, p)
 			}
 
 			continue
@@ -219,8 +225,11 @@ func (r resolution) visible(caps agent.SkillCaps, order []string) []provider {
 		}
 	}
 
-	if winner != nil {
+	switch {
+	case winner != nil:
 		out = append(out, *winner)
+	case !caps.NamespacedBundle:
+		out = append(out, bundles...)
 	}
 
 	return out
@@ -426,13 +435,19 @@ func (e *Engine) skillProviders(a *agent.Agent, surface agent.Surface, st *state
 			continue
 		}
 
-		link, symlink := skillLinkTarget(ref.Dir, ref.Name)
+		link, symlink := skillLinkTarget(ref.Dir, ref.Name, ref.File)
+
+		path := filepath.Join(ref.Dir, ref.Name)
+		if ref.File != "" {
+			path = ref.File
+		}
 
 		providers = append(providers, provider{
 			class:  classifySkillCopy(ref, ownDir, shared, link, symlink, plugins, bases),
 			name:   ref.Name,
 			dir:    ref.Dir,
-			path:   filepath.Join(ref.Dir, ref.Name),
+			path:   path,
+			file:   ref.File,
 			digest: skill.TreeDigest(tree),
 		})
 	}
@@ -616,9 +631,15 @@ func (e *Engine) sharedSkillsDir() string {
 }
 
 // skillLinkTarget returns the raw symlink target resolved against its
-// directory, and whether the entry is a symlink at all.
-func skillLinkTarget(dir, name string) (string, bool) {
-	link, err := os.Readlink(filepath.Join(dir, name))
+// directory, and whether the entry is a symlink at all. file overrides the
+// entry path for a flat copy.
+func skillLinkTarget(dir, name, file string) (string, bool) {
+	path := filepath.Join(dir, name)
+	if file != "" {
+		path = file
+	}
+
+	link, err := os.Readlink(path)
 	if err != nil {
 		return "", false
 	}

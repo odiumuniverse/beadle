@@ -30,6 +30,7 @@ type BundleResult struct {
 	Note       string   `json:"note,omitempty"`
 	Withdrawn  []string `json:"withdrawn,omitempty"`
 	Kept       []string `json:"kept,omitempty"`
+	Auto       bool     `json:"auto,omitempty"`
 }
 
 const (
@@ -144,50 +145,177 @@ func (e *Engine) BundlesEnable(ctx context.Context, hostName string) (Report, er
 		return report, err
 	}
 
+	if st.BundleOptedOut(string(host)) {
+		// The user asks for the bundle again: the unattended attempt may take
+		// the host over afterwards.
+		st.ClearBundleOptOut(string(host))
+
+		if err := st.Save(e.vault.StatePath()); err != nil {
+			return report, err
+		}
+	}
+
+	if err := e.bundleEnable(ctx, host, st, &report, false); err != nil {
+		return report, err
+	}
+
+	return report, nil
+}
+
+// AutoEnableBundles makes one unattended enable attempt per eligible host: the
+// host agent is enabled and detected, and the host was never touched before.
+// It is the `beadle init` entry point; a full forward sync calls the same core
+// when the engine was built WithBundleAutoEnable.
+func (e *Engine) AutoEnableBundles(ctx context.Context) (Report, error) {
+	var report Report
+
+	release, err := e.lock(ctx)
+	if err != nil {
+		return report, err
+	}
+
+	defer release()
+
+	st, err := state.Load(e.vault.StatePath())
+	if err != nil {
+		return report, err
+	}
+
+	active, err := e.activeAgents(ctx)
+	if err != nil {
+		return report, err
+	}
+
+	if err := e.autoEnableBundlesInto(ctx, active, st, &report); err != nil {
+		return report, err
+	}
+
+	return report, nil
+}
+
+// autoEnableBundles attempts one unattended enable per host the user has never
+// touched: a host with an existing state entry is left alone, so an explicit
+// `beadle bundles disable` is never overridden and a failed probe is not
+// retried on every sync. It returns the hosts it handled, so the same sync
+// does not refresh them twice.
+func (e *Engine) autoEnableBundles(ctx context.Context, active []*agent.Agent, st *state.State, report *Report) (map[string]bool, error) {
+	if e.home == "" {
+		return nil, nil
+	}
+
+	handled := map[string]bool{}
+
+	for _, host := range bundle.Hosts() {
+		if agent.ByID(active, host.AgentID()) == nil {
+			continue
+		}
+
+		if !e.autoAttemptDue(host, st) {
+			continue
+		}
+
+		handled[string(host)] = true
+
+		if err := e.bundleEnable(ctx, host, st, report, true); err != nil {
+			return handled, err
+		}
+	}
+
+	return handled, nil
+}
+
+// autoAttemptDue reports whether a host deserves an unattended attempt: only
+// a host that was never touched does. An explicit `beadle bundles disable`
+// records an opt-out, and any existing entry (a failed probe, a validation
+// failure) waits for `beadle bundles enable <host>`.
+func (e *Engine) autoAttemptDue(host bundle.Host, st *state.State) bool {
+	if st.BundleOptedOut(string(host)) {
+		return false
+	}
+
+	_, known := st.Bundles[string(host)]
+
+	return !known
+}
+
+// autoEnableBundlesInto is the error-only form used by the explicit init
+// entry point.
+func (e *Engine) autoEnableBundlesInto(ctx context.Context, active []*agent.Agent, st *state.State, report *Report) error {
+	_, err := e.autoEnableBundles(ctx, active, st, report)
+
+	return err
+}
+
+// bundleEnable runs the R-7 sequence for one host: render → validate →
+// register → probe → flip. auto marks an unattended attempt, recorded in the
+// state so it is not retried on every sync.
+func (e *Engine) bundleEnable(ctx context.Context, host bundle.Host, st *state.State, report *Report, auto bool) error {
 	req, cov, reqWarns, err := e.bundleRenderRequest(host)
 	report.Warnings = append(report.Warnings, reqWarns...)
 	report.Warnings = append(report.Warnings, cov.Warnings...)
 
 	if err != nil {
-		return report, err
+		return err
 	}
 
 	result, err := bundle.Render(e.vault.BundlesDir(), req)
 	report.Warnings = append(report.Warnings, result.Warnings...)
 
 	if err != nil {
-		return report, err
+		return err
 	}
 
 	dir := filepath.Join(e.vault.BundlesDir(), string(host))
 
 	if note, ok := e.validateBundle(host, dir); !ok {
 		report.Bundles = append(report.Bundles, BundleResult{
-			Host: string(host), Action: bundleFailed, Version: result.Version,
+			Host: string(host), Action: bundleFailed, Version: result.Version, Auto: auto,
 			Note: joinBundleNotes(note, bundleRetry(host)),
 		})
 		report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: the %s bundle did not validate; nothing was registered", host))
 
-		return report, nil
+		if auto {
+			// Record the attempt even though nothing was registered: the
+			// eligibility gate keys on the state entry, so without it every
+			// full sync would render and re-validate the same broken bundle.
+			entry := st.Bundles[string(host)]
+			entry.Enabled = false
+			entry.VerifyTier = state.VerifyFailed
+			entry.ProbeNote = note
+			entry.AutoAttempt = &state.AutoAttempt{Version: result.Version, At: e.now().UTC(), Tier: state.VerifyFailed}
+			st.Bundles[string(host)] = entry
+
+			if err := st.Save(e.vault.StatePath()); err != nil {
+				return err
+			}
+		}
+
+		return nil
 	}
 
 	entry := st.Bundles[string(host)]
 	entry.Enabled = true
 
-	action, note := e.registerBundle(host, dir, &entry, result.Version, &report)
+	action, note := e.registerBundle(host, dir, &entry, result.Version, report)
 
 	tier, probeNote := e.bundleVerification(host, dir, result.Version, entry.Registered)
 	entry.VerifyTier = tier
 	entry.ProbeNote = probeNote
 
+	if auto {
+		entry.AutoAttempt = &state.AutoAttempt{Version: result.Version, At: e.now().UTC(), Tier: tier}
+	} else {
+		syncAttemptTier(&entry)
+	}
+
 	if entry.Registered && tier == state.VerifyExecuted {
-		return e.enableVerifiedBundle(ctx, host, st, req, cov, entry, result, action, note, &report)
+		return e.enableVerifiedBundle(ctx, host, st, req, cov, entry, result, action, note, auto, report)
 	}
 
 	st.Bundles[string(host)] = entry
 
 	if err := st.Save(e.vault.StatePath()); err != nil {
-		return report, err
+		return err
 	}
 
 	if tier == state.VerifyFailed {
@@ -199,10 +327,10 @@ func (e *Engine) BundlesEnable(ctx context.Context, hostName string) (Report, er
 
 	report.Bundles = append(report.Bundles, BundleResult{
 		Host: string(host), Action: action, Version: reportedVersion(entry, result),
-		Registered: entry.Registered, Tier: tier, Note: note,
+		Registered: entry.Registered, Tier: tier, Note: note, Auto: auto,
 	})
 
-	return report, nil
+	return nil
 }
 
 // reportedVersion prefers the version the host actually serves over the
@@ -217,10 +345,14 @@ func reportedVersion(entry state.BundleState, result bundle.Result) string {
 
 func (e *Engine) enableVerifiedBundle(
 	ctx context.Context, host bundle.Host, st *state.State, req bundle.Request, cov coverage,
-	entry state.BundleState, result bundle.Result, action, note string, report *Report,
-) (Report, error) {
+	entry state.BundleState, result bundle.Result, action, note string, auto bool, report *Report,
+) error {
 	plans, kept, warnList := e.planBundleWithdrawal(ctx, host, st, req, cov)
 	report.Warnings = append(report.Warnings, warnList...)
+
+	if auto {
+		warnKeptCopies(host, kept, report)
+	}
 
 	planned := plannedWithdrawn(plans)
 
@@ -231,11 +363,11 @@ func (e *Engine) enableVerifiedBundle(
 	st.Bundles[string(host)] = entry
 
 	if err := st.Save(e.vault.StatePath()); err != nil {
-		return *report, err
+		return err
 	}
 
 	if err := e.disableBundleKinds(host, &entry, report); err != nil {
-		return *report, err
+		return err
 	}
 
 	withdrawn, applyWarns, complete := e.applyBundleWithdrawal(ctx, plans)
@@ -247,15 +379,15 @@ func (e *Engine) enableVerifiedBundle(
 	st.Bundles[string(host)] = entry
 
 	if err := st.Save(e.vault.StatePath()); err != nil {
-		return *report, err
+		return err
 	}
 
 	report.Bundles = append(report.Bundles, BundleResult{
 		Host: string(host), Action: action, Version: result.Version, Registered: true,
-		Tier: entry.VerifyTier, Note: note, Withdrawn: withdrawNames(withdrawn), Kept: kept,
+		Tier: entry.VerifyTier, Note: note, Withdrawn: withdrawNames(withdrawn), Kept: kept, Auto: auto,
 	})
 
-	return *report, nil
+	return nil
 }
 
 func (e *Engine) registerBundle(host bundle.Host, dir string, entry *state.BundleState, version string, report *Report) (string, string) {
@@ -344,9 +476,7 @@ func (e *Engine) BundlesDisable(ctx context.Context, hostName string) (Report, e
 
 	entry, ok := st.Bundles[string(host)]
 	if !ok || (!entry.Enabled && !entry.Registered) {
-		report.Bundles = append(report.Bundles, BundleResult{Host: string(host), Action: bundleNoop, Note: "no enabled bundle for this host"})
-
-		return report, nil
+		return e.bundleDisableNoop(host, st, &report)
 	}
 
 	dir := filepath.Join(e.vault.BundlesDir(), string(host))
@@ -369,6 +499,7 @@ func (e *Engine) BundlesDisable(ctx context.Context, hostName string) (Report, e
 	if !unregistered {
 		entry.Enabled = false
 		st.Bundles[string(host)] = entry
+		st.OptOutBundle(string(host))
 
 		if err := st.Save(e.vault.StatePath()); err != nil {
 			return report, err
@@ -385,6 +516,8 @@ func (e *Engine) BundlesDisable(ctx context.Context, hostName string) (Report, e
 
 	delete(st.Bundles, string(host))
 
+	st.OptOutBundle(string(host))
+
 	if err := st.Save(e.vault.StatePath()); err != nil {
 		return report, err
 	}
@@ -396,6 +529,23 @@ func (e *Engine) BundlesDisable(ctx context.Context, hostName string) (Report, e
 	})
 
 	return report, nil
+}
+
+// bundleDisableNoop records the explicit opt-out when there is nothing to
+// unregister: the unattended attempt must not enable the host afterwards (the
+// entry may be missing because the agent appeared after init).
+func (e *Engine) bundleDisableNoop(host bundle.Host, st *state.State, report *Report) (Report, error) {
+	if !st.BundleOptedOut(string(host)) {
+		st.OptOutBundle(string(host))
+
+		if err := st.Save(e.vault.StatePath()); err != nil {
+			return *report, err
+		}
+	}
+
+	report.Bundles = append(report.Bundles, BundleResult{Host: string(host), Action: bundleNoop, Note: "no enabled bundle for this host; it stays opted out"})
+
+	return *report, nil
 }
 
 func restoredNote(restored []string) string {
@@ -525,7 +675,7 @@ func (e *Engine) bundleRequest(host bundle.Host) (bundle.Request, []string, erro
 		return req, warns, err
 	}
 
-	req.Hooks = canon
+	req.Hooks = e.renderableHooks(host, canon)
 
 	if slices.Contains(host.ContentKinds(), kind.Skills) {
 		items, _, err := e.loadVault(kind.Skills)
@@ -600,49 +750,69 @@ func fullForwardSync(opts SyncOptions) bool {
 	return (opts.Direction == "" || opts.Direction == config.ModeSync) && len(opts.Kinds) == 0
 }
 
-func (e *Engine) refreshBundles(ctx context.Context, st *state.State, report *Report, opts SyncOptions) {
+func (e *Engine) refreshBundles(ctx context.Context, st *state.State, report *Report, opts SyncOptions, skip map[string]bool) {
 	if e.home == "" || opts.DryRun || !fullForwardSync(opts) {
 		return
 	}
 
 	for _, hostName := range slices.Sorted(maps.Keys(st.Bundles)) {
-		entry := st.Bundles[hostName]
-		if !entry.Enabled {
+		if skip[hostName] {
 			continue
 		}
 
-		host, err := bundle.ParseHost(hostName)
-		if err != nil {
-			report.Warnings = append(report.Warnings, "bundles: "+err.Error())
-
-			continue
-		}
-
-		req, cov, warns, err := e.bundleRenderRequest(host)
-		report.Warnings = append(report.Warnings, warns...)
-		report.Warnings = append(report.Warnings, cov.Warnings...)
-
-		if err != nil {
-			report.Warnings = append(report.Warnings, "bundles: "+err.Error())
-
-			continue
-		}
-
-		result, err := bundle.Render(e.vault.BundlesDir(), req)
-		report.Warnings = append(report.Warnings, result.Warnings...)
-
-		if err != nil {
-			report.Warnings = append(report.Warnings, "bundles: "+err.Error())
-
-			continue
-		}
-
-		if !entry.Registered {
-			continue
-		}
-
-		e.refreshBundleHost(host, dirOf(e.vault.BundlesDir(), host), entry, result, st, report)
+		e.refreshBundle(st, report, hostName)
 	}
+}
+
+// refreshBundle renders one enabled host and updates it when the rendered
+// version moved.
+func (e *Engine) refreshBundle(st *state.State, report *Report, hostName string) {
+	entry := st.Bundles[hostName]
+	if !entry.Enabled {
+		return
+	}
+
+	host, err := bundle.ParseHost(hostName)
+	if err != nil {
+		report.Warnings = append(report.Warnings, "bundles: "+err.Error())
+
+		return
+	}
+
+	req, cov, warns, err := e.bundleRenderRequest(host)
+	report.Warnings = append(report.Warnings, warns...)
+	report.Warnings = append(report.Warnings, cov.Warnings...)
+
+	if err != nil {
+		report.Warnings = append(report.Warnings, "bundles: "+err.Error())
+
+		return
+	}
+
+	result, err := bundle.Render(e.vault.BundlesDir(), req)
+	report.Warnings = append(report.Warnings, result.Warnings...)
+
+	if err != nil {
+		report.Warnings = append(report.Warnings, "bundles: "+err.Error())
+
+		return
+	}
+
+	if entry.AutoAttempt != nil && entry.VerifyTier != state.VerifyExecuted && entry.Version == result.Version {
+		// The unattended attempt never verified: refresh only when the
+		// rendered bundle actually changes, so a failed or unverifiable
+		// probe is not retried on every sync. The current tier decides (an
+		// explicit enable or a successful update lifts the hold), not the
+		// snapshot the first attempt left behind. The retry is explicit:
+		// `beadle bundles enable <host>`.
+		return
+	}
+
+	if !entry.Registered {
+		return
+	}
+
+	e.refreshBundleHost(host, dirOf(e.vault.BundlesDir(), host), entry, result, st, report)
 }
 
 func (e *Engine) refreshBundleHost(host bundle.Host, dir string, entry state.BundleState, result bundle.Result, st *state.State, report *Report) {
@@ -653,6 +823,7 @@ func (e *Engine) refreshBundleHost(host bundle.Host, dir string, entry state.Bun
 
 		tier, note := e.probeBundle(host, dir, result.Version)
 		entry.VerifyTier, entry.ProbeNote = tier, note
+		syncAttemptTier(&entry)
 		st.Bundles[string(host)] = entry
 
 		if tier == state.VerifyFailed {
@@ -665,6 +836,7 @@ func (e *Engine) refreshBundleHost(host bundle.Host, dir string, entry state.Bun
 	if note, ok := e.validateBundle(host, dir); !ok {
 		entry.VerifyTier = state.VerifyFailed
 		entry.ProbeNote = note
+		syncAttemptTier(&entry)
 		st.Bundles[string(host)] = entry
 
 		report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: the %s bundle did not validate; %s", host, bundleRetry(host)))
@@ -677,6 +849,7 @@ func (e *Engine) refreshBundleHost(host bundle.Host, dir string, entry state.Bun
 	if !ok {
 		entry.VerifyTier = state.VerifyFailed
 		entry.ProbeNote = truncateNote(output)
+		syncAttemptTier(&entry)
 		st.Bundles[string(host)] = entry
 
 		report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: updating %s failed: %s; %s", host, output, bundleRetry(host)))
@@ -691,6 +864,8 @@ func (e *Engine) refreshBundleHost(host bundle.Host, dir string, entry state.Bun
 	entry.VerifyTier = tier
 	entry.ProbeNote = note
 
+	syncAttemptTier(&entry)
+
 	st.Bundles[string(host)] = entry
 
 	if tier != state.VerifyExecuted {
@@ -698,6 +873,15 @@ func (e *Engine) refreshBundleHost(host bundle.Host, dir string, entry state.Bun
 	}
 
 	report.Bundles = append(report.Bundles, BundleResult{Host: string(host), Action: bundleEnabled, Version: result.Version, Registered: true, Tier: tier, Note: note})
+}
+
+// syncAttemptTier keeps the attempt record honest: once a probe (explicit or
+// refreshed) knows the current tier, the record follows it instead of the
+// snapshot the first unattended attempt left behind.
+func syncAttemptTier(entry *state.BundleState) {
+	if entry.AutoAttempt != nil {
+		entry.AutoAttempt.Tier = entry.VerifyTier
+	}
 }
 
 func dirOf(root string, host bundle.Host) string {
@@ -887,6 +1071,10 @@ func (e *Engine) bundleHostStateIssues(ctx context.Context, st *state.State, hos
 	if !entry.Enabled {
 		if entry.Registered {
 			issues = append(issues, Issue{Severity: SeverityWarn, Message: fmt.Sprintf("bundle %s is still registered; run beadle bundles disable %s", hostName, hostName)})
+		}
+
+		if entry.AutoAttempt != nil && entry.AutoAttempt.Tier != state.VerifyExecuted && !st.BundleOptedOut(hostName) {
+			issues = append(issues, Issue{Severity: SeverityInfo, Message: fmt.Sprintf("bundle %s did not verify after the automatic attempt (%s); %s", hostName, entry.AutoAttempt.Tier, bundleRetry(host))})
 		}
 
 		return issues

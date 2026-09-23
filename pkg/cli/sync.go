@@ -25,7 +25,7 @@ func (a *app) newSyncCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would change without writing anything")
-	cmd.Flags().StringSliceVar(&kinds, "kind", nil, "only these kinds (rules, mcp, skills, permissions, memory, projects)")
+	cmd.Flags().StringSliceVar(&kinds, "kind", nil, "only these kinds (rules, mcp, skills, permissions, memory, projects, subagents, commands)")
 	cmd.Flags().BoolVar(&refresh, "refresh-digest", false, "overwrite the frozen memory digest block even if it was edited by hand")
 
 	return cmd

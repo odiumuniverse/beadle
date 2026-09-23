@@ -84,6 +84,7 @@ type Report struct {
 	Digest    []DigestResult   `json:"digest,omitempty"`
 	Bundles   []BundleResult   `json:"bundles,omitempty"`
 	Warnings  []string         `json:"warnings,omitempty"`
+	Notes     []string         `json:"notes,omitempty"`
 	Resolved  []string         `json:"resolved,omitempty"`
 	Refusals  []state.Refusal  `json:"refusals,omitempty"`
 	Adoptions []AdoptResult    `json:"adoptions,omitempty"`

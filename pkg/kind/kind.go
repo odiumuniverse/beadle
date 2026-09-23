@@ -10,7 +10,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/odiumuniverse/beadle/pkg/command"
 	"github.com/odiumuniverse/beadle/pkg/merge"
+	"github.com/odiumuniverse/beadle/pkg/subagent"
 )
 
 type ID string
@@ -22,6 +24,8 @@ const (
 	Permissions ID = "permissions"
 	Memory      ID = "memory"
 	Projects    ID = "projects"
+	Subagents   ID = "subagents"
+	Commands    ID = "commands"
 )
 
 const RulesKey = "main"
@@ -52,6 +56,8 @@ var specs = []Spec{
 	{ID: Permissions, Merge: mergeNever, Group: sameKey},
 	{ID: Memory, Merge: mergeFile, Group: firstSegment},
 	{ID: Projects, NoImplicitDelete: true, Merge: mergeFile, Group: firstSegment},
+	{ID: Subagents, Merge: mergeFile, Lift: subagent.Lift, Group: firstSegment},
+	{ID: Commands, Merge: mergeFile, Lift: command.Lift, Group: firstSegment},
 }
 
 func All() []Spec {

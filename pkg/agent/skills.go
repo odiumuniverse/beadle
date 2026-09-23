@@ -31,7 +31,10 @@ type skillsSurface struct {
 	// separate namespace (Claude: beadle-canon:<name>), so a bundle copy
 	// never collapses with and never shadows a file copy.
 	namespacedBundle bool
-	traits           Traits
+	// flatSkills tells whether the host reads flat `<name>.md` copies from
+	// its own directory as skills (OpenCode, Pi): the name is the basename.
+	flatSkills bool
+	traits     Traits
 }
 
 // SkillCaps describes how an agent composes same-name skill copies from its
@@ -70,6 +73,10 @@ type SkillRef struct {
 	Dir  string
 	Name string
 	Root string
+	// File is the flat `<name>.md` path when the copy is a flat file; empty
+	// for a directory copy. Root points at the file the host reads (the
+	// resolved target for a symlink).
+	File string
 }
 
 // SkillReader lists the skill copies an agent can read.
@@ -81,6 +88,14 @@ type SkillReader interface {
 // order (the own directory first).
 type SkillReadArea interface {
 	ReadDirs() []string
+}
+
+// SkillFlatReader lists the flat `<name>.md` copies a skills surface reads
+// from its own directory: readable names → file path, plus the names a
+// same-name skill directory shadows. Every skills surface implements it; a
+// host that does not read flat skills reports empty maps.
+type SkillFlatReader interface {
+	FlatSkillRefs() (readable, shadowed map[string]string, err error)
 }
 
 func (s *skillsSurface) ReadableSkills() ([]SkillRef, error) {
@@ -96,6 +111,8 @@ func (s *skillsSurface) ReadableSkills() ([]SkillRef, error) {
 			return nil, fmt.Errorf("read skills directory %s: %w", dir, err)
 		}
 
+		claimed := map[string]struct{}{}
+
 		for _, entry := range entries {
 			if !skill.ValidName(entry.Name()) {
 				continue
@@ -106,11 +123,127 @@ func (s *skillsSurface) ReadableSkills() ([]SkillRef, error) {
 				continue
 			}
 
+			claimed[entry.Name()] = struct{}{}
+
 			refs = append(refs, SkillRef{Dir: dir, Name: entry.Name(), Root: root})
+		}
+
+		// Flat copies are read from the host's own directory only: Pi
+		// ignores root .md files in ~/.agents/skills, and the other read
+		// areas have no verified flat semantics.
+		if !s.flatSkills || dir != s.dir {
+			continue
+		}
+
+		for _, entry := range entries {
+			name, ok := skill.FlatName(entry.Name())
+			if !ok {
+				continue
+			}
+
+			if _, taken := claimed[name]; taken {
+				continue
+			}
+
+			file := filepath.Join(dir, entry.Name())
+
+			root, ok := s.flatRoot(file)
+			if !ok {
+				continue
+			}
+
+			refs = append(refs, SkillRef{Dir: dir, Name: name, Root: root, File: file})
 		}
 	}
 
 	return refs, nil
+}
+
+// flatRoot resolves a flat copy to the regular file the host reads: the file
+// itself, or a symlink target. Copies pointing into an ignored area (plugin
+// caches) are not readable, mirroring the symlinked directory rule.
+func (s *skillsSurface) flatRoot(file string) (string, bool) {
+	info, err := os.Lstat(file)
+	if err != nil {
+		return "", false
+	}
+
+	if info.Mode()&fs.ModeSymlink != 0 {
+		target, err := filepath.EvalSymlinks(file)
+		if err != nil || s.ignored(target) {
+			return "", false
+		}
+
+		info, err = os.Stat(target)
+		if err != nil || !info.Mode().IsRegular() {
+			return "", false
+		}
+
+		return target, true
+	}
+
+	if !info.Mode().IsRegular() {
+		return "", false
+	}
+
+	return file, true
+}
+
+func (s *skillsSurface) FlatSkillRefs() (map[string]string, map[string]string, error) {
+	readable := map[string]string{}
+	shadowed := map[string]string{}
+
+	if !s.flatSkills {
+		return readable, shadowed, nil
+	}
+
+	entries, err := os.ReadDir(s.dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return readable, shadowed, nil
+	}
+
+	if err != nil {
+		return nil, nil, fmt.Errorf("read skills directory %s: %w", s.dir, err)
+	}
+
+	claimed := map[string]struct{}{}
+
+	for _, entry := range entries {
+		if !skill.ValidName(entry.Name()) {
+			continue
+		}
+
+		if _, _, ok := s.skillRoot(entry); ok {
+			claimed[entry.Name()] = struct{}{}
+		}
+	}
+
+	for _, entry := range entries {
+		name, ok := skill.FlatName(entry.Name())
+		if !ok {
+			continue
+		}
+
+		file := filepath.Join(s.dir, entry.Name())
+
+		if _, taken := claimed[name]; taken {
+			if _, ok := s.flatRoot(file); !ok {
+				continue
+			}
+
+			shadowed[name] = file
+
+			continue
+		}
+
+		if _, ok := s.flatRoot(file); !ok {
+			continue
+		}
+
+		readable[name] = file
+	}
+
+	return readable, shadowed, nil
 }
 
 func (s *skillsSurface) Kind() kind.ID { return kind.Skills }
@@ -132,6 +265,8 @@ func (s *skillsSurface) Read(context.Context) (Snapshot, error) {
 	}
 
 	snap := Snapshot{Items: kind.Items{}, Present: true, ReadOnly: map[string]string{}, Unreadable: map[string]string{}}
+
+	claimed := map[string]struct{}{}
 
 	for _, entry := range entries {
 		name := entry.Name()
@@ -155,6 +290,8 @@ func (s *skillsSurface) Read(context.Context) (Snapshot, error) {
 			continue
 		}
 
+		claimed[name] = struct{}{}
+
 		tree, err := skill.ReadTree(root)
 		if err != nil {
 			return Snapshot{}, err
@@ -169,7 +306,96 @@ func (s *skillsSurface) Read(context.Context) (Snapshot, error) {
 		}
 	}
 
+	if err := s.readFlat(entries, claimed, &snap); err != nil {
+		return Snapshot{}, err
+	}
+
 	return snap, nil
+}
+
+// readFlat adds the flat `<name>.md` copies of the own directory. A copy
+// shadowed by a same-name skill directory stays on disk untouched: the host
+// keeps one copy per name, and the directory wins.
+func (s *skillsSurface) readFlat(entries []fs.DirEntry, claimed map[string]struct{}, snap *Snapshot) error {
+	if !s.flatSkills {
+		return nil
+	}
+
+	for _, entry := range entries {
+		name, ok := skill.FlatName(entry.Name())
+		if !ok {
+			continue
+		}
+
+		file := filepath.Join(s.dir, entry.Name())
+
+		if _, taken := claimed[name]; taken {
+			// Only a real flat copy is shadowed: a directory or a symlink to
+			// a directory named `<name>.md` is not a skill at all.
+			if _, ok := s.flatRoot(file); !ok {
+				continue
+			}
+
+			snap.Warnings = append(snap.Warnings, fmt.Sprintf(
+				"flat skill %s is shadowed by %s/%s; the file is left untouched", entry.Name(), name, skill.FileName))
+
+			continue
+		}
+
+		if entry.Type()&fs.ModeSymlink == 0 && !entry.Type().IsRegular() {
+			// A directory or a device named `<name>.md` is not a flat copy.
+			continue
+		}
+
+		root, reason, ok := s.flatCopy(entry, name, snap)
+		if !ok {
+			continue
+		}
+
+		data, err := os.ReadFile(root) //nolint:gosec // G304: skill paths are resolved by the tool
+		if err != nil {
+			return fmt.Errorf("read flat skill %s: %w", root, err)
+		}
+
+		if reason != "" {
+			snap.ReadOnly[name] = reason
+		}
+
+		snap.Items[name+"/"+skill.FileName] = data
+	}
+
+	return nil
+}
+
+// flatCopy resolves one flat entry to the file the host reads: the file
+// itself, or a symlink target. A broken symlink is recorded as unreadable; a
+// symlink into an ignored area (plugin caches) is skipped, mirroring the
+// symlinked directory rule.
+func (s *skillsSurface) flatCopy(entry fs.DirEntry, name string, snap *Snapshot) (string, string, bool) {
+	path := filepath.Join(s.dir, entry.Name())
+
+	if entry.Type()&fs.ModeSymlink == 0 {
+		return path, "", true
+	}
+
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		snap.ReadOnly[name] = "broken symlink: " + path
+		snap.Unreadable[name] = path
+
+		return "", "", false
+	}
+
+	if s.ignored(target) {
+		return "", "", false
+	}
+
+	info, err := os.Stat(target)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", "", false
+	}
+
+	return target, "symlink to " + target, true
 }
 
 func (s *skillsSurface) skillRoot(entry fs.DirEntry) (string, string, bool) {
@@ -225,7 +451,7 @@ func (s *skillsSurface) Write(ctx context.Context, desired kind.Items) error {
 			continue
 		}
 
-		if err := os.RemoveAll(filepath.Join(s.dir, name)); err != nil {
+		if err := s.removeCopy(name); err != nil {
 			return fmt.Errorf("remove skill %s: %w", name, err)
 		}
 	}
@@ -243,6 +469,22 @@ func (s *skillsSurface) Write(ctx context.Context, desired kind.Items) error {
 		if err := skill.SyncTree(s.dir, name, want[name]); err != nil {
 			return err
 		}
+	}
+
+	return nil
+}
+
+// removeCopy deletes the copies of a name that left the canon: the directory
+// and the flat `<name>.md` file. A shadowed flat file would otherwise be
+// re-adopted by the next sync.
+func (s *skillsSurface) removeCopy(name string) error {
+	if err := os.RemoveAll(filepath.Join(s.dir, name)); err != nil {
+		return err
+	}
+
+	flat := skill.FlatPath(s.dir, name)
+	if info, err := os.Lstat(flat); err == nil && info.Mode().IsRegular() {
+		return os.Remove(flat)
 	}
 
 	return nil

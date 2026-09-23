@@ -26,6 +26,9 @@ const (
 	metaFile         = "plugin.json"
 	skillsDir        = "skills"
 	skillFile        = "SKILL.md"
+	// agentsDir holds the plugin's subagent definitions (Claude plugin
+	// layout): beadle presents them to hosts that do not read plugins.
+	agentsDir        = "agents"
 	commandsDir      = "commands"
 	hooksDir         = "hooks"
 	hooksFile        = "hooks.json"
@@ -50,6 +53,7 @@ type Plugin struct {
 	GitCommitSha   string
 	Description    string
 	Skills         []string
+	Agents         []string
 	Commands       []string
 	Hooks          []string
 	MCPServers     []string
@@ -204,6 +208,7 @@ func pluginFromRecord(name, marketplace string, record installRecord, manifest *
 
 	p.Skills = scanSkills(p.InstallPath)
 	p.Commands = scanCommands(p.InstallPath)
+	p.Agents = scanAgents(p.InstallPath)
 	p.Hooks = scanHooks(p.InstallPath)
 	p.MCPServers = scanMCPServers(p.InstallPath)
 	p.PluginRootRefs = scanRootRefs(p.InstallPath)
@@ -352,6 +357,27 @@ func scanSkills(installPath string) []string {
 		if exists(filepath.Join(path, skillFile)) {
 			names = append(names, entry.Name())
 		}
+	}
+
+	slices.Sort(names)
+
+	return names
+}
+
+func scanAgents(installPath string) []string {
+	entries, err := os.ReadDir(filepath.Join(installPath, agentsDir))
+	if err != nil {
+		return nil
+	}
+
+	var names []string
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+
+		names = append(names, strings.TrimSuffix(entry.Name(), ".md"))
 	}
 
 	slices.Sort(names)

@@ -38,6 +38,12 @@ const (
 	noteUnstableRegistry = "the plugin registry kept changing while being read; using the last consistent view"
 )
 
+// reservedPluginDir reports the beadle-owned directories under plugins/ that
+// are not marketplaces: the quarantine area and the agent render artifacts.
+func reservedPluginDir(name string) bool {
+	return name == quarantineDirName || name == farmRenderDirName
+}
+
 type PluginAction string
 
 const (
@@ -277,7 +283,7 @@ func (e *Engine) orphanPivotDirs(ledger pluginLedger, pinned map[string][]string
 	var dirs []string
 
 	for _, marketplace := range marketplaces {
-		if !marketplace.IsDir() || marketplace.Name() == quarantineDirName {
+		if !marketplace.IsDir() || reservedPluginDir(marketplace.Name()) {
 			continue
 		}
 
@@ -422,7 +428,7 @@ func orphanFarmResults(pruned map[string]int) []FarmResult {
 	for _, key := range slices.Sorted(maps.Keys(pruned)) {
 		agentID, plugin, _ := strings.Cut(key, "\x00")
 
-		results = append(results, FarmResult{Agent: agentID, Plugin: plugin, Action: FarmPruned, Count: pruned[key], Note: noteOrphanLink})
+		results = append(results, FarmResult{Agent: agentID, Kind: kind.Skills, Plugin: plugin, Action: FarmPruned, Count: pruned[key], Note: noteOrphanLink})
 	}
 
 	return results
@@ -499,7 +505,7 @@ func (e *Engine) prunePinPivots(ledger pluginLedger, pinned map[string][]string)
 	var warns []string
 
 	for _, marketplace := range marketplaces {
-		if !marketplace.IsDir() || marketplace.Name() == quarantineDirName {
+		if !marketplace.IsDir() || reservedPluginDir(marketplace.Name()) {
 			continue
 		}
 

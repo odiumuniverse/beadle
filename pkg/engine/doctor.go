@@ -84,11 +84,13 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.skillCollisionIssues(active)...)
 	issues = append(issues, e.skillShadowIssues(active)...)
 	issues = append(issues, e.visibilityIssues(st, active)...)
+	issues = append(issues, e.skillReferenceIssues(st, active)...)
 	issues = append(issues, e.adoptionIssues(st)...)
 	issues = append(issues, e.canonSkillValidityIssues(st)...)
 	issues = append(issues, e.secretIssues()...)
 	issues = append(issues, e.projectScopeIssues(ctx, active)...)
 	issues = append(issues, e.projectPolicyIssues(active)...)
+	issues = append(issues, e.claudeUserRulesIssues(active)...)
 	issues = append(issues, e.pluginRefIssues(active)...)
 	issues = append(issues, e.pluginPivotIssues(ctx)...)
 	issues = append(issues, e.orphanPivotIssues()...)
@@ -100,7 +102,19 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.memorySecretIssues()...)
 	issues = append(issues, e.rulesSecretIssues()...)
 	issues = append(issues, e.permissionCanonIssues()...)
+	issues = append(issues, e.subagentIssues(active)...)
+	issues = append(issues, e.commandIssues(active)...)
+	issues = append(issues, e.openCodeInlineAgentIssues()...)
 	issues = append(issues, e.daemonIssues()...)
+	issues = append(issues, e.piMCPAdapterIssues(ctx, active)...)
+	issues = append(issues, e.kiloLegacySkillIssues(active)...)
+	issues = append(issues, e.hookFileIssues(active)...)
+	issues = append(issues, e.pluginHookIssues()...)
+	issues = append(issues, e.hookSecretIssues()...)
+	issues = append(issues, e.FlatSkillIssues(active)...)
+	issues = append(issues, e.FarmAgentIssues()...)
+	issues = append(issues, e.FarmCommandIssues()...)
+	issues = append(issues, e.DSHIssues()...)
 
 	return issues, nil
 }
@@ -683,6 +697,13 @@ func (e *Engine) skillShadowIssues(active []*agent.Agent) []Issue {
 }
 
 func (e *Engine) skillShadowIssuesFor(a *agent.Agent, refs []agent.SkillRef) []Issue {
+	if surface := a.Surface(kind.Skills); surface != nil && skillCaps(surface).Shadowing {
+		// A host with verified precedence shows one copy per name: hidden
+		// copies are not user-visible duplicates. The visible winner is still
+		// checked against the canon by visibilityIssues.
+		return nil
+	}
+
 	byName := map[string][]agent.SkillRef{}
 
 	for _, ref := range refs {
@@ -1147,7 +1168,7 @@ func (e *Engine) strayPinPivotIssues(ledger pluginLedger) []Issue {
 	var issues []Issue
 
 	for _, marketplace := range marketplaces {
-		if !marketplace.IsDir() || marketplace.Name() == quarantineDirName {
+		if !marketplace.IsDir() || reservedPluginDir(marketplace.Name()) {
 			continue
 		}
 
@@ -1407,10 +1428,17 @@ func (e *Engine) projectSurfaceIssues(surface agent.Surface, policy proj.Policy)
 	rel := file.ProjectRel()
 	path := surface.Path()
 
+	// A per-file project surface (.cursor/rules, .claude/rules) is a directory
+	// of files: the single-file target gate below would refuse the directory
+	// itself, so it is skipped for surfaces that declare themselves as such.
+	_, directory := surface.(agent.ProjectDirectory)
+
 	var issues []Issue
 
-	if err := agent.CheckProjectTarget(path); err != nil {
-		issues = append(issues, Issue{Severity: SeverityError, Kind: kind.Projects, Message: err.Error()})
+	if !directory {
+		if err := agent.CheckProjectTarget(path); err != nil {
+			issues = append(issues, Issue{Severity: SeverityError, Kind: kind.Projects, Message: err.Error()})
+		}
 	}
 
 	publishable, err := e.projectPublishable(rel)
@@ -1427,10 +1455,18 @@ func (e *Engine) projectSurfaceIssues(surface agent.Surface, policy proj.Policy)
 		})
 	}
 
+	if directory {
+		return issues
+	}
+
 	return append(issues, projectLeakIssues(surface, path, rel, allowed)...)
 }
 
 func projectLeakIssues(surface agent.Surface, path, rel string, allowed bool) []Issue {
+	if _, directory := surface.(agent.ProjectDirectory); directory {
+		return nil
+	}
+
 	data, present, err := readOptional(path)
 	if err != nil {
 		return []Issue{{Severity: SeverityWarn, Kind: kind.Projects, Message: err.Error()}}
@@ -1467,4 +1503,160 @@ func boolWord(value bool) string {
 	}
 
 	return "no"
+}
+
+// subagentIssues reports the canonical subagent diagnostics:
+// host-expressiveness notes and secret-like canon lines.
+func (e *Engine) subagentIssues(active []*agent.Agent) []Issue {
+	items, _, err := e.loadVault(kind.Subagents)
+	if err != nil {
+		return []Issue{{Severity: SeverityWarn, Kind: kind.Subagents, Message: "cannot read the subagent canon: " + err.Error()}}
+	}
+
+	issues := []Issue{}
+
+	for _, a := range active {
+		for _, key := range slices.Sorted(maps.Keys(items)) {
+			for _, notice := range a.Notices(kind.Subagents, key, items[key]) {
+				issues = append(issues, Issue{Severity: SeverityInfo, Kind: kind.Subagents, Agent: a.ID, Message: notice.Message})
+			}
+		}
+	}
+
+	for _, key := range slices.Sorted(maps.Keys(items)) {
+		if hits := secret.ScanText(items[key]); len(hits) > 0 {
+			issues = append(issues, Issue{
+				Severity: SeverityWarn, Kind: kind.Subagents,
+				Message: fmt.Sprintf(
+					"subagent %s holds %d secret-like line(s); the secret gate covers mcp, memory and project files only — keep tokens out of subagents",
+					key, len(hits)),
+			})
+		}
+	}
+
+	return issues
+}
+
+// openCodeInlineAgentIssues reports the agents declared inline in the
+// OpenCode config: they are a surface beadle does not manage (A-28 §5.5).
+func (e *Engine) openCodeInlineAgentIssues() []Issue {
+	if e.home == "" {
+		return nil
+	}
+
+	names, err := agent.OpenCodeInlineAgents(e.home)
+	if err != nil {
+		return []Issue{{
+			Severity: SeverityWarn, Kind: kind.Subagents, Agent: agent.OpenCodeID,
+			Message: "cannot read inline agents: " + err.Error(),
+		}}
+	}
+
+	if len(names) == 0 {
+		return nil
+	}
+
+	return []Issue{{
+		Severity: SeverityInfo, Kind: kind.Subagents, Agent: agent.OpenCodeID,
+		Message: fmt.Sprintf(
+			"opencode.json(c) declares inline agents: %s; beadle does not manage them — move them to agents/<name>.md",
+			strings.Join(names, ", ")),
+	}}
+}
+
+// commandIssues reports the canonical command diagnostics: host notes,
+// the Claude skill-over-command precedence, the deprecated Codex prompts,
+// the unmanaged Cursor directory and secret-like canon lines.
+func (e *Engine) commandIssues(active []*agent.Agent) []Issue {
+	items, _, err := e.loadVault(kind.Commands)
+	if err != nil {
+		return []Issue{{Severity: SeverityWarn, Kind: kind.Commands, Message: "cannot read the command canon: " + err.Error()}}
+	}
+
+	var issues []Issue
+
+	for _, a := range active {
+		for _, key := range slices.Sorted(maps.Keys(items)) {
+			for _, notice := range a.Notices(kind.Commands, key, items[key]) {
+				issues = append(issues, Issue{Severity: SeverityInfo, Kind: kind.Commands, Agent: a.ID, Message: notice.Message})
+			}
+		}
+	}
+
+	issues = append(issues, e.claudeCommandSkillIssues(items)...)
+	issues = append(issues, e.codexPromptIssues(active)...)
+	issues = append(issues, e.cursorCommandIssues()...)
+
+	for _, key := range slices.Sorted(maps.Keys(items)) {
+		if hits := secret.ScanText(items[key]); len(hits) > 0 {
+			issues = append(issues, Issue{
+				Severity: SeverityWarn, Kind: kind.Commands,
+				Message: fmt.Sprintf(
+					"command %s holds %d secret-like line(s); the secret gate covers mcp, memory and project files only — keep tokens out of commands",
+					key, len(hits)),
+			})
+		}
+	}
+
+	return issues
+}
+
+// claudeCommandSkillIssues reports names where a Claude skill shadows a
+// legacy command: the host prefers the skill.
+func (e *Engine) claudeCommandSkillIssues(items kind.Items) []Issue {
+	skills, err := skill.ReadDir(e.vault.SkillsDir())
+	if err != nil {
+		return nil
+	}
+
+	var issues []Issue
+
+	for _, key := range slices.Sorted(maps.Keys(items)) {
+		name := strings.TrimSuffix(key, ".md")
+
+		if _, taken := skills[name]; taken {
+			issues = append(issues, Issue{
+				Severity: SeverityWarn, Kind: kind.Commands, Agent: agent.ClaudeCodeID,
+				Message: fmt.Sprintf("claude prefers the skill %q over the legacy command %s; rename one of them", name, key),
+			})
+		}
+	}
+
+	return issues
+}
+
+// codexPromptIssues reports the deprecated Codex prompts surface.
+func (e *Engine) codexPromptIssues(active []*agent.Agent) []Issue {
+	var issues []Issue
+
+	for _, a := range active {
+		if a.Surface(kind.Commands) == nil {
+			continue
+		}
+
+		if a.ID == agent.CodexID {
+			issues = append(issues, Issue{
+				Severity: SeverityInfo, Kind: kind.Commands, Agent: a.ID,
+				Message: "codex prompts are deprecated; beadle pulls them into the vault and does not write them back",
+			})
+		}
+	}
+
+	return issues
+}
+
+// cursorCommandIssues reports the unmanaged Cursor commands directory.
+func (e *Engine) cursorCommandIssues() []Issue {
+	if e.home == "" {
+		return nil
+	}
+
+	if _, err := os.Stat(filepath.Join(e.home, ".cursor", "commands")); err == nil {
+		return []Issue{{
+			Severity: SeverityInfo, Kind: kind.Commands, Agent: agent.CursorID,
+			Message: "~/.cursor/commands exists; cursor file commands are not supported yet and are left untouched",
+		}}
+	}
+
+	return nil
 }

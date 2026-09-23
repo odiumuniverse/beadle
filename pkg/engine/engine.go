@@ -17,6 +17,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/digest"
 	"github.com/odiumuniverse/beadle/pkg/history"
+	"github.com/odiumuniverse/beadle/pkg/hooks"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/lock"
 	"github.com/odiumuniverse/beadle/pkg/memory"
@@ -44,6 +45,7 @@ type Engine struct {
 	policyLoaded bool
 	rulings      *rulings.Ledger
 	rulingsDirty bool
+	autoBundles  bool
 }
 
 type Option func(*Engine)
@@ -66,6 +68,14 @@ func WithCwd(cwd string) Option {
 
 func WithKeyring(keyring secret.Keyring) Option {
 	return func(e *Engine) { e.keyring = keyring }
+}
+
+// WithBundleAutoEnable lets a full forward sync make one unattended bundle
+// enable attempt per untouched host. The CLI sets it; the plain engine API
+// stays explicit, so tests and library callers never register anything with a
+// host CLI on their own.
+func WithBundleAutoEnable() Option {
+	return func(e *Engine) { e.autoBundles = true }
 }
 
 func New(v *vault.Vault, cfg *config.Config, agents []*agent.Agent, opts ...Option) (*Engine, error) {
@@ -144,6 +154,7 @@ func (e *Engine) sync(ctx context.Context, opts SyncOptions) (*Report, error) {
 
 	report := &Report{DryRun: opts.DryRun}
 	e.warnKeyring(report)
+	e.noteConfigMigration(report, opts)
 	e.beginRulings(opts)
 
 	if !opts.DryRun {
@@ -160,7 +171,26 @@ func (e *Engine) sync(ctx context.Context, opts SyncOptions) (*Report, error) {
 
 	e.liftRulings(report)
 
-	e.refreshBundles(ctx, st, report, opts)
+	var autoHandled map[string]bool
+
+	if e.autoBundles && !opts.DryRun && fullForwardSync(opts) {
+		// The unattended attempt runs after the kind loop: the bundle then
+		// renders from the merged canon (host edits were adopted first) and
+		// from the same host state refresh will see, so the rendered version
+		// stays stable within the sync.
+		handled, err := e.autoEnableBundles(ctx, active, st, report)
+		if err != nil {
+			report.Warnings = append(report.Warnings, "bundles: "+err.Error())
+		}
+
+		autoHandled = handled
+	}
+
+	e.refreshBundles(ctx, st, report, opts, autoHandled)
+
+	e.noteSkillReferencesIfFull(st, active, report, opts)
+
+	e.presentHooks(st, report, active, opts)
 
 	e.syncDigest(ctx, report, active, st, opts)
 
@@ -205,6 +235,70 @@ func (e *Engine) warnKeyring(report *Report) {
 	if err := e.secrets.KeyringErr(); err != nil {
 		report.Warnings = append(report.Warnings, "keyring unavailable: "+err.Error())
 	}
+}
+
+// noteConfigMigration persists the in-memory config v3 flips and reports the
+// notes that were not rendered yet; a dry run leaves both the file and the
+// notes alone.
+func (e *Engine) noteConfigMigration(report *Report, opts SyncOptions) {
+	if opts.DryRun || !e.config.Migrated() {
+		return
+	}
+
+	e.approveCanonHooks(report)
+
+	if err := e.config.Save(e.vault.ConfigPath()); err != nil {
+		report.Warnings = append(report.Warnings, "config: cannot persist the migrated config: "+err.Error())
+
+		return
+	}
+
+	for _, note := range e.config.TakeMigrationNotes() {
+		report.Warnings = append(report.Warnings, "config: "+note)
+	}
+}
+
+// ApproveCanonHooks lifts the one-time trust for hooks that were already in
+// the vault canon when beadle started gating approvals: they ran on the host
+// before the v3 migration, so approving each one by hand would be busywork.
+// It is a no-op unless the config was just migrated; new hooks and
+// plugin-sourced hooks still need `beadle hooks approve`.
+func (e *Engine) ApproveCanonHooks(report *Report) {
+	if !e.config.Migrated() {
+		return
+	}
+
+	e.approveCanonHooks(report)
+}
+
+func (e *Engine) approveCanonHooks(report *Report) {
+	canon, err := hooks.Load(e.vault.HooksPath())
+	if err != nil {
+		report.Warnings = append(report.Warnings, "hooks: cannot read the canon: "+err.Error())
+
+		return
+	}
+
+	var approved []string
+
+	for name := range canon {
+		if e.config.HookApproved(name) {
+			continue
+		}
+
+		e.config.ApproveHook(name)
+		approved = append(approved, name)
+	}
+
+	if len(approved) == 0 {
+		return
+	}
+
+	slices.Sort(approved)
+
+	report.Notes = append(report.Notes, fmt.Sprintf(
+		"hooks: approved %d canon hook(s) as part of the one-time migration (%s); revoke with `beadle hooks revoke <name>`",
+		len(approved), strings.Join(approved, ", ")))
 }
 
 func (e *Engine) memoryCleanupEnabled(opts SyncOptions) bool {
