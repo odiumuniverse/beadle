@@ -11,12 +11,15 @@ import (
 	"fmt"
 	"io/fs"
 	"maps"
+	"net"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/mcp"
@@ -50,8 +53,20 @@ const (
 	pluginDataVar = "${PLUGIN_DATA}"
 )
 
-// namePattern is the §5.5 plugin name shape.
-var namePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$`)
+// namePattern is the §5.5 plugin name shape: 1-64 characters from [a-z0-9.-],
+// starting and ending alphanumeric.
+var namePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9.-]{0,62}[a-z0-9])?$`)
+
+// validPluginName checks the §5.5 plugin name: the character pattern plus the
+// two forbidden sequences. RE2 has no lookahead, so "--" and ".." are checked
+// by hand.
+func validPluginName(name string) bool {
+	if !namePattern.MatchString(name) {
+		return false
+	}
+
+	return !strings.Contains(name, "--") && !strings.Contains(name, "..")
+}
 
 // Manifest is the closed plugin.json schema of Agent Plugins v1.0.0. Client
 // data belongs under extensions, keyed by a reverse-domain name.
@@ -129,6 +144,10 @@ func renderManifest(opts Options) ([]byte, error) {
 
 	if manifest.Name == "" {
 		manifest.Name = "beadle-canon"
+	}
+
+	if !validPluginName(manifest.Name) {
+		return nil, fmt.Errorf("render %s: %q is not a valid plugin name", ManifestFile, manifest.Name)
 	}
 
 	data, err := marshalJSON(manifest)
@@ -243,12 +262,17 @@ func renderServer(name string, server mcp.Server) (map[string]any, []string, boo
 		return renderRemoteServer(name, server)
 	}
 
+	if server.Transport == mcp.TransportHTTP || server.Transport == mcp.TransportSSE {
+		return nil, []string{fmt.Sprintf("mcp %s is skipped: the %s transport carries no url", name, server.Transport)}, false
+	}
+
 	return renderStdioServer(name, server)
 }
 
 func renderRemoteServer(name string, server mcp.Server) (map[string]any, []string, bool) {
-	if !strings.HasPrefix(server.URL, "http://") && !strings.HasPrefix(server.URL, "https://") {
-		return nil, []string{fmt.Sprintf("mcp %s is skipped: the url %q is not an absolute http(s) url", name, server.URL)}, false
+	if !validRemoteURL(server.URL) {
+		return nil, []string{fmt.Sprintf(
+			"mcp %s is skipped: the url %q must be https without user-info or a fragment (http is allowed on loopback only)", name, server.URL)}, false
 	}
 
 	transport := TransportHTTP
@@ -258,12 +282,14 @@ func renderRemoteServer(name string, server mcp.Server) (map[string]any, []strin
 
 	entry := map[string]any{"type": transport, "url": server.URL}
 
-	var warnings []string
+	warnings := clientManagedWarnings(name, "url", []string{server.URL}, false)
 
 	if len(server.Headers) > 0 {
 		entry["headers"] = server.Headers
+	}
 
-		warnings = append(warnings, clientManagedWarnings(name, "headers", server.Headers)...)
+	for _, key := range slices.Sorted(maps.Keys(server.Headers)) {
+		warnings = append(warnings, clientManagedWarnings(name, "headers "+key, []string{server.Headers[key]}, false)...)
 	}
 
 	return entry, warnings, true
@@ -282,29 +308,44 @@ func renderStdioServer(name string, server mcp.Server) (map[string]any, []string
 
 	if len(server.Command) > 1 {
 		entry["args"] = server.Command[1:]
+
+		for i, arg := range server.Command[1:] {
+			warnings = append(warnings, clientManagedWarnings(name, fmt.Sprintf("args [%d]", i), []string{arg}, true)...)
+		}
 	}
 
 	if len(server.Env) > 0 {
 		entry["env"] = server.Env
+	}
 
-		warnings = append(warnings, clientManagedWarnings(name, "env", server.Env)...)
+	for _, key := range slices.Sorted(maps.Keys(server.Env)) {
+		warnings = append(warnings, clientManagedWarnings(name, "env "+key, []string{server.Env[key]}, true)...)
 	}
 
 	return entry, warnings, true
 }
 
 // portableCommand reports whether a command survives the spec: it is either a
-// bare executable name or a ./relative path. Absolute paths and placeholders
-// are not portable — command is never interpolated.
+// bare executable name or a ./relative path, without whitespace or control
+// characters. Absolute paths and placeholders are not portable — command is
+// never interpolated.
 func portableCommand(command string) bool {
 	switch {
 	case command == "", strings.ContainsAny(command, "${}"), strings.HasPrefix(command, "/"):
 		return false
-	case strings.Contains(command, "/"):
-		return strings.HasPrefix(command, "./")
-	default:
-		return true
 	}
+
+	for _, r := range command {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+	}
+
+	if strings.Contains(command, "/") {
+		return strings.HasPrefix(command, "./")
+	}
+
+	return true
 }
 
 func envValues(env map[string]string) []string {
@@ -317,22 +358,46 @@ func envValues(env map[string]string) []string {
 	return values
 }
 
-// clientManagedWarnings reports the ${VAR} references a client will not
-// expand: outside args/env/cwd only ${PLUGIN_ROOT} and ${PLUGIN_DATA} are
-// defined, so any other placeholder stays a literal and the client manages the
-// authentication itself.
-func clientManagedWarnings(name, field string, values map[string]string) []string {
+// validRemoteURL reports whether a remote url satisfies the schema: an
+// absolute https url without user-info or a fragment, or http on a loopback
+// host.
+func validRemoteURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+		return false
+	}
+
+	switch parsed.Scheme {
+	case "https":
+		return true
+	case "http":
+		host := parsed.Hostname()
+		if host == "localhost" {
+			return true
+		}
+
+		ip := net.ParseIP(host)
+
+		return ip != nil && ip.IsLoopback()
+	default:
+		return false
+	}
+}
+
+// clientManagedWarnings reports the ${VAR} references a client will not expand.
+// The spec defines ${PLUGIN_ROOT}/${PLUGIN_DATA} for args, env and cwd only:
+// with expandable false — and for every other name — the reference stays a
+// literal and the client manages that authentication itself.
+func clientManagedWarnings(name, label string, values []string, expandable bool) []string {
 	var warnings []string
 
-	for _, key := range slices.Sorted(maps.Keys(values)) {
-		value := values[key]
-
+	for _, value := range values {
 		for _, ref := range placeholderRefs(value) {
-			if ref == pluginRootVar || ref == pluginDataVar {
+			if expandable && (ref == pluginRootVar || ref == pluginDataVar) {
 				continue
 			}
 
-			warnings = append(warnings, fmt.Sprintf("mcp %s: %s %s references %s; clients do not expand it — the client manages that authentication", name, field, key, ref))
+			warnings = append(warnings, fmt.Sprintf("mcp %s: %s references %s; clients do not expand it — the client manages that authentication", name, label, ref))
 		}
 	}
 
@@ -382,19 +447,31 @@ func climbs(fragment string) bool {
 	return false
 }
 
+// WriteReport lists what a write removed and what it left behind.
+type WriteReport struct {
+	// Pruned are the package-relative paths the current render no longer
+	// carries: the manifest, the MCP file and the discovery file of a skill
+	// that is no longer rendered.
+	Pruned []string
+	// Leftover are the stale skill directories that kept foreign files: the
+	// package does not validate until they are removed by hand.
+	Leftover []string
+}
+
 // Write writes the package into dir: the directory is created, beadle's own
-// files are rewritten only when their bytes change, beadle-owned files the
-// current render no longer produces are removed, and every other file in dir
-// is left alone.
-func Write(dir string, files Files) error {
+// files are rewritten only when their bytes change, the paths the render no
+// longer carries are pruned, and every other file in dir is left alone. The
+// report names what was pruned and which stale skill directories kept foreign
+// files behind.
+func Write(dir string, files Files) (WriteReport, error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return fmt.Errorf("create %s: %w", dir, err)
+		return WriteReport{}, fmt.Errorf("create %s: %w", dir, err)
 	}
 
 	for _, rel := range slices.Sorted(maps.Keys(files)) {
 		target, err := packagePath(dir, rel)
 		if err != nil {
-			return err
+			return WriteReport{}, err
 		}
 
 		if existing, err := os.ReadFile(target); err == nil && bytes.Equal(existing, files[rel]) { //nolint:gosec // G304: the path is the package dir the caller passed
@@ -402,103 +479,127 @@ func Write(dir string, files Files) error {
 		}
 
 		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
-			return fmt.Errorf("create %s: %w", filepath.Dir(target), err)
+			return WriteReport{}, fmt.Errorf("create %s: %w", filepath.Dir(target), err)
 		}
 
 		if err := fsutil.WriteFileAtomic(target, files[rel], 0o600); err != nil {
-			return fmt.Errorf("write %s: %w", target, err)
+			return WriteReport{}, fmt.Errorf("write %s: %w", target, err)
 		}
 	}
 
 	return pruneOwned(dir, files)
 }
 
-// pruneOwned removes the beadle-owned paths the current render does not carry:
-// the manifest, the MCP file and everything under skills/. Foreign files stay.
-func pruneOwned(dir string, files Files) error {
+// pruneOwned removes the paths the current render does not carry: the manifest
+// and the MCP file always, and the SKILL.md of any skill name that is no longer
+// rendered — beadle cannot tell a foreign skill directory apart from its own
+// previous render, so the discovery file is treated as ours. Loose files, stale
+// tree files and empty directories stay; a skill directory is removed only when
+// removing its discovery file left it empty, and every other stale directory is
+// reported as leftover.
+func pruneOwned(dir string, files Files) (WriteReport, error) {
+	var report WriteReport
+
 	for _, rel := range []string{ManifestFile, MCPFile} {
 		if _, keep := files[rel]; keep {
 			continue
 		}
 
-		if err := os.Remove(filepath.Join(dir, rel)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("remove %s: %w", rel, err)
+		switch err := os.Remove(filepath.Join(dir, rel)); {
+		case err == nil:
+			report.Pruned = append(report.Pruned, rel)
+		case errors.Is(err, fs.ErrNotExist):
+		default:
+			return report, fmt.Errorf("remove %s: %w", rel, err)
 		}
 	}
 
-	skillsDir := filepath.Join(dir, SkillsDir)
-
-	if _, err := os.Stat(skillsDir); errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-
-	var stale []string
-
-	err := filepath.WalkDir(skillsDir, func(p string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() {
-			return err
-		}
-
-		rel, relErr := filepath.Rel(dir, p)
-		if relErr != nil {
-			return relErr
-		}
-
-		if _, keep := files[filepath.ToSlash(rel)]; !keep {
-			stale = append(stale, p)
-		}
-
-		return nil
-	})
+	skills, err := pruneStaleSkills(filepath.Join(dir, SkillsDir), files)
 	if err != nil {
-		return fmt.Errorf("scan %s: %w", SkillsDir, err)
+		return report, err
 	}
 
-	for _, p := range stale {
-		if err := os.Remove(p); err != nil {
-			return fmt.Errorf("remove %s: %w", p, err)
-		}
-	}
+	report.Pruned = append(report.Pruned, skills.Pruned...)
+	report.Leftover = append(report.Leftover, skills.Leftover...)
 
-	return removeEmptyDirs(skillsDir)
+	return report, nil
 }
 
-func removeEmptyDirs(dir string) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil //nolint:nilerr // a directory that cannot be read carries nothing to prune
+// pruneStaleSkills removes the discovery file of every skill the current render
+// no longer carries; a skill directory is removed only when that left it empty.
+func pruneStaleSkills(skillsDir string, files Files) (WriteReport, error) {
+	var report WriteReport
+
+	entries, err := os.ReadDir(skillsDir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return report, nil
 	}
 
-	empty := true
+	if err != nil {
+		return report, fmt.Errorf("read %s: %w", SkillsDir, err)
+	}
 
 	for _, entry := range entries {
 		if !entry.IsDir() {
-			empty = false
-
 			continue
 		}
 
-		if err := removeEmptyDirs(filepath.Join(dir, entry.Name())); err != nil {
-			return err
+		name := entry.Name()
+		if _, keep := files[path.Join(SkillsDir, name, SkillFile)]; keep {
+			continue
 		}
 
-		if _, err := os.ReadDir(filepath.Join(dir, entry.Name())); err == nil {
-			if remaining, _ := os.ReadDir(filepath.Join(dir, entry.Name())); len(remaining) > 0 {
-				empty = false
-			}
+		skill, err := pruneStaleSkill(skillsDir, name)
+		if err != nil {
+			return report, err
 		}
+
+		report.Pruned = append(report.Pruned, skill.Pruned...)
+		report.Leftover = append(report.Leftover, skill.Leftover...)
 	}
 
-	if empty {
-		_ = os.Remove(dir)
+	return report, nil
+}
+
+// pruneStaleSkill removes one stale discovery file. Only a directory whose
+// discovery file was actually there counts as a stale skill: without it the
+// directory is foreign and stays whole. A directory that keeps other files
+// after the removal is reported as leftover — the package does not validate
+// until the user cleans it.
+func pruneStaleSkill(skillsDir, name string) (WriteReport, error) {
+	var report WriteReport
+
+	rel := path.Join(SkillsDir, name)
+	discovery := filepath.Join(skillsDir, name, SkillFile)
+
+	switch err := os.Remove(discovery); {
+	case err == nil:
+		report.Pruned = append(report.Pruned, path.Join(rel, SkillFile))
+	case errors.Is(err, fs.ErrNotExist):
+		return report, nil
+	default:
+		return report, fmt.Errorf("remove %s: %w", discovery, err)
 	}
 
-	return nil
+	remaining, err := os.ReadDir(filepath.Join(skillsDir, name))
+	if err != nil || len(remaining) > 0 {
+		report.Leftover = append(report.Leftover, rel)
+
+		return report, nil //nolint:nilerr // a directory that cannot be read carries nothing to remove
+	}
+
+	if err := os.Remove(filepath.Join(skillsDir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return report, fmt.Errorf("remove %s: %w", rel, err)
+	}
+
+	return report, nil
 }
 
 // packagePath joins a package-relative path to dir and keeps it inside: the
-// path must not escape lexically, and its parent must not resolve through a
-// symlink out of dir.
+// path must not escape lexically, and its deepest existing ancestor must not
+// resolve through a symlink out of dir. The check runs before the remaining
+// directories are created — MkdirAll would follow the symlink and leave
+// directories outside the output root behind.
 func packagePath(dir, rel string) (string, error) {
 	clean := path.Clean(rel)
 
@@ -514,20 +615,43 @@ func packagePath(dir, rel string) (string, error) {
 	}
 
 	parent := filepath.Dir(target)
-	if err := os.MkdirAll(parent, 0o750); err != nil {
-		return "", fmt.Errorf("create %s: %w", parent, err)
+
+	existing, err := deepestExisting(parent)
+	if err != nil {
+		return "", err
 	}
 
-	resolvedParent, err := filepath.EvalSymlinks(parent)
+	resolvedParent, err := filepath.EvalSymlinks(existing)
 	if err != nil {
-		return "", fmt.Errorf("resolve %s: %w", parent, err)
+		return "", fmt.Errorf("resolve %s: %w", existing, err)
 	}
 
 	if resolvedParent != resolvedDir && !strings.HasPrefix(resolvedParent, resolvedDir+string(filepath.Separator)) {
 		return "", fmt.Errorf("package path %s resolves outside the output directory", rel)
 	}
 
+	if err := os.MkdirAll(parent, 0o750); err != nil {
+		return "", fmt.Errorf("create %s: %w", parent, err)
+	}
+
 	return target, nil
+}
+
+// deepestExisting returns the longest existing ancestor of path, path itself
+// included when it exists.
+func deepestExisting(path string) (string, error) {
+	for current := path; ; {
+		if _, err := os.Lstat(current); err == nil {
+			return current, nil
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("no existing ancestor for %s", path)
+		}
+
+		current = parent
+	}
 }
 
 // Validate checks a rendered package against the closed v1.0.0 schema: the
@@ -576,7 +700,7 @@ func validateManifest(path string) error {
 		return fmt.Errorf("%s: %q must be %q", ManifestFile, "$schema", SchemaURL)
 	}
 
-	if err := json.Unmarshal(raw["name"], &name); err != nil || !namePattern.MatchString(name) {
+	if err := json.Unmarshal(raw["name"], &name); err != nil || !validPluginName(name) {
 		return fmt.Errorf("%s: %q must match the plugin name pattern", ManifestFile, "name")
 	}
 
@@ -665,7 +789,7 @@ func validateMCP(path string) error {
 
 	var servers map[string]map[string]json.RawMessage
 
-	if err := json.Unmarshal(raw["mcpServers"], &servers); err != nil {
+	if isJSONNull(raw["mcpServers"]) || json.Unmarshal(raw["mcpServers"], &servers) != nil {
 		return fmt.Errorf("%s: %q must be an object of servers", MCPFile, "mcpServers")
 	}
 
@@ -700,8 +824,8 @@ func validateMCPServer(name string, server map[string]json.RawMessage) error {
 
 	switch transport {
 	case TransportStdio:
-		if server["url"] != nil {
-			return fmt.Errorf("%s: server %s is stdio and carries a url", MCPFile, name)
+		if err := rejectFields(server, name, "is stdio and carries a", "url", "headers"); err != nil {
+			return err
 		}
 
 		var command string
@@ -713,41 +837,113 @@ func validateMCPServer(name string, server map[string]json.RawMessage) error {
 		if err := validateStrings(server, name, "args"); err != nil {
 			return err
 		}
+
+		if err := validateCWD(server, name); err != nil {
+			return err
+		}
+
+		if err := validateReservedEnv(server, name); err != nil {
+			return err
+		}
+
+		if _, err := stringMap(server["env"]); err != nil {
+			return fmt.Errorf("%s: server %s: env must be an object of strings", MCPFile, name)
+		}
 	case TransportHTTP, TransportSSE:
-		if server["command"] != nil {
-			return fmt.Errorf("%s: server %s is %s and carries a command", MCPFile, name, transport)
+		if err := rejectFields(server, name, "is "+transport+" and carries a", "command", "args", "env", "cwd"); err != nil {
+			return err
 		}
 
 		var url string
 
-		if err := json.Unmarshal(server["url"], &url); err != nil ||
-			(!strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://")) {
-			return fmt.Errorf("%s: server %s needs an absolute http(s) url", MCPFile, name)
+		if err := json.Unmarshal(server["url"], &url); err != nil || !validRemoteURL(url) {
+			return fmt.Errorf("%s: server %s needs an https url without user-info or a fragment (http is allowed on loopback only)", MCPFile, name)
+		}
+
+		if _, err := stringMap(server["headers"]); err != nil {
+			return fmt.Errorf("%s: server %s: headers must be an object of strings", MCPFile, name)
 		}
 	default:
 		return fmt.Errorf("%s: server %s has type %q outside the v1 union", MCPFile, name, transport)
 	}
 
-	for _, field := range []string{"env", "headers"} {
-		values, err := stringMap(server[field])
-		if err != nil {
-			return fmt.Errorf("%s: server %s: %s must be an object of strings", MCPFile, name, field)
-		}
+	return nil
+}
 
-		for key := range values {
-			if key == "PLUGIN_ROOT" || key == "PLUGIN_DATA" {
-				return fmt.Errorf("%s: server %s: %s is a reserved name", MCPFile, name, key)
-			}
+// rejectFields rejects the fields the schema does not define for a variant.
+func rejectFields(server map[string]json.RawMessage, name, verb string, fields ...string) error {
+	for _, field := range fields {
+		if server[field] != nil {
+			return fmt.Errorf("%s: server %s %s %s", MCPFile, name, verb, field)
 		}
 	}
 
 	return nil
 }
 
+// validateCWD checks the cwd forms the schema defines: a ./-relative path, a
+// ${PLUGIN_ROOT} path or a ${PLUGIN_DATA} path, each staying inside its root.
+// The pilot renders no cwd, so this guards foreign packages.
+func validateCWD(server map[string]json.RawMessage, name string) error {
+	raw, ok := server["cwd"]
+	if !ok {
+		return nil
+	}
+
+	var value string
+
+	if err := json.Unmarshal(raw, &value); err != nil || !validCWD(value) {
+		return fmt.Errorf("%s: server %s: cwd must be a ./-relative, %s or %s path inside its root",
+			MCPFile, name, pluginRootVar, pluginDataVar)
+	}
+
+	return nil
+}
+
+// validCWD reports whether a cwd stays inside its root in one of the three
+// schema forms.
+func validCWD(value string) bool {
+	for _, prefix := range []string{pluginRootVar, pluginDataVar} {
+		if rest, ok := strings.CutPrefix(value, prefix); ok {
+			return rest == "" || (strings.HasPrefix(rest, "/") && !climbs(rest))
+		}
+	}
+
+	rest, ok := strings.CutPrefix(value, "./")
+
+	return ok && rest != "" && !climbs(rest)
+}
+
+// validateReservedEnv rejects the two names the spec reserves in env.
+func validateReservedEnv(server map[string]json.RawMessage, name string) error {
+	values, err := stringMap(server["env"])
+	if err != nil {
+		return fmt.Errorf("%s: server %s: env must be an object of strings", MCPFile, name)
+	}
+
+	for key := range values {
+		if key == "PLUGIN_ROOT" || key == "PLUGIN_DATA" {
+			return fmt.Errorf("%s: server %s: %s is a reserved name", MCPFile, name, key)
+		}
+	}
+
+	return nil
+}
+
+// isJSONNull reports whether a raw value is the JSON null literal: the shallow
+// type checks would otherwise accept null as an empty object or array.
+func isJSONNull(raw json.RawMessage) bool {
+	return len(raw) > 0 && string(bytes.TrimSpace(raw)) == "null"
+}
+
 func validateStrings(server map[string]json.RawMessage, name, field string) error {
 	raw, ok := server[field]
 	if !ok {
 		return nil
+	}
+
+	if isJSONNull(raw) {
+		return fmt.Errorf("%s: server %s: %s must be an array of strings", MCPFile, name, field)
 	}
 
 	var values []string
@@ -762,6 +958,10 @@ func validateStrings(server map[string]json.RawMessage, name, field string) erro
 func stringMap(raw json.RawMessage) (map[string]string, error) {
 	if raw == nil {
 		return nil, nil
+	}
+
+	if isJSONNull(raw) {
+		return nil, errors.New("the value is null")
 	}
 
 	var values map[string]string

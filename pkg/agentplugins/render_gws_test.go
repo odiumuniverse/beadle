@@ -2,6 +2,7 @@ package agentplugins_test
 
 import (
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"maps"
 	"os"
@@ -57,6 +58,15 @@ func canonServers() mcp.Servers {
 		"contradict":  {Transport: mcp.TransportHTTP, URL: "https://example.com/mcp", Command: []string{"npx"}},
 		"stdioURL":    {Transport: mcp.TransportStdio, URL: "https://example.com/mcp"},
 		"empty":       {},
+		"httpNoURL":   {Transport: mcp.TransportHTTP, Command: []string{"npx"}},
+		"plainHTTP":   {Transport: mcp.TransportHTTP, URL: "http://example.com/mcp"},
+		"loopback":    {Transport: mcp.TransportHTTP, URL: "http://127.0.0.1:8080/mcp"},
+		//nolint:gosec // G101: a synthetic user-info url, not a credential
+		"userInfo":  {Transport: mcp.TransportHTTP, URL: "https://user:secret@example.com/mcp"},
+		"fragment":  {Transport: mcp.TransportHTTP, URL: "https://example.com/mcp#frag"},
+		"spacedCmd": {Transport: mcp.TransportStdio, Command: []string{"node script.js"}},
+		"tokenArgs": {Transport: mcp.TransportStdio, Command: []string{"npx", "--token=${API_TOKEN}"}},
+		"tokenURL":  {Transport: mcp.TransportHTTP, URL: "https://example.com/${TENANT}/mcp"},
 	}
 }
 
@@ -138,8 +148,8 @@ func TestRenderPackage(t *testing.T) {
 
 				So(pkg.Skills.Rendered, ShouldEqual, 3)
 				So(pkg.Skills.Skipped, ShouldEqual, 2)
-				So(pkg.MCP.Rendered, ShouldEqual, 4)
-				So(pkg.MCP.Skipped, ShouldEqual, 10)
+				So(pkg.MCP.Rendered, ShouldEqual, 7)
+				So(pkg.MCP.Skipped, ShouldEqual, 15)
 
 				warnings := strings.Join(pkg.Warnings, "\n")
 				So(warnings, ShouldContainSubstring, "skill empty is skipped: the skill has no SKILL.md body")
@@ -151,10 +161,17 @@ func TestRenderPackage(t *testing.T) {
 				So(warnings, ShouldContainSubstring, "mcp bareRel is skipped: a ${PLUGIN_ROOT} or relative reference escapes the package root")
 				So(warnings, ShouldContainSubstring, "mcp absolute is skipped: the command \"/usr/bin/x\" is neither a bare name nor a ./relative path")
 				So(warnings, ShouldContainSubstring, "mcp interpolate is skipped: the command \"${PLUGIN_ROOT}/bin/x\" is neither a bare name nor a ./relative path")
+				So(warnings, ShouldContainSubstring, "mcp spacedCmd is skipped: the command \"node script.js\" is neither a bare name nor a ./relative path")
 				So(warnings, ShouldContainSubstring, "mcp contradict is skipped: the server carries both a command and a url")
 				So(warnings, ShouldContainSubstring, "mcp stdioURL is skipped: the stdio transport carries a url")
+				So(warnings, ShouldContainSubstring, "mcp httpNoURL is skipped: the http transport carries no url")
+				So(warnings, ShouldContainSubstring, "mcp plainHTTP is skipped: the url \"http://example.com/mcp\" must be https without user-info or a fragment (http is allowed on loopback only)")
+				So(warnings, ShouldContainSubstring, "mcp userInfo is skipped: the url \"https://user:secret@example.com/mcp\" must be https without user-info or a fragment (http is allowed on loopback only)")
+				So(warnings, ShouldContainSubstring, "mcp fragment is skipped: the url \"https://example.com/mcp#frag\" must be https without user-info or a fragment (http is allowed on loopback only)")
 				So(warnings, ShouldContainSubstring, "mcp empty is skipped: the server has no command")
 				So(warnings, ShouldContainSubstring, "mcp remote: headers Authorization references ${API_KEY}; clients do not expand it")
+				So(warnings, ShouldContainSubstring, "mcp tokenArgs: args [0] references ${API_TOKEN}; clients do not expand it")
+				So(warnings, ShouldContainSubstring, "mcp tokenURL: url references ${TENANT}; clients do not expand it")
 			})
 
 			Convey("Then the manifest carries exactly the closed schema keys", func() {
@@ -186,7 +203,8 @@ func TestRenderPackage(t *testing.T) {
 				So(json.Unmarshal(pkg.Files[agentplugins.MCPFile], &document), ShouldBeNil)
 				So(document.Schema, ShouldEqual, agentplugins.MCPSchemaURL)
 
-				So(slices.Sorted(maps.Keys(document.MCPServers)), ShouldResemble, []string{"fs", "rel", "remote", "sse"})
+				So(slices.Sorted(maps.Keys(document.MCPServers)), ShouldResemble,
+					[]string{"fs", "loopback", "rel", "remote", "sse", "tokenArgs", "tokenURL"})
 
 				fsServer := document.MCPServers["fs"]
 				So(fsServer["type"], ShouldEqual, "stdio")
@@ -215,7 +233,8 @@ func TestRenderDeterministicAndIdempotent(t *testing.T) {
 
 		dir := t.TempDir()
 
-		So(agentplugins.Write(dir, first.Files), ShouldBeNil)
+		_, err := agentplugins.Write(dir, first.Files)
+		So(err, ShouldBeNil)
 		So(agentplugins.Validate(dir), ShouldBeNil)
 
 		Convey("When the render runs again", func() {
@@ -228,21 +247,56 @@ func TestRenderDeterministicAndIdempotent(t *testing.T) {
 
 		Convey("When the canon shrinks and the package is written again", func() {
 			write(t, filepath.Join(dir, "KEEP.md"), "mine\n")
+			write(t, filepath.Join(dir, "skills", "foreign.md"), "foreign\n")
+			write(t, filepath.Join(dir, "skills", "old", "SKILL.md"), skillDoc("old"))
+			write(t, filepath.Join(dir, "skills", "old", "notes.md"), "stale tree\n")
+
+			So(os.MkdirAll(filepath.Join(dir, "skills", "emptydir"), 0o750), ShouldBeNil)
 
 			shrunk := agentplugins.Package{Files: agentplugins.Files{
 				agentplugins.ManifestFile: first.Files[agentplugins.ManifestFile],
 				"skills/alpha/SKILL.md":   first.Files["skills/alpha/SKILL.md"],
 			}}
 
-			So(agentplugins.Write(dir, shrunk.Files), ShouldBeNil)
+			report, err := agentplugins.Write(dir, shrunk.Files)
+			So(err, ShouldBeNil)
 
-			Convey("Then beadle-owned stale paths are gone and the foreign file survives", func() {
-				So(agentplugins.Validate(dir), ShouldBeNil)
-
+			Convey("Then only provably beadle-owned paths are pruned and foreign files survive", func() {
 				names := slices.Sorted(maps.Keys(snapshotDir(t, dir)))
-				So(names, ShouldResemble, []string{"KEEP.md", agentplugins.ManifestFile, "skills/alpha/SKILL.md"})
+				So(names, ShouldResemble, []string{
+					"KEEP.md",
+					agentplugins.ManifestFile,
+					"skills/alpha/SKILL.md",
+					"skills/beta/scripts/run.sh", // a stale tree file of a kept skill stays
+					"skills/foreign.md",          // a loose foreign file stays
+					"skills/old/notes.md",        // the stale discovery file went, its directory stays
+				})
 
 				So(readFile(t, filepath.Join(dir, "KEEP.md")), ShouldEqual, "mine\n")
+				So(readFile(t, filepath.Join(dir, "skills", "foreign.md")), ShouldEqual, "foreign\n")
+				So(readFile(t, filepath.Join(dir, "skills", "old", "notes.md")), ShouldEqual, "stale tree\n")
+
+				_, err := os.Stat(filepath.Join(dir, "skills", "old", "SKILL.md"))
+				So(errors.Is(err, fs.ErrNotExist), ShouldBeTrue)
+
+				_, err = os.Stat(filepath.Join(dir, "skills", "gamma"))
+				So(errors.Is(err, fs.ErrNotExist), ShouldBeTrue)
+
+				_, err = os.Stat(filepath.Join(dir, "skills", "emptydir"))
+				So(err, ShouldBeNil)
+
+				// The report names the pruned discovery files and the stale
+				// directory that kept foreign files: the package does not
+				// validate until the user cleans it (never deleting unknown
+				// files is the safe direction).
+				So(report.Pruned, ShouldContain, "skills/old/SKILL.md")
+				So(report.Pruned, ShouldContain, "skills/gamma/SKILL.md")
+				So(report.Pruned, ShouldContain, agentplugins.MCPFile)
+				So(report.Leftover, ShouldResemble, []string{"skills/beta", "skills/old"})
+
+				err = agentplugins.Validate(dir)
+				So(err, ShouldBeError)
+				So(err.Error(), ShouldContainSubstring, "the skill has no regular SKILL.md")
 			})
 		})
 
@@ -251,7 +305,8 @@ func TestRenderDeterministicAndIdempotent(t *testing.T) {
 
 			write(t, filepath.Join(dir, "KEEP.md"), "mine\n")
 
-			So(agentplugins.Write(dir, first.Files), ShouldBeNil)
+			_, err := agentplugins.Write(dir, first.Files)
+			So(err, ShouldBeNil)
 
 			Convey("Then beadle's files are unchanged and the foreign file survives", func() {
 				after := snapshotDir(t, dir)
@@ -275,4 +330,27 @@ func readFile(t *testing.T, path string) string {
 	}
 
 	return string(data)
+}
+
+func TestWriteRefusesSymlinkEscape(t *testing.T) {
+	Convey("Given an output directory with a symlink pointing outside", t, func() {
+		dir := t.TempDir()
+		outside := t.TempDir()
+
+		So(os.Symlink(outside, filepath.Join(dir, "link")), ShouldBeNil)
+
+		Convey("When a package path would go through the symlink", func() {
+			_, err := agentplugins.Write(dir, agentplugins.Files{
+				"link/evil/nested.md": []byte("evil\n"),
+			})
+
+			Convey("Then the write is refused and nothing is created outside", func() {
+				So(err, ShouldBeError)
+				So(err.Error(), ShouldContainSubstring, "resolves outside the output directory")
+
+				_, statErr := os.Stat(filepath.Join(outside, "evil"))
+				So(errors.Is(statErr, fs.ErrNotExist), ShouldBeTrue)
+			})
+		})
+	})
 }

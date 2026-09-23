@@ -68,7 +68,8 @@ func (a *app) newExportAgentPluginsCmd() *cobra.Command {
 				return err
 			}
 
-			if err := agentplugins.Write(out, pkg.Files); err != nil {
+			writeReport, err := agentplugins.Write(out, pkg.Files)
+			if err != nil {
 				return err
 			}
 
@@ -78,6 +79,15 @@ func (a *app) newExportAgentPluginsCmd() *cobra.Command {
 
 			for _, warning := range pkg.Warnings {
 				fmt.Fprintln(cmd.ErrOrStderr(), "  ! "+warning)
+			}
+
+			for _, path := range writeReport.Pruned {
+				fmt.Fprintf(cmd.ErrOrStderr(), "  ! removed stale %s (no longer rendered)\n", path)
+			}
+
+			for _, path := range writeReport.Leftover {
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"  ! %s is no longer rendered but keeps foreign files; the package does not validate until it is removed by hand\n", path)
 			}
 
 			return nil

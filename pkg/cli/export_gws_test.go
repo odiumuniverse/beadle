@@ -2,6 +2,8 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -71,6 +73,33 @@ func snapshotTree(t *testing.T, dir string) map[string]string {
 	}
 
 	return out
+}
+
+func TestExportRequiresInitializedVault(t *testing.T) {
+	Convey("Given a vault directory without a config", t, func() {
+		home := t.TempDir()
+
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
+
+		out := filepath.Join(t.TempDir(), "package")
+
+		Convey("When the export runs", func() {
+			_, _, err := gwsRunSplit(t, "export", "agent-plugins", "--out", out)
+
+			Convey("Then it refuses with the init hint and writes nothing", func() {
+				So(err, ShouldBeError)
+				So(err.Error(), ShouldContainSubstring, "run beadle init")
+
+				_, statErr := os.Stat(filepath.Join(home, ".beadle", "config.json"))
+				So(errors.Is(statErr, fs.ErrNotExist), ShouldBeTrue)
+
+				_, statErr = os.Stat(out)
+				So(errors.Is(statErr, fs.ErrNotExist), ShouldBeTrue)
+			})
+		})
+	})
 }
 
 func TestExportAgentPluginsEndToEnd(t *testing.T) {
@@ -161,6 +190,23 @@ func TestExportAgentPluginsEndToEnd(t *testing.T) {
 				for name, data := range before {
 					So(after[name], ShouldEqual, data)
 				}
+			})
+		})
+
+		Convey("When a skill disappears from the canon and the export runs again", func() {
+			So(os.RemoveAll(filepath.Join(vaultDir, "skills", "gamma")), ShouldBeNil)
+
+			_, stderr, err := gwsRunSplit(t, "export", "agent-plugins", "--out", out)
+
+			Convey("Then the stale discovery file is pruned, the tree file stays and the report warns", func() {
+				So(err, ShouldBeNil)
+				So(stderr, ShouldContainSubstring, "removed stale skills/gamma/SKILL.md (no longer rendered)")
+				So(stderr, ShouldContainSubstring, "skills/gamma is no longer rendered but keeps foreign files")
+
+				_, statErr := os.Stat(filepath.Join(out, "skills", "gamma", "SKILL.md"))
+				So(errors.Is(statErr, fs.ErrNotExist), ShouldBeTrue)
+
+				So(readFile(t, filepath.Join(out, "skills", "gamma", "notes.md")), ShouldEqual, "nested\n")
 			})
 		})
 
