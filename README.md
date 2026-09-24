@@ -82,14 +82,14 @@ manage** alone.
 | Agent | Rules | MCP | Skills | Permissions | Subagents | Commands |
 |---|---|---|---|---|---|---|
 | Claude Code | ✓ `~/.claude/CLAUDE.md` (user) + project `AGENTS.md` (native, v2.1.280) ⁸ | ✓ `~/.claude.json` | ✓ writes `~/.claude/skills` | ✓ default on ³ | ✓ `~/.claude/agents/**` | ✓ `~/.claude/commands` (legacy) ⁷ |
-| OpenCode | ✓ `~/.config/opencode/AGENTS.md` ¹ | ✓ `opencode.jsonc` ¹ | ✓ writes `~/.config/opencode/skills`; reads flat `<name>.md` ⁵ | ✓ default on ³ | ✓ `~/.config/opencode/agents`, legacy `agent/` read ⁶ | ✓ `~/.config/opencode/commands`, legacy `command/` read ⁷ |
+| OpenCode | ✓ `~/.config/opencode/AGENTS.md` ¹ | ✓ `opencode.jsonc` ¹ | pull; writes `~/.config/opencode/skills` after a mode flip; reads flat `<name>.md` ⁵ | ✓ default on ³ | ✓ `~/.config/opencode/agents`, legacy `agent/` read ⁶ | ✓ `~/.config/opencode/commands`, legacy `command/` read ⁷ |
 | Gemini CLI | ✓ `~/.gemini/GEMINI.md` | ✓ `settings.json` (`httpUrl`) | ✓ `~/.gemini/skills` | ✓ default on ³ | ✓ `~/.gemini/agents` ⁶ | ✓ `~/.gemini/commands/*.toml` ⁷ |
 | Cursor | — (user rules live in the account) | ✓ `~/.cursor/mcp.json` | reads Claude/shared dirs natively | ✓ default on ³ | ✓ `~/.cursor/agents` (`.md`/`.mdc`/`.markdown`) | — (not supported yet) |
 | Antigravity CLI | — (`~/.gemini/GEMINI.md` via the Gemini CLI adapter) | ✓ `~/.gemini/config/mcp_config.json` (`serverUrl`) | — (v1 not managed) | — ³ | ✓ `~/.gemini/config/agents` (global) | — (v1 not managed) |
 | Codex CLI | ✓ `~/.codex/AGENTS.md` | ✓ `~/.codex/config.toml` ² | reads `~/.agents/skills` natively | — ³ | ✓ `~/.codex/agents/*.toml` (span-edit) | ✓ pull-only `~/.codex/prompts` (deprecated) ⁷ |
 | Pi | ✓ `~/.pi/agent/AGENTS.md` | ✓ `~/.pi/agent/mcp.json` ⁴ | reads `~/.agents/skills` natively; flat `<name>.md` ⁵ | — (not documented) | — (no sub-agents by design) | ✓ `~/.pi/agent/prompts` ⁷ |
 | Kilo Code | ✓ `~/.config/kilo/AGENTS.md` | ✓ `kilo.jsonc` ² | reads `~/.agents/skills` natively | ✓ default on ³ | ✓ `~/.config/kilo/agents`, legacy `agent/` and `mode(s)/` read ⁶ | ✓ `~/.config/kilo/commands`, legacy `command/` read ⁷ |
-| DeepSeek Harness | ✓ `~/.dsh/AGENTS.md` (write) + project chain `AGENTS.md`/`CLAUDE.md` (pull, root → cwd) | — (non-goal, A-41; `cordis.patch.yml` — Q-16) | reads `~/.dsh/skills` (pull-only until A-39) | — (runtime knobs, non-goal A-41) | — (code providers, non-goal A-41) | — (plugin code, non-goal A-41) |
+| DeepSeek Harness | ✓ `~/.dsh/AGENTS.md` (write) + project chain `AGENTS.md`/`CLAUDE.md` (pull, root → cwd) | ✓ `~/.dsh/cordis.patch.yml` (home patch layer; stdio + streamable-http) | ✓ writes `~/.dsh/skills` (rank 400 beats the shared agents-home: `$DSH_AGENTS_HOME` or `~/.agents`); flat `<name>.md` read ⁵ | — (runtime knobs, non-goal A-41) | — (code providers, non-goal A-41) | — (plugin code, non-goal A-41) |
 
 ¹ OpenCode: V2 reads `AGENTS.md` only; MCP is `mcp.servers` in V2 and `mcp` in
   V1 — merged as one union, comments in `opencode.jsonc` preserved.
@@ -108,10 +108,11 @@ manage** alone.
   third-party `pi-mcp-adapter` reads; `doctor` warns when managed servers are
   present and the adapter is not detected.
 
-⁵ Flat skills: OpenCode and Pi also read a `<name>.md` file in their own skills
-  directory as a skill named by the file. Beadle adopts such copies into the
-  canon and keeps delivering directories; when a same-name directory exists,
-  it wins and the file is left untouched (`doctor` reports both).
+⁵ Flat skills: OpenCode, Pi and DeepSeek Harness also read a `<name>.md` file
+  in their own skills directory as a skill named by the file. Beadle adopts
+  such copies into the canon and keeps delivering directories; when a
+  same-name directory exists, it wins and the file is left untouched
+  (`doctor` reports both).
 
 ⁶ Subagents: the canon is `<vault>/subagents/<name>.md` (frontmatter + system
   prompt). OpenCode and Kilo Code get a strict V2 frontmatter (`permissions`
@@ -135,18 +136,22 @@ manage** alone.
   AGENTS.md` hint, and
   stays silent when the two files are identical.
 
-A ✓ means beadle writes that surface. `reads …` means the agent reads a
-shared directory itself (`~/.claude/skills`, `~/.agents/skills`), and those
-skills surfaces default to the `pull` mode — the agent's own skills directory
-is not written. The shared `~/.agents/skills` surface is enabled by `beadle
-init` and the config v3 migration (mode `sync`): it is the delivery channel for
-the agents that read it natively. Opt out with `beadle agents disable shared`.
+A ✓ means beadle writes that surface; a `pull` marker means beadle reads it
+but does not write until the mode is flipped (`beadle agents mode <agent>
+<kind> sync`). `reads …` means the agent reads a shared directory itself
+(`~/.claude/skills`, `~/.agents/skills`), and those skills surfaces default to
+the `pull` mode — the agent's own skills directory is not written. The shared
+`~/.agents/skills` surface is enabled by `beadle init` and the config v3
+migration (mode `sync`): it is the delivery channel for the agents that read
+it natively. Opt out with `beadle agents disable shared`.
 
 Beadle creates only the surfaces marked creatable: the rules files of Claude
-Code and Gemini CLI, their skills directories, the Codex `config.toml`, the
-subagent directories of Claude Code, OpenCode, Kilo Code, Codex, Gemini CLI,
-Antigravity and Cursor, and the shared `~/.agents/skills` directory. Every
-other surface is written only when
+Code, Gemini CLI and DeepSeek Harness, the skills directories of Claude Code,
+Gemini CLI and DeepSeek Harness, the Codex `config.toml`, the DeepSeek Harness
+`cordis.patch.yml`, the subagent directories of Claude Code, OpenCode, Kilo
+Code, Codex, Gemini CLI, Antigravity and Cursor, the command directories of
+Claude Code, OpenCode, Gemini CLI, Codex, Pi and Kilo Code, and the shared
+`~/.agents/skills` directory. Every other surface is written only when
 its config file already exists — an agent discovered by its directory alone is
 skipped with `no config file to write into; create <path> first` until the file
 appears (an empty file is enough).
@@ -266,7 +271,12 @@ plugin skills are farmed through a stable pivot so upgrades do not break
 links. Plugin agents and commands are farmed the same way (`<plugin>--<name>.md`
 for markdown hosts, a rendered TOML copy for Codex agents and Gemini commands;
 Claude reads plugin agents and commands natively, Codex prompts are pull-only).
-*Why:* skills are the biggest pile of files to keep
+Plugins are read from every supported host — Claude Code, Codex, Gemini CLI
+extensions, Antigravity and Cursor — and what one installs reaches the others:
+a plugin put into Codex shows up for Claude, OpenCode, Gemini and Cursor, and
+the other way round. The same plugin installed in two hosts is presented once
+(the first host wins, with a note); divergent copies are warned about instead
+of hidden. *Why:* skills are the biggest pile of files to keep
 in sync.
 
 </details>
@@ -276,8 +286,10 @@ in sync.
 
 `beadle plugins pin <key> <version> --agent <id>`. The pin travels in the
 vault; the farm, MCP paths and `heal` follow it, and a version missing from the
-cache is reported instead of silently upgraded. *Why:* an upgrade can break a
-plugin's skills or MCP servers mid-task.
+cache is reported instead of silently upgraded. Version pins cover the Claude
+Code plugin cache (the only host with versioned install directories); a pin on
+a plugin from another host is reported as having no effect.
+*Why:* an upgrade can break a plugin's skills or MCP servers mid-task.
 
 </details>
 

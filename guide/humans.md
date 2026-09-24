@@ -4,7 +4,7 @@ beadle keeps one configuration for every AI coding agent you use. You edit your
 rules, MCP servers, skills, subagents, commands, permissions or memory **once**,
 in a directory you own (the *vault*, by default `~/.beadle`), and beadle keeps
 the agents in sync: Claude Code, OpenCode, Gemini CLI, Cursor, Antigravity,
-Codex, Pi and Kilo.
+Codex, Pi, Kilo and DeepSeek Harness.
 
 It writes real files, merges each item with a 3-way merge against the last known
 state of every agent, and when two sides changed the same item it records a
@@ -52,16 +52,20 @@ checkout — secrets in project files need an explicit opt-in
 
 ## Plugins
 
-Installed Claude plugins are scanned and **parked** in the vault, then
-presented to the active hosts. Skills arrive as links in every host's skills
-directory (Claude included, next to its native plugin copy). Subagents and
-commands arrive as links for the md hosts; Codex gets rendered TOML subagents,
-Gemini rendered TOML commands, Claude reads both natively and Codex commands
-are skipped (`prompts` is pull-only). MCP servers are merged into the MCP kind.
+Plugins are read from **every supported host** — Claude Code, Codex, Gemini CLI
+extensions, Antigravity and Cursor — scanned and **parked** in the vault, then
+presented to the active hosts: install a plugin in any one and it arrives
+everywhere. Skills arrive as links in every host's skills directory (Claude
+included, next to its native plugin copy). Subagents and commands arrive as
+links for the md hosts; Codex gets rendered TOML subagents, Gemini rendered
+TOML commands (and a TOML command from a Gemini plugin arrives as markdown
+elsewhere), Claude reads both natively and Codex commands are skipped
+(`prompts` is pull-only). MCP servers are merged into the MCP kind.
 Subagent and command names are namespaced `<plugin>--<name>`; skills and MCP
 servers keep their own names. Your canon wins on a collision, then the first
 plugin by key; removed plugins are pruned and moved ones are quarantined with a
-stub.
+stub. The same plugin installed in two hosts is presented once (the first host
+wins, with a note); copies that differ are reported, never silently hidden.
 
 **Hooks are different: they never travel by themselves.** beadle scans plugin
 command hooks, reports them in `beadle doctor`, and writes nothing until you
@@ -122,7 +126,7 @@ Common answers:
   field, a placeholder, a tool); the doctor note names the reason.
 - **A skill is missing.** Check `beadle explain <skill>` for the copies the
   host sees and which one wins.
-- **The bundle is not active.** `beadle bundles` shows the host state; without
+- **The bundle is not active.** `beadle bundles status` shows the host state; without
   the host binary the bundle stays `unverifiable` and modes are not flipped.
 
 ## FAQ
