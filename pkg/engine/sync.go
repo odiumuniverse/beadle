@@ -28,10 +28,14 @@ type view struct {
 	base            kind.Items
 	presented       kind.Items
 	presentedFailed bool
-	// pluginOnly marks a view created for a host whose kind mode is off but
-	// whose verified bundle only delivers the canon: the view presents
-	// plugin-sourced items and leaves the canon remnants alone.
-	pluginOnly  bool
+	// bundleManaged marks a view created for a host whose MCP mode is off
+	// because its verified bundle manages the kind: the view leaves the canon
+	// remnants alone, presents plugin-sourced items when presentsPlugins, and
+	// delivers the complement (the canon servers the bundle cannot carry).
+	bundleManaged   bool
+	presentsPlugins bool
+	// complement tracks the complement delivery of a bundle-managed view.
+	complement  complementDelivery
 	pluginOwned map[string]struct{}
 	// visibility is the resolved skill copy map of the view's agent; it is
 	// set for writing skill views only (В-14).
@@ -276,8 +280,18 @@ func (e *Engine) pushGroups(
 
 		var conflicts []state.Conflict
 
+		// written is what the files hold after the push; actual is what the
+		// base records, which a bundle-managed view scopes to its own keys.
+		written := kind.Items{}
+
 		for _, v := range group {
 			items, single := e.pushView(ctx, spec, v, vaultItems, opts, report)
+			maps.Copy(written, items)
+
+			if v.bundleManaged {
+				items = v.managedBase(items)
+			}
+
 			maps.Copy(actual, items)
 
 			mergeResults(&result, single)
@@ -295,6 +309,8 @@ func (e *Engine) pushGroups(
 		if err := e.storeBase(st, spec, group, actual); err != nil {
 			report.Err = err.Error()
 		}
+
+		e.recordComplement(st, spec, group, written)
 	}
 }
 
@@ -398,15 +414,15 @@ func (e *Engine) readViews(
 			}
 
 			mode := restrict(e.config.ModeFor(a.ID, spec.ID, surface.Traits().DefaultMode), opts.Direction)
-			pluginOnly := false
+			managed := false
 
 			if mode == config.ModeOff {
-				if !e.bundlePresentsPluginMCP(st, a.ID, pluginPlan, opts) {
+				if !e.bundleManagesMCP(st, a.ID, spec.ID, opts) {
 					continue
 				}
 
 				mode = config.ModePush
-				pluginOnly = true
+				managed = true
 			}
 
 			v, err := e.readView(ctx, spec, a, surface, mode, st)
@@ -416,7 +432,11 @@ func (e *Engine) readViews(
 				continue
 			}
 
-			v.pluginOnly = pluginOnly
+			if managed {
+				v.bundleManaged = true
+				v.presentsPlugins = e.bundlePresentsPluginMCP(st, a.ID, pluginPlan, opts)
+				v.complement.owned = complementOwned(st, a.ID, spec.ID)
+			}
 
 			if _, chain := surface.(agent.ProjectRootRel); chain {
 				shadowChainView(chainSeen, a.ID, v)
@@ -747,6 +767,7 @@ func (e *Engine) pushView(
 	desired = dropInvalidMCP(spec, desired)
 	desired = e.suppressKept(spec, v, desired, report)
 	desired = e.complementSkills(spec, v, desired, report)
+	desired = e.deliverComplement(spec, v, vaultItems, desired, report)
 
 	// The ref-form comparison alone cannot see the secrets mode: both the
 	// snapshot and the desired projection hold {secret:NAME} references, so a
@@ -882,14 +903,23 @@ func (e *Engine) suppressKept(spec kind.Spec, v *view, desired kind.Items, repor
 }
 
 // unchangedForm reports that the rendered file form matches what the agent
-// holds: a plugin-only view never rewrites the canon remnants it inherited.
+// holds: a bundle-managed view never rewrites the canon remnants it inherited,
+// only its complement copies.
 func (v *view) unchangedForm(resolved kind.Items) bool {
-	return v.pluginOnly || resolved == nil || resolved.Equal(v.raw)
+	if resolved == nil {
+		return true
+	}
+
+	if v.bundleManaged {
+		return v.unchangedComplementForm(resolved)
+	}
+
+	return resolved.Equal(v.raw)
 }
 
 func (e *Engine) desired(spec kind.Spec, v *view, vaultItems kind.Items) kind.Items {
-	if v.pluginOnly {
-		return pluginOnlyDesired(spec, v)
+	if v.bundleManaged {
+		return bundleManagedDesired(spec, v)
 	}
 
 	proj := project(vaultItems, v.surface)
@@ -919,10 +949,11 @@ func (e *Engine) desired(spec kind.Spec, v *view, vaultItems kind.Items) kind.It
 	return out
 }
 
-// pluginOnlyDesired keeps the canon remnants as they are (they stay
+// bundleManagedDesired keeps the canon remnants as they are (they stay
 // untouched until a verified withdrawal), adds the plugin-sourced items and
-// drops the servers of plugins that are gone.
-func pluginOnlyDesired(spec kind.Spec, v *view) kind.Items {
+// drops the servers of plugins that are gone; deliverComplement then adds what
+// the bundle cannot carry.
+func bundleManagedDesired(spec kind.Spec, v *view) kind.Items {
 	out := maps.Clone(v.snap.Items)
 	if out == nil {
 		out = kind.Items{}

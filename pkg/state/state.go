@@ -141,6 +141,10 @@ type BundleState struct {
 	Withdrawn         []WithdrawnItem         `json:"withdrawn,omitempty"`
 	SavedModes        map[kind.ID]config.Mode `json:"saved_modes,omitempty"`
 	AutoAttempt       *AutoAttempt            `json:"auto_attempt,omitempty"`
+	// Complement lists, per kind, the canon names beadle delivers through the
+	// host file while the bundle manages the kind (the servers a bundle cannot
+	// carry). Only these copies may leave the file again.
+	Complement map[kind.ID][]string `json:"complement,omitempty"`
 }
 
 // Verified reports whether the host confirmed the bundle, or the contracts

@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"maps"
@@ -520,7 +519,7 @@ func (e *Engine) hostMaterializationServers() (kind.Items, error) {
 	}
 
 	for name, data := range resolved {
-		if bytes.Contains(data, []byte(secretRefMarker)) {
+		if carriesSecret(data) {
 			delete(resolved, name)
 		}
 	}

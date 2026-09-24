@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -375,6 +374,7 @@ func (e *Engine) enableVerifiedBundle(
 
 	withdrawn, applyWarns, complete := e.applyBundleWithdrawal(ctx, plans)
 	report.Warnings = append(report.Warnings, applyWarns...)
+	report.Warnings = append(report.Warnings, e.adoptComplement(ctx, host, st, &entry)...)
 
 	entry.PendingWithdrawal = !complete
 	entry.Withdrawn = mergeWithdrawn(entry.Withdrawn, withdrawn)
@@ -735,7 +735,7 @@ func splitSecretBearingServers(items kind.Items) (kind.Items, []string) {
 	var skipped []string
 
 	for name, data := range items {
-		if bytes.Contains(data, []byte(secretRefMarker)) {
+		if carriesSecret(data) {
 			skipped = append(skipped, name)
 
 			continue
@@ -1227,7 +1227,7 @@ func (e *Engine) bundlePresentationIssues(ctx context.Context, st *state.State, 
 		return nil
 	}
 
-	var issues []Issue
+	issues := e.complementZeroDeliveryIssues(ctx, host, hostName)
 
 	switch entry.VerifyTier {
 	case state.VerifyExecuted:

@@ -80,11 +80,11 @@ func (e *Engine) ownedPluginMCP(spec kind.Spec, views []*view, plan pluginMCPPla
 	return owned
 }
 
-// markPluginOwnership lets mode-off presentation-only views drop servers
-// whose plugin is gone.
+// markPluginOwnership lets mode-off views that present plugin servers drop
+// the servers whose plugin is gone.
 func markPluginOwnership(views []*view, plan pluginMCPPlan, owned map[string]struct{}) {
 	for _, v := range views {
-		if !v.pluginOnly || plan.failed(v.agent.ID) {
+		if !v.presentsPlugins || plan.failed(v.agent.ID) {
 			continue
 		}
 
@@ -352,6 +352,12 @@ func (e *Engine) readPluginMCPServers(key, source, manifestDir, expansionRoot, r
 
 func (e *Engine) presentPluginMCP(views []*view, plan pluginMCPPlan, report *KindReport) {
 	for _, v := range views {
+		// A bundle-managed view that presents no plugin servers (Claude loads
+		// them natively) delivers the complement only.
+		if v.bundleManaged && !v.presentsPlugins {
+			continue
+		}
+
 		proj := project(plan.Items[v.agent.ID], v.surface)
 
 		v.presented = proj.items
