@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
@@ -38,6 +39,7 @@ const (
 	bundleGenerated = "generated"
 	bundleDisabled  = "disabled"
 	bundleFailed    = "failed"
+	bundlePending   = "pending"
 	bundleNoop      = "noop"
 	cliPlugin       = "plugin"
 	bundleNoteLimit = 400
@@ -852,6 +854,12 @@ func (e *Engine) refreshBundle(st *state.State, report *Report, hostName string)
 
 func (e *Engine) refreshBundleHost(host bundle.Host, dir string, entry state.BundleState, result bundle.Result, st *state.State, report *Report) {
 	if entry.Version == result.Version {
+		// The render is back at the served version: nothing waits anymore.
+		if entry.Pending != nil {
+			entry.Pending = nil
+			st.Bundles[string(host)] = entry
+		}
+
 		if entry.VerifyTier == state.VerifyExecuted {
 			return
 		}
@@ -867,6 +875,16 @@ func (e *Engine) refreshBundleHost(host bundle.Host, dir string, entry state.Bun
 
 		return
 	}
+
+	if e.binaryMissing(host) {
+		e.deferBundleRefresh(host, entry, result.Version, st, report)
+
+		return
+	}
+
+	// This run reaches the CLI, so it takes whatever waited: its outcome is
+	// the new truth, a failure included.
+	entry.Pending = nil
 
 	if note, ok := e.validateBundle(host, dir); !ok {
 		entry.VerifyTier = state.VerifyFailed
@@ -908,6 +926,36 @@ func (e *Engine) refreshBundleHost(host bundle.Host, dir string, entry state.Bun
 	}
 
 	report.Bundles = append(report.Bundles, BundleResult{Host: string(host), Action: bundleEnabled, Version: result.Version, Registered: true, Tier: tier, Note: note})
+}
+
+// deferBundleRefresh handles a refresh the syncing process cannot run because
+// the host CLI is out of its reach (a service runs without the user's shell
+// PATH). Per the contract a missing CLI is unverifiable, never failed: nothing
+// is validated or run, Version and VerifyTier keep describing what the host
+// still serves, and the rendered version waits in Pending until a run that
+// reaches the CLI takes it. The warning fires once per rendered version.
+func (e *Engine) deferBundleRefresh(host bundle.Host, entry state.BundleState, version string, st *state.State, report *Report) {
+	if entry.Pending != nil && entry.Pending.Version == version {
+		return
+	}
+
+	entry.Pending = &state.PendingRefresh{Version: version, Since: e.now().UTC()}
+	st.Bundles[string(host)] = entry
+
+	note := host.Binary() + " CLI not found"
+
+	report.Warnings = append(report.Warnings, fmt.Sprintf(
+		"bundles: %s; the %s host keeps serving %s until a run that reaches the CLI delivers %s; %s",
+		note, host, entry.Version, version, pendingRetry(host)))
+	report.Bundles = append(report.Bundles, BundleResult{
+		Host: string(host), Action: bundlePending, Version: version, Registered: true, Tier: state.VerifyUnverifiable, Note: note,
+	})
+}
+
+// pendingRetry is the remedy for a deferred refresh: any run that reaches the
+// host CLI takes the waiting version.
+func pendingRetry(host bundle.Host) string {
+	return fmt.Sprintf("run beadle sync from a shell that has %s on PATH", host.Binary())
 }
 
 // syncAttemptTier keeps the attempt record honest: once a probe (explicit or
@@ -1134,7 +1182,7 @@ func (e *Engine) bundleHostStateIssues(ctx context.Context, st *state.State, hos
 	}
 
 	if entry.Registered && entry.Version != fresh.Version {
-		issues = append(issues, Issue{Severity: SeverityWarn, Message: fmt.Sprintf("bundle %s is stale (registered %s, canon %s); run beadle sync", hostName, entry.Version, fresh.Version)})
+		issues = append(issues, Issue{Severity: SeverityWarn, Message: staleBundleMessage(host, hostName, entry, fresh.Version)})
 	}
 
 	issues = append(issues, e.bundlePresentationIssues(ctx, st, host, hostName, entry, req)...)
@@ -1208,15 +1256,50 @@ func (e *Engine) bundlePresentationIssues(ctx context.Context, st *state.State, 
 				"bundle %s left a withdrawal unfinished; %s", hostName, bundleRetry(host))})
 		}
 	default:
-		message := fmt.Sprintf("bundle %s is registered but unverified, modes left on; %s", hostName, bundleRetry(host))
-		if entry.ProbeNote != "" {
-			message += " (" + entry.ProbeNote + ")"
-		}
-
-		issues = append(issues, Issue{Severity: SeverityWarn, Message: message})
+		issues = append(issues, Issue{Severity: SeverityWarn, Message: e.unverifiedBundleMessage(host, hostName, entry)})
 	}
 
 	return issues
+}
+
+// staleBundleMessage explains why the host serves an older version than the
+// canon renders: a sync has not run yet, or runs could not reach the host CLI.
+func staleBundleMessage(host bundle.Host, hostName string, entry state.BundleState, fresh string) string {
+	message := fmt.Sprintf("bundle %s is stale (registered %s, canon %s)", hostName, entry.Version, fresh)
+
+	if entry.Pending == nil {
+		return message + "; run beadle sync"
+	}
+
+	return fmt.Sprintf("%s: the syncing process could not reach the %s CLI since %s (a service runs without your shell PATH); %s",
+		message, host.Binary(), entry.Pending.Since.Format(time.RFC3339), pendingRetry(host))
+}
+
+// unverifiedBundleMessage describes a registered bundle whose last probe did
+// not execute, from the file modes as they are: an enable that never verified
+// left them on, while a refresh that failed after a verified enable finds them
+// off and the host on its last installed copy.
+func (e *Engine) unverifiedBundleMessage(host bundle.Host, hostName string, entry state.BundleState) string {
+	var off []string
+
+	for _, k := range host.Kinds() {
+		if e.agentMode(host.AgentID(), k) == config.ModeOff {
+			off = append(off, string(k))
+		}
+	}
+
+	delivery := "modes left on"
+	if len(off) > 0 {
+		delivery = fmt.Sprintf("the %s file modes are off, so the host keeps serving its last installed copy (%s)",
+			strings.Join(off, ", "), entry.Version)
+	}
+
+	message := fmt.Sprintf("bundle %s is registered but unverified, %s; %s", hostName, delivery, bundleRetry(host))
+	if entry.ProbeNote != "" {
+		message += " (" + entry.ProbeNote + ")"
+	}
+
+	return message
 }
 
 type aliveElement struct {

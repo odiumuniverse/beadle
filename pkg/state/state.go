@@ -118,13 +118,25 @@ type AutoAttempt struct {
 	Tier    string    `json:"tier"`
 }
 
-// BundleState records one host's native bundle registration.
+// PendingRefresh records a rendered bundle version the host has not taken
+// yet because the syncing process could not reach the host CLI (a service
+// runs without the user's shell PATH). Since is the first deferral of that
+// version, so the warning is emitted once.
+type PendingRefresh struct {
+	Version string    `json:"version"`
+	Since   time.Time `json:"since"`
+}
+
+// BundleState records one host's native bundle registration. Version,
+// VerifyTier and ProbeNote describe what the host serves; Pending is the
+// rendered version still waiting for a run that reaches the host CLI.
 type BundleState struct {
 	Enabled           bool                    `json:"enabled"`
 	Version           string                  `json:"version,omitempty"`
 	Registered        bool                    `json:"registered,omitempty"`
 	VerifyTier        string                  `json:"verify_tier,omitempty"`
 	ProbeNote         string                  `json:"probe_note,omitempty"`
+	Pending           *PendingRefresh         `json:"pending,omitempty"`
 	PendingWithdrawal bool                    `json:"pending_withdrawal,omitempty"`
 	Withdrawn         []WithdrawnItem         `json:"withdrawn,omitempty"`
 	SavedModes        map[kind.ID]config.Mode `json:"saved_modes,omitempty"`

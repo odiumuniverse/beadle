@@ -1253,6 +1253,64 @@ func TestBundlesSyncUpdateFailureKeepsVersion(t *testing.T) {
 	})
 }
 
+func TestBundlesSyncDefersRefreshWithoutCLI(t *testing.T) {
+	Convey("Given an enabled bundle whose host CLI the syncing process cannot reach", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		cli, _, first := enableClaude(t, f)
+
+		cli.calls = nil
+
+		missingCLI(t)
+		write(t, filepath.Join(f.vault.SkillsDir(), "alpha", "SKILL.md"), "# alpha v2\n")
+
+		report := f.sync(t)
+		rendered := renderedClaudeVersion(t, f)
+		entry := loadState(t, f).Bundles["claude"]
+
+		Convey("When sync re-renders the bundle", func() {
+			Convey("Then nothing runs, the host keeps its served version and tier, and the new version waits", func() {
+				So(cli.calls, ShouldBeEmpty)
+				So(entry.Version, ShouldEqual, first.Bundles[0].Version)
+				So(entry.VerifyTier, ShouldEqual, state.VerifyExecuted)
+				So(entry.Pending, ShouldNotBeNil)
+				So(entry.Pending.Version, ShouldEqual, rendered)
+				So(countWarnings(report, "claude CLI not found"), ShouldEqual, 1)
+				So(report.Bundles, ShouldHaveLength, 1)
+				So(report.Bundles[0].Action, ShouldEqual, "pending")
+				So(report.Bundles[0].Tier, ShouldEqual, state.VerifyUnverifiable)
+			})
+		})
+
+		Convey("When sync runs again without the CLI", func() {
+			again := f.sync(t)
+			pending := loadState(t, f).Bundles["claude"].Pending
+
+			Convey("Then it stays quiet and keeps the first deferral", func() {
+				So(cli.calls, ShouldBeEmpty)
+				So(countWarnings(again, "claude CLI not found"), ShouldEqual, 0)
+				So(pending, ShouldNotBeNil)
+				So(pending.Since.Equal(entry.Pending.Since), ShouldBeTrue)
+			})
+		})
+
+		Convey("When a run that reaches the CLI syncs", func() {
+			foundCLI(t)
+			f.sync(t)
+
+			after := loadState(t, f).Bundles["claude"]
+
+			Convey("Then it takes the waiting version and clears the deferral", func() {
+				So(cli.calls, ShouldHaveLength, 5)
+				So(after.Version, ShouldEqual, rendered)
+				So(after.VerifyTier, ShouldEqual, state.VerifyExecuted)
+				So(after.Pending, ShouldBeNil)
+			})
+		})
+	})
+}
+
 func TestBundlesRefreshSkipsDryRunPullPushAndKinds(t *testing.T) {
 	Convey("Given an enabled bundle", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")
@@ -1308,6 +1366,32 @@ func TestBundleIssuesStaleBeforeSync(t *testing.T) {
 
 			Convey("Then it warns the bundle is stale", func() {
 				So(hasIssue(issues, engine.SeverityWarn, "is stale"), ShouldBeTrue)
+			})
+		})
+	})
+}
+
+func TestBundleIssuesStaleNamesUnreachableCLI(t *testing.T) {
+	Convey("Given a refresh deferred because the syncing process could not reach the host CLI", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		_, _, _ = enableClaude(t, f)
+
+		missingCLI(t)
+		write(t, filepath.Join(f.vault.SkillsDir(), "alpha", "SKILL.md"), "# alpha v2\n")
+		f.sync(t)
+
+		Convey("When doctor runs from a shell that reaches the CLI", func() {
+			foundCLI(t)
+
+			issues, err := f.engine.Doctor(t.Context())
+			So(err, ShouldBeNil)
+
+			Convey("Then the stale warning names the unreachable CLI instead of a bare retry", func() {
+				So(hasIssue(issues, engine.SeverityWarn, "is stale"), ShouldBeTrue)
+				So(hasIssue(issues, engine.SeverityWarn, "the syncing process could not reach the claude CLI since"), ShouldBeTrue)
+				So(hasIssue(issues, engine.SeverityWarn, "run beadle sync from a shell that has claude on PATH"), ShouldBeTrue)
 			})
 		})
 	})
@@ -1393,9 +1477,10 @@ func TestBundleDoctorInvariants(t *testing.T) {
 		issues, err := f.engine.Doctor(t.Context())
 		So(err, ShouldBeNil)
 
-		Convey("Then zero delivery is not claimed and the unverified warning shows", func() {
+		Convey("Then zero delivery is not claimed and the warning names the modes as they are", func() {
 			So(hasIssue(issues, engine.SeverityError, "nothing delivers the canon"), ShouldBeFalse)
-			So(hasIssue(issues, engine.SeverityWarn, "unverified, modes left on"), ShouldBeTrue)
+			So(hasIssue(issues, engine.SeverityWarn, "modes left on"), ShouldBeFalse)
+			So(hasIssue(issues, engine.SeverityWarn, "file modes are off, so the host keeps serving its last installed copy"), ShouldBeTrue)
 		})
 	})
 
