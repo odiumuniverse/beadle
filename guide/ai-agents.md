@@ -40,21 +40,22 @@ agent both changed the same item it records a **conflict** instead of guessing.
   `beadle bundles disable <host>`, `beadle project disable <file>`.
 - **Hooks run only after a personal approve.** Plugin command hooks are scanned
   and reported as `doctor` Info; nothing is written until the human runs
-  `beadle hooks approve --plugin <marketplace>/<name>`. The Claude bundle is
+  `beadle hooks approve --plugin <origin>/<name>`. The Claude bundle is
   excluded (Claude runs its own plugin hooks natively); non-command hooks are
   skipped with a warning. beadle never executes hooks itself.
 - **User-level `.claude/rules/` is not managed** (project `.claude/rules/*.md`
   is, when enabled): `doctor` reports it as Info.
 - **DeepSeek Harness:** permissions, subagents and slash commands are a
   documented no-go (A-41) — in DSH they are runtime state and code, not files.
-  DSH MCP waits for Q-16.
+  **DSH MCP is managed** (A-44): the canon servers render into the harness
+  profile patch as our `beadle:<server>` rows — Q-16 is closed.
 - **`beadle guide`** prints this document; `beadle guide --humans` prints the
   human guide.
 </important>
 
 ## Plugin flow
 
-A plugin installed into **any supported host** (Claude Code, Codex, Gemini CLI
+A plugin installed into **any host with file-based plugins** (Claude Code, Codex, Gemini CLI
 extensions, Antigravity, Cursor) is scanned, parked in the vault and presented
 to the active hosts: install it in one and it reaches the others. Skills,
 subagents and commands use the farm; MCP servers go through the MCP kind; hooks
@@ -74,7 +75,7 @@ plus the personal marketplace `~/.agents/plugins/marketplace.json`,
 | `agents/` | farm link for the md hosts (OpenCode, Cursor, Kilo, Gemini, Antigravity) as `<plugin>--<name>.md`; Codex gets a rendered TOML in the farm zone; Claude reads them natively, Pi has no subagents |
 | `commands/` | farm link for the md hosts with a commands surface (OpenCode, Kilo, Pi) as `<plugin>--<name>.md`; Gemini gets a rendered TOML; Claude reads them natively; Codex is skipped (`prompts` is pull-only) |
 | MCP servers (`.mcp.json`, portable `mcp.json`, `mcp_config.json`, Gemini's inline `mcpServers`) | presented through the MCP kind (plan from the ledger); servers keep their names and each host's plugin-root placeholder resolves to the pivot |
-| hooks | `doctor` Info only; after `beadle hooks approve --plugin <marketplace>/<name>` they render into the Gemini and Antigravity bundles and the `~/.cursor/hooks.json` / `~/.codex/hooks.json` files; the Claude bundle is excluded (Claude runs its own plugin hooks natively) |
+| hooks | `doctor` Info only; after `beadle hooks approve --plugin <origin>/<name>` they render into the Gemini and Antigravity bundles and the `~/.cursor/hooks.json` / `~/.codex/hooks.json` files; the Claude bundle is excluded (Claude runs its own plugin hooks natively) |
 
 Rules: a name the **canon already owns wins** — the plugin artifact is skipped
 with a warning. Between plugins the first key wins (warn). The

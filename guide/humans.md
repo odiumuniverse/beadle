@@ -37,7 +37,8 @@ prints this one.
   commands/      ──┤  (3-way merge,  ├── ~/.codex/AGENTS.md, config.toml, agents/*.toml
   permissions/   ──┤   conflicts)    ├── ~/.pi/agent/AGENTS.md, mcp.json
   memory/        ──┤                 ├── ~/.config/kilo/AGENTS.md, kilo.jsonc
-  projects/      ──┘                 └── ~/.agents/skills (shared)
+  projects/      ──┤                 ├── $DSH_HOME/AGENTS.md, skills/
+  hooks/         ──┘                 └── ~/.agents/skills (shared)
   objects/  history, state.json  state
 ```
 
@@ -52,7 +53,7 @@ checkout — secrets in project files need an explicit opt-in
 
 ## Plugins
 
-Plugins are read from **every supported host** — Claude Code, Codex, Gemini CLI
+Plugins are read from **every host with file-based plugins** — Claude Code, Codex, Gemini CLI
 extensions, Antigravity and Cursor — scanned and **parked** in the vault, then
 presented to the active hosts: install a plugin in any one and it arrives
 everywhere. Skills arrive as links in every host's skills directory (Claude
@@ -72,7 +73,7 @@ command hooks, reports them in `beadle doctor`, and writes nothing until you
 approve them yourself:
 
 ```sh
-beadle hooks approve --plugin <marketplace>/<name>
+beadle hooks approve --plugin <origin>/<name>
 ```
 
 beadle never executes hooks. The Claude bundle is excluded (Claude runs its own

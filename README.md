@@ -271,7 +271,7 @@ plugin skills are farmed through a stable pivot so upgrades do not break
 links. Plugin agents and commands are farmed the same way (`<plugin>--<name>.md`
 for markdown hosts, a rendered TOML copy for Codex agents and Gemini commands;
 Claude reads plugin agents and commands natively, Codex prompts are pull-only).
-Plugins are read from every supported host — Claude Code, Codex, Gemini CLI
+Plugins are read from every host with file-based plugins — Claude Code, Codex, Gemini CLI
 extensions, Antigravity and Cursor — and what one installs reaches the others:
 a plugin put into Codex shows up for Claude, OpenCode, Gemini and Cursor, and
 the other way round. The same plugin installed in two hosts is presented once
@@ -433,6 +433,7 @@ graph becomes the audit trail. File-backed kinds only. Details:
 | `watch` / `daemon` | background sync, autostart service |
 | `secrets list\|set\|rm\|prune\|migrate` | credential values; never printed |
 | `plugins pins\|pin\|unpin` | per-agent plugin version pins |
+| `guide [--humans]` | print the guide for AI agents (or the human guide with `--humans`) |
 | `export agent-plugins --out DIR` | render the canon (skills + MCP) as an Agent Plugins v1.0.0 package |
 | `hooks list\|add\|rm\|approve\|revoke` | lifecycle hooks canon: rendered into native bundles and the Cursor/Codex hooks files (never executed by beadle); `approve --plugin <key>` adopts the command hooks of an installed plugin |
 | `skills seed\|adopt\|unadopt` | the built-in skills (`beadle-conflicts` + `beadle`), foreign-copy adoption and its restore |
