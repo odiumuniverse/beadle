@@ -118,6 +118,25 @@ func hasExistingPrompt(existing []byte) bool {
 	return ok && prompt != ""
 }
 
+// LiftGeminiCommand converts a Gemini CLI command TOML into canonical
+// markdown for the plugin farm: the same codec that pulls the canon performs
+// the template rewrite, so a plugin-sourced command speaks the canon dialect
+// before the farm renders it to the other hosts.
+func LiftGeminiCommand(name string, data []byte) ([]byte, bool, error) {
+	if !command.ValidName(name) {
+		return nil, false, nil
+	}
+
+	doc, ok, err := (geminiCommandCodec{}).parse(name+".toml", data)
+	if err != nil || !ok {
+		return nil, false, err
+	}
+
+	doc.Name = name
+
+	return command.Render(doc), true, nil
+}
+
 func (geminiCommandCodec) audit(doc command.Document) []string {
 	var notes []string
 
@@ -128,7 +147,7 @@ func (geminiCommandCodec) audit(doc command.Document) []string {
 		{"argument-hint", doc.ArgumentHint != ""},
 		{"arguments", len(doc.Arguments) > 0},
 		{modelKey, doc.Model != ""},
-		{"disable-model-invocation", doc.DisableModelInvocation != nil},
+		{disableModelInvocationKey, doc.DisableModelInvocation != nil},
 	} {
 		if field.set {
 			notes = append(notes, field.key+" is not expressible for gemini; the vault value stays")

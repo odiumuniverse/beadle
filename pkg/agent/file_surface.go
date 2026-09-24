@@ -140,7 +140,7 @@ func (s *fileSurface[T]) Read(context.Context) (Snapshot, error) {
 			key := s.trimExt(base) + ".md"
 
 			if broken {
-				snap.Unreadable[key] = path
+				snap.Unreadable[key] = "broken symlink " + path
 
 				return
 			}

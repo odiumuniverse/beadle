@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"maps"
 	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -18,6 +17,11 @@ import (
 
 const (
 	pluginHookPrefix = "plugin hooks: "
+
+	// The Claude compatibility placeholder names every plugin host accepts.
+	claudePluginRootVar = "CLAUDE_PLUGIN_ROOT"
+	claudePluginDataVar = "CLAUDE_PLUGIN_DATA"
+	claudeProjectDirVar = "CLAUDE_PROJECT_DIR"
 )
 
 // selfPluginKey is beadle's own rendered bundle: scanning it would offer the
@@ -65,32 +69,34 @@ type pluginHookCounters struct {
 }
 
 // projectPluginHooks renders one plugin's command hooks into canon entries.
-// The command keeps the plugin's matcher; `${CLAUDE_PLUGIN_ROOT}` expands to
-// the plugin pivot, and everything the canon cannot express is skipped and
-// counted.
-func (e *Engine) projectPluginHooks(key, installPath string) (pluginHookPlan, error) {
+// The command keeps the plugin's matcher; the host's plugin-root placeholder
+// expands to the plugin pivot, and everything the canon cannot express is
+// skipped and counted.
+func (e *Engine) projectPluginHooks(key, source, installPath string) (pluginHookPlan, error) {
 	var plan pluginHookPlan
 
-	doc, warns, err := plugin.ReadHooks(installPath)
+	doc, warns, err := plugin.ReadHooksFor(source, installPath)
 	if err != nil {
 		return plan, err
 	}
 
 	plan.Warnings = append(plan.Warnings, warns...)
 
-	marketplace, name, ok := strings.Cut(key, "/")
-	if !ok || !validPluginKey(marketplace, name) {
+	origin, name, ok := strings.Cut(key, "/")
+	if !ok || !validPluginKey(origin, name) {
 		return plan, fmt.Errorf("invalid plugin key %q", key)
 	}
 
-	pivot := filepath.Join(e.vault.PluginsDir(), marketplace, name, farmPivotName)
+	pivot := e.pluginPivotDir(key)
 
 	plan.Source = hooks.SourcePluginPrefix + key
 
 	var counters pluginHookCounters
 
+	eventNames := pluginHookEventsFor(source)
+
 	for _, event := range slices.Sorted(maps.Keys(doc)) {
-		canonEvent, ok := pluginHookEvents[event]
+		canonEvent, ok := eventNames[event]
 		if !ok {
 			for _, group := range doc[event] {
 				counters.events += len(group.Hooks)
@@ -99,7 +105,7 @@ func (e *Engine) projectPluginHooks(key, installPath string) (pluginHookPlan, er
 			continue
 		}
 
-		e.projectPluginEvent(key, event, canonEvent, doc[event], name, pivot, plan.Source, &plan, &counters)
+		e.projectPluginEvent(key, source, event, canonEvent, doc[event], name, pivot, plan.Source, &plan, &counters)
 	}
 
 	if skipped := counters.total(); skipped > 0 {
@@ -115,14 +121,14 @@ func (e *Engine) projectPluginHooks(key, installPath string) (pluginHookPlan, er
 
 // projectPluginEvent projects one plugin event into canon entries.
 func (e *Engine) projectPluginEvent(
-	key, event, canonEvent string, groups []plugin.HookGroup, name, pivot, source string,
+	key, source, event, canonEvent string, groups []plugin.HookGroup, name, pivot, sourceMarker string,
 	plan *pluginHookPlan, counters *pluginHookCounters,
 ) {
 	index := 0
 
 	for _, group := range groups {
 		for _, handler := range group.Hooks {
-			hook, category, warning, ok := projectPluginHandler(key, event, canonEvent, group.Matcher, handler, pivot, source)
+			hook, category, warning, ok := projectPluginHandler(key, source, event, canonEvent, group.Matcher, handler, pivot, sourceMarker)
 			if !ok {
 				counters.add(category)
 
@@ -154,7 +160,7 @@ func (e *Engine) projectPluginEvent(
 // reports the skip category ("type" or "fields"), an optional warning and
 // whether the handler is renderable.
 func projectPluginHandler(
-	key, event, canonEvent, matcher string, handler plugin.HookHandler, pivot, source string,
+	key, source, event, canonEvent, matcher string, handler plugin.HookHandler, pivot, sourceMarker string,
 ) (hooks.Hook, string, string, bool) {
 	if handler.Type != "command" {
 		return hooks.Hook{}, "type", "", false
@@ -166,7 +172,7 @@ func projectPluginHandler(
 			pluginHookPrefix, key, event, strings.Join(handler.Unsupported, ", ")), false
 	}
 
-	command, bad := expandPluginHookCommand(handler.Command, pivot)
+	command, bad := expandPluginHookCommand(handler.Command, pivot, source)
 	if bad != "" {
 		return hooks.Hook{}, "fields", fmt.Sprintf(
 			"%splugin %s hook %s: unsupported variable %q; not rendered", pluginHookPrefix, key, event, bad), false
@@ -193,7 +199,7 @@ func projectPluginHandler(
 		Matcher: matcher,
 		Command: command,
 		Timeout: timeout,
-		Source:  source,
+		Source:  sourceMarker,
 	}, "", warning, true
 }
 
@@ -222,10 +228,13 @@ func pluginHookName(pluginName, event string, index int) string {
 	return fmt.Sprintf("%s--%s-%d", name, event, index)
 }
 
-// expandPluginHookCommand expands ${CLAUDE_PLUGIN_ROOT} to the plugin pivot.
-// Host-specific placeholders the canon cannot resolve are refused, while
-// ordinary shell variables stay verbatim.
-func expandPluginHookCommand(command, pivot string) (string, string) {
+// expandPluginHookCommand expands the host's plugin-root placeholder to the
+// plugin pivot. Host-specific placeholders the canon cannot resolve (plugin
+// data directories, workspace paths) are refused, while ordinary shell
+// variables stay verbatim.
+func expandPluginHookCommand(command, pivot, source string) (string, string) {
+	roots, refuse := pluginHookPlaceholders(source)
+
 	var out strings.Builder
 
 	rest := command
@@ -246,10 +255,10 @@ func expandPluginHookCommand(command, pivot string) (string, string) {
 		name := rest[start+2 : start+end]
 
 		switch {
-		case name == "CLAUDE_PLUGIN_ROOT":
+		case roots[name]:
 			out.WriteString(rest[:start])
 			out.WriteString(pivot)
-		case name == "CLAUDE_PLUGIN_DATA", name == "CLAUDE_PROJECT_DIR", strings.HasPrefix(name, "user_config."):
+		case refuse[name] || strings.HasPrefix(name, "user_config."):
 			return "", name
 		default:
 			out.WriteString(rest[:start+end+1])
@@ -267,6 +276,59 @@ func expandPluginHookCommand(command, pivot string) (string, string) {
 	return expanded, ""
 }
 
+// pluginHookPlaceholders returns the plugin root placeholders of one host and
+// the host-specific ones the canon cannot resolve.
+func pluginHookPlaceholders(source string) (map[string]bool, map[string]bool) {
+	switch source {
+	case plugin.SourceCodex:
+		return map[string]bool{"PLUGIN_ROOT": true, claudePluginRootVar: true},
+			map[string]bool{"PLUGIN_DATA": true, claudePluginDataVar: true, claudeProjectDirVar: true}
+	case plugin.SourceGeminiCLI:
+		return map[string]bool{"extensionPath": true},
+			map[string]bool{"workspacePath": true}
+	case plugin.SourceCursor:
+		return map[string]bool{"CURSOR_PLUGIN_ROOT": true, claudePluginRootVar: true},
+			map[string]bool{claudePluginDataVar: true, claudeProjectDirVar: true}
+	case plugin.SourceAntigravityCLI:
+		return map[string]bool{"PLUGIN_ROOT": true, claudePluginRootVar: true},
+			map[string]bool{"PLUGIN_DATA": true, claudePluginDataVar: true}
+	default:
+		return map[string]bool{claudePluginRootVar: true},
+			map[string]bool{claudePluginDataVar: true, claudeProjectDirVar: true}
+	}
+}
+
+// pluginHookEventsFor maps the hook event names of one host to the canon
+// events. Only unambiguous names are mapped: everything else is skipped and
+// counted, so the trust gate never blesses a hook with a guessed meaning.
+func pluginHookEventsFor(source string) map[string]string {
+	switch source {
+	case plugin.SourceCodex:
+		return map[string]string{
+			"PreToolUse":   hooks.EventPreTool,
+			"PostToolUse":  hooks.EventPostTool,
+			"SessionStart": hooks.EventSessionStart,
+			"Stop":         hooks.EventStop,
+		}
+	case plugin.SourceGeminiCLI:
+		return map[string]string{
+			"BeforeTool":   hooks.EventPreTool,
+			"AfterTool":    hooks.EventPostTool,
+			"SessionStart": hooks.EventSessionStart,
+			"Notification": hooks.EventNotification,
+		}
+	case plugin.SourceCursor:
+		return map[string]string{
+			"preToolUse":   hooks.EventPreTool,
+			"postToolUse":  hooks.EventPostTool,
+			"sessionStart": hooks.EventSessionStart,
+			"stop":         hooks.EventStop,
+		}
+	default:
+		return pluginHookEvents
+	}
+}
+
 // ApprovePluginHooks copies the command hooks of one installed plugin into the
 // canon and approves them. It is the only path plugin hooks take into the
 // canon: the scan never writes and nothing is auto-approved.
@@ -277,7 +339,7 @@ func (e *Engine) ApprovePluginHooks(key string) (Report, error) {
 		return report, fmt.Errorf("plugin %s is beadle's own bundle", key)
 	}
 
-	manifest, err := plugin.Read(e.home)
+	manifest, err := plugin.ReadAll(e.home)
 	if err != nil {
 		return report, err
 	}
@@ -292,14 +354,13 @@ func (e *Engine) ApprovePluginHooks(key string) (Report, error) {
 		return report, fmt.Errorf("plugin %s install path %s is missing; reinstall the plugin", key, installed.InstallPath)
 	}
 
-	marketplace, name, _ := strings.Cut(key, "/")
-	pivot := filepath.Join(e.vault.PluginsDir(), marketplace, name, farmPivotName)
+	pivot := e.pluginPivotDir(key)
 
 	if !pivotValid(pivot) {
 		return report, fmt.Errorf("plugin %s pivot %s is missing; run `beadle sync` first", key, pivot)
 	}
 
-	plan, err := e.projectPluginHooks(key, installed.InstallPath)
+	plan, err := e.projectPluginHooks(key, installed.Source, installed.InstallPath)
 	report.Warnings = append(report.Warnings, plan.Warnings...)
 
 	if err != nil {
@@ -391,10 +452,10 @@ func approvePlanEntries(cfg *config.Config, canon map[string]hooks.Hook, plan pl
 	}
 }
 
-// installedPlugin finds one plugin by its <marketplace>/<name> key.
+// installedPlugin finds one plugin by its <origin>/<name> key.
 func installedPlugin(manifest plugin.Manifest, key string) (plugin.Plugin, bool) {
 	for _, p := range manifest.Plugins {
-		if pluginKey(p.Marketplace, p.Name) == key {
+		if pluginKey(p.Origin, p.Name) == key {
 			return p, true
 		}
 	}
@@ -415,7 +476,7 @@ func (e *Engine) pluginHookIssues() []Issue {
 		return []Issue{{Severity: SeverityWarn, Message: "cannot read the hooks canon: " + err.Error()}}
 	}
 
-	manifest, err := plugin.Read(e.home)
+	manifest, err := plugin.ReadAll(e.home)
 	if err != nil {
 		return []Issue{{Severity: SeverityWarn, Message: pluginHookPrefix + err.Error()}}
 	}
@@ -423,10 +484,16 @@ func (e *Engine) pluginHookIssues() []Issue {
 	installed := map[string]plugin.Plugin{}
 
 	for _, p := range manifest.Plugins {
-		key := pluginKey(p.Marketplace, p.Name)
+		key := pluginKey(p.Origin, p.Name)
 		if _, exists := installed[key]; !exists {
 			installed[key] = p
 		}
+	}
+
+	suppressed := map[string]string{}
+
+	if ledger, _, err := loadPluginLedger(e.vault.PluginsLedgerPath()); err == nil {
+		suppressed = e.pluginDedup(ledger).Suppressed
 	}
 
 	var issues []Issue
@@ -436,7 +503,11 @@ func (e *Engine) pluginHookIssues() []Issue {
 			continue
 		}
 
-		issues = append(issues, e.pluginHookIssueFor(key, installed[key].InstallPath, canon)...)
+		if _, covered := suppressed[key]; covered {
+			continue
+		}
+
+		issues = append(issues, e.pluginHookIssueFor(key, installed[key].Source, installed[key].InstallPath, canon)...)
 	}
 
 	return append(issues, missingPluginHookIssues(canon, installed)...)
@@ -444,15 +515,14 @@ func (e *Engine) pluginHookIssues() []Issue {
 
 // pluginHookIssueFor reports the pending, collided or drifted hooks of one
 // plugin, and warns when its pivot is missing so approve cannot work yet.
-func (e *Engine) pluginHookIssueFor(key, installPath string, canon map[string]hooks.Hook) []Issue {
-	plan, err := e.projectPluginHooks(key, installPath)
+func (e *Engine) pluginHookIssueFor(key, source, installPath string, canon map[string]hooks.Hook) []Issue {
+	plan, err := e.projectPluginHooks(key, source, installPath)
 	if err != nil {
 		return []Issue{{Severity: SeverityWarn, Message: pluginHookPrefix + key + ": " + err.Error()}}
 	}
 
 	if len(plan.Entries) > 0 {
-		marketplace, name, _ := strings.Cut(key, "/")
-		pivot := filepath.Join(e.vault.PluginsDir(), marketplace, name, farmPivotName)
+		pivot := e.pluginPivotDir(key)
 
 		if !pivotValid(pivot) {
 			return []Issue{{Severity: SeverityWarn, Message: fmt.Sprintf(

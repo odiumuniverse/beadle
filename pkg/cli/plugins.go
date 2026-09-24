@@ -51,7 +51,7 @@ func (a *app) newPluginPinsCmd() *cobra.Command {
 				}
 			}
 
-			manifest, err := plugin.Read(home)
+			manifest, err := plugin.ReadAll(home)
 			if err != nil {
 				return err
 			}
@@ -92,8 +92,13 @@ func pluginPinState(home string, manifest plugin.Manifest, key, version string) 
 		return "unknown-plugin"
 	}
 
-	if !pluginInstalled(manifest, key) {
+	source, ok := pluginSourceOf(manifest, key)
+	if !ok {
 		return "unknown-plugin"
+	}
+
+	if source != plugin.SourceClaudeCode {
+		return "no-effect"
 	}
 
 	if !isDir(filepath.Join(home, ".claude", "plugins", "cache", marketplace, name, version)) {
@@ -103,14 +108,15 @@ func pluginPinState(home string, manifest plugin.Manifest, key, version string) 
 	return "ok"
 }
 
-func pluginInstalled(manifest plugin.Manifest, key string) bool {
+// pluginSourceOf reports the host that provides the plugin of a key.
+func pluginSourceOf(manifest plugin.Manifest, key string) (string, bool) {
 	for _, p := range manifest.Plugins {
-		if p.Marketplace+"/"+p.Name == key {
-			return true
+		if p.Origin+"/"+p.Name == key {
+			return p.Source, true
 		}
 	}
 
-	return false
+	return "", false
 }
 
 func cutPluginKey(key string) (string, string, bool) {

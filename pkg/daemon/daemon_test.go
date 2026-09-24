@@ -51,7 +51,7 @@ func TestRenderSystemd(t *testing.T) {
 			Convey("Then it lands in the user unit directory", func() {
 				So(err, ShouldBeNil)
 				So(path, ShouldEqual, filepath.Join("/home/test", ".config/systemd/user", "com-beadle-watch.service"))
-				So(content, ShouldContainSubstring, "ExecStart=/usr/local/bin/beadle watch")
+				So(content, ShouldContainSubstring, `ExecStart="/usr/local/bin/beadle" "watch"`)
 				So(content, ShouldContainSubstring, "Restart=on-failure")
 				So(content, ShouldContainSubstring, "ProtectHome=no")
 				So(content, ShouldContainSubstring, "WantedBy=default.target")

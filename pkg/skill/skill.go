@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/odiumuniverse/beadle/pkg/cas"
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
@@ -177,6 +178,80 @@ func ReadTree(root string) (Tree, error) {
 	}
 
 	return tree, nil
+}
+
+// TreeStat is the cheap listing of a skill root: a fingerprint over every
+// file the tree reader would read (relative path, size, modification time,
+// permission bits) and the newest modification time in that listing. A cache
+// compares the fingerprint to decide whether a previously computed TreeDigest
+// still describes the tree, without reading file contents.
+type TreeStat struct {
+	Fingerprint cas.Hash
+	Latest      time.Time
+}
+
+// StatTree lists a skill root without reading file contents. The listing
+// covers exactly the files ReadTree reads: junk names and symlinks are
+// skipped, and a flat `<name>.md` root is the single SKILL.md entry.
+func StatTree(root string) (TreeStat, error) {
+	var stat treeStat
+
+	if info, err := os.Lstat(root); err == nil && info.Mode().IsRegular() {
+		stat.add(skillFileName, info)
+
+		return stat.treeStat(), nil
+	}
+
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if skip, walkErr := skipJunk(root, path, entry); skip {
+			return walkErr
+		}
+
+		if entry.IsDir() || entry.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+
+		stat.add(filepath.ToSlash(rel), info)
+
+		return nil
+	})
+	if err != nil {
+		return TreeStat{}, fmt.Errorf("walk %s: %w", root, err)
+	}
+
+	return stat.treeStat(), nil
+}
+
+// treeStat accumulates one root's listing lines.
+type treeStat struct {
+	builder strings.Builder
+	latest  time.Time
+}
+
+func (s *treeStat) add(rel string, info fs.FileInfo) {
+	fmt.Fprintf(&s.builder, "%s\x00%d\x00%d\x00%o\n", rel, info.Size(), info.ModTime().UnixNano(), info.Mode())
+
+	if info.ModTime().After(s.latest) {
+		s.latest = info.ModTime()
+	}
+}
+
+func (s *treeStat) treeStat() TreeStat {
+	return TreeStat{Fingerprint: cas.HashOf([]byte(s.builder.String())), Latest: s.latest}
 }
 
 func WriteTree(dir, name string, tree Tree) error {

@@ -8,6 +8,33 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
+func TestPluginsPinFromForeignSource(t *testing.T) {
+	Convey("Given a pinned Codex plugin", t, func() {
+		home := t.TempDir()
+
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
+
+		_, err := runCLI(t, "init")
+		So(err, ShouldBeNil)
+
+		codex := filepath.Join(home, ".codex", "plugins", "cache", "acme", "tool", "1.0.0")
+		writeFile(t, filepath.Join(codex, "plugin.json"), `{"name":"tool","version":"1.0.0"}`)
+
+		_, err = runCLI(t, "plugins", "pin", "acme/tool", "1.0.0", "--agent", "opencode")
+		So(err, ShouldBeNil)
+
+		out, err := runCLI(t, "plugins", "pins")
+
+		Convey("Then the pin is reported as having no effect", func() {
+			So(err, ShouldBeNil)
+			So(out, ShouldContainSubstring, "acme/tool")
+			So(out, ShouldContainSubstring, "no-effect")
+		})
+	})
+}
+
 func TestPluginsPinCommands(t *testing.T) {
 	Convey("Given an initialized vault", t, func() {
 		home := t.TempDir()

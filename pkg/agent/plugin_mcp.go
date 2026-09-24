@@ -20,7 +20,18 @@ const (
 
 var placeholderName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*`)
 
+// PluginMCPServers decodes a Claude plugin MCP document.
 func PluginMCPServers(data []byte, pluginRoot string) (kind.Items, []string, error) {
+	return PluginMCPServersFor(ClaudeCodeID, data, pluginRoot)
+}
+
+// PluginMCPServersFor decodes a plugin MCP document in the dialect of one
+// host: the event names and the transport fields the host itself reads. The
+// plugin root placeholder of the host expands to pluginRoot; any other
+// `${…}` variable refuses the server, because the canon cannot resolve it.
+func PluginMCPServersFor(source string, data []byte, pluginRoot string) (kind.Items, []string, error) {
+	codec, roots := pluginMCPDialect(source)
+
 	var doc struct {
 		MCPServers map[string]any `json:"mcpServers"`
 	}
@@ -41,13 +52,13 @@ func PluginMCPServers(data []byte, pluginRoot string) (kind.Items, []string, err
 			continue
 		}
 
-		if bad := expandPluginEntry(entry, pluginRoot); bad != "" {
+		if bad := expandPluginEntry(entry, pluginRoot, roots); bad != "" {
 			warnings = append(warnings, fmt.Sprintf("server %q references an unsupported variable %q", name, bad))
 
 			continue
 		}
 
-		server, ok := claudeMCP.decode(entry)
+		server, ok := codec.decode(entry)
 		if !ok {
 			warnings = append(warnings, fmt.Sprintf("server %q is not a supported MCP entry", name))
 
@@ -60,9 +71,26 @@ func PluginMCPServers(data []byte, pluginRoot string) (kind.Items, []string, err
 	return items, warnings, nil
 }
 
-func expandPluginEntry(entry map[string]any, pluginRoot string) string {
+// pluginMCPDialect returns the codec and the accepted plugin root placeholders
+// of one host.
+func pluginMCPDialect(source string) (mcpCodec, []string) {
+	switch source {
+	case CodexID:
+		return claudeMCP, []string{"PLUGIN_ROOT", pluginRootVar}
+	case CursorID:
+		return cursorMCP, []string{"CURSOR_PLUGIN_ROOT", pluginRootVar}
+	case GeminiCLIID:
+		return geminiMCP, []string{"extensionPath"}
+	case AntigravityCLIID:
+		return antigravityMCP, []string{"PLUGIN_ROOT", pluginRootVar}
+	default:
+		return claudeMCP, []string{pluginRootVar}
+	}
+}
+
+func expandPluginEntry(entry map[string]any, pluginRoot string, roots []string) string {
 	for _, key := range slices.Sorted(maps.Keys(entry)) {
-		expanded, bad := expandPluginValue(entry[key], pluginRoot)
+		expanded, bad := expandPluginValue(entry[key], pluginRoot, roots)
 		if bad != "" {
 			return bad
 		}
@@ -73,13 +101,13 @@ func expandPluginEntry(entry map[string]any, pluginRoot string) string {
 	return ""
 }
 
-func expandPluginValue(value any, pluginRoot string) (any, string) {
+func expandPluginValue(value any, pluginRoot string, roots []string) (any, string) {
 	switch typed := value.(type) {
 	case string:
-		return expandPluginString(typed, pluginRoot)
+		return expandPluginString(typed, pluginRoot, roots)
 	case []any:
 		for i, item := range typed {
-			expanded, bad := expandPluginValue(item, pluginRoot)
+			expanded, bad := expandPluginValue(item, pluginRoot, roots)
 			if bad != "" {
 				return nil, bad
 			}
@@ -90,7 +118,7 @@ func expandPluginValue(value any, pluginRoot string) (any, string) {
 		return typed, ""
 	case map[string]any:
 		for _, key := range slices.Sorted(maps.Keys(typed)) {
-			expanded, bad := expandPluginValue(typed[key], pluginRoot)
+			expanded, bad := expandPluginValue(typed[key], pluginRoot, roots)
 			if bad != "" {
 				return nil, bad
 			}
@@ -104,7 +132,7 @@ func expandPluginValue(value any, pluginRoot string) (any, string) {
 	}
 }
 
-func expandPluginString(value, pluginRoot string) (any, string) {
+func expandPluginString(value, pluginRoot string, roots []string) (any, string) {
 	var out strings.Builder
 
 	rest := value
@@ -124,7 +152,7 @@ func expandPluginString(value, pluginRoot string) (any, string) {
 
 		name := rest[start+2 : start+end]
 
-		if name != pluginRootVar {
+		if !slices.Contains(roots, name) {
 			return nil, name
 		}
 

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -158,6 +159,18 @@ type Adoption struct {
 	At       time.Time `json:"at"`
 }
 
+// SkillTree caches one skill tree's digest. Fingerprint is the listing of the
+// tree the digest was computed from (relative path, size, modification time),
+// Latest is the newest file mtime in that listing and Stamp the moment the
+// digest was computed: a scan trusts the digest only while the listing is
+// unchanged and the newest file is older than Stamp minus the racy window.
+type SkillTree struct {
+	Digest      cas.Hash  `json:"digest"`
+	Fingerprint cas.Hash  `json:"fingerprint"`
+	Latest      time.Time `json:"latest,omitzero"`
+	Stamp       time.Time `json:"stamp"`
+}
+
 type State struct {
 	Version   int                         `json:"version"`
 	Bases     map[kind.ID]map[string]Base `json:"bases,omitempty"`
@@ -168,6 +181,11 @@ type State struct {
 	Bundles   map[string]BundleState      `json:"bundles,omitempty"`
 	Refusals  []Refusal                   `json:"refusals,omitempty"`
 	Adoptions []Adoption                  `json:"adoptions,omitempty"`
+	// SkillTrees caches skill tree digests by absolute root path, so the
+	// coverage and shadow scans read only the trees that changed. It is
+	// written on the passes that save the state and never on read-only
+	// commands.
+	SkillTrees map[string]SkillTree `json:"skill_trees,omitempty"`
 	// HookRenders records the hook commands beadle rendered into each host's
 	// user-level hooks file, so a later sync replaces or removes exactly its
 	// own entries and leaves foreign hooks alone.
@@ -284,6 +302,34 @@ func (s *State) SetBase(k kind.ID, agent string, base Base) {
 	}
 
 	s.Bases[k][agent] = base
+}
+
+// SkillTreeFor returns the cached digest entry of one skill root.
+func (s *State) SkillTreeFor(root string) (SkillTree, bool) {
+	entry, ok := s.SkillTrees[root]
+
+	return entry, ok
+}
+
+// SetSkillTree records one skill tree's cached digest.
+func (s *State) SetSkillTree(root string, entry SkillTree) {
+	if s.SkillTrees == nil {
+		s.SkillTrees = map[string]SkillTree{}
+	}
+
+	s.SkillTrees[root] = entry
+}
+
+// DropSkillTrees removes the cache entries the predicate matches and reports
+// how many were dropped.
+func (s *State) DropSkillTrees(drop func(root string) bool) int {
+	before := len(s.SkillTrees)
+
+	maps.DeleteFunc(s.SkillTrees, func(root string, _ SkillTree) bool {
+		return drop(root)
+	})
+
+	return before - len(s.SkillTrees)
 }
 
 // AdoptionFor returns the adoption record of one host and skill.

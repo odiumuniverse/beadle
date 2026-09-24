@@ -94,7 +94,7 @@ func TestDSHDoctorIssues(t *testing.T) {
 				So(rules.Agent, ShouldEqual, agent.DSHID)
 				So(rules.Kind, ShouldEqual, kind.Rules)
 
-				skills := dshIssue(issues, engine.SeverityInfo, "skills ~/.dsh/skills; profiles 2")
+				skills := dshIssue(issues, engine.SeverityInfo, "skills ~/.dsh/skills (write); shared ~/.agents/skills (read-only); profiles 2")
 				So(skills, ShouldNotBeNil)
 				So(skills.Agent, ShouldEqual, agent.DSHID)
 				So(skills.Kind, ShouldEqual, kind.Skills)
@@ -127,7 +127,7 @@ func TestDSHDoctorIssues(t *testing.T) {
 				So(warn, ShouldNotBeNil)
 				So(warn.Agent, ShouldEqual, agent.DSHID)
 
-				So(hasIssue(issues, engine.SeverityInfo, "skills ~/.dsh/skills; profiles 1"), ShouldBeTrue)
+				So(hasIssue(issues, engine.SeverityInfo, "skills ~/.dsh/skills (write); shared ~/.agents/skills (read-only); profiles 1"), ShouldBeTrue)
 			})
 		})
 	})

@@ -13,13 +13,16 @@ import (
 // isolatedHome is the temp home TestMain pins the environment to.
 var isolatedHome string
 
-// isolateTestHome pins HOME, BEADLE_HOME and DSH_HOME to a temp directory
-// before the suite runs: a test that forgets its own t.Setenv("HOME", …) must
-// never touch the developer's real home. XDG_CONFIG_HOME is deliberately left
-// alone here: most of this package's tests override HOME per test and rely on
-// the code falling back to <home>/.config, so pinning XDG would send the code
-// into the isolation directory while the test writes into its own temp home.
-// A test that needs another location overrides it with t.Setenv, which wins.
+// isolateTestHome pins HOME, BEADLE_HOME, DSH_HOME and an empty
+// DSH_AGENTS_HOME to a temp directory before the suite runs: a test that
+// forgets its own t.Setenv("HOME", …) must never touch the developer's real
+// home. The empty DSH_AGENTS_HOME makes the DSH adapter resolve its shared
+// root (~/.agents) from each test's own home instead of a developer's value;
+// a test that wants another location overrides it with t.Setenv, which wins.
+// XDG_CONFIG_HOME is deliberately left alone here: most of this package's
+// tests override HOME per test and rely on the code falling back to
+// <home>/.config, so pinning XDG would send the code into the isolation
+// directory while the test writes into its own temp home.
 func isolateTestHome(m *testing.M) int {
 	home, err := os.MkdirTemp("", "beadle-agent-test-home") //nolint:usetesting // TestMain has no *testing.T to hang t.TempDir on
 	if err != nil {
@@ -31,9 +34,10 @@ func isolateTestHome(m *testing.M) int {
 	defer func() { _ = os.RemoveAll(home) }()
 
 	for name, value := range map[string]string{
-		"HOME":        home,
-		"BEADLE_HOME": filepath.Join(home, ".beadle"),
-		"DSH_HOME":    filepath.Join(home, ".dsh"),
+		"HOME":            home,
+		"BEADLE_HOME":     filepath.Join(home, ".beadle"),
+		"DSH_HOME":        filepath.Join(home, ".dsh"),
+		"DSH_AGENTS_HOME": "",
 	} {
 		//nolint:usetesting // TestMain cannot use t.Setenv; tests override per test
 		if err := os.Setenv(name, value); err != nil {
@@ -65,6 +69,11 @@ func TestSuiteHomeIsolation(t *testing.T) {
 				for _, name := range []string{"HOME", "BEADLE_HOME", "DSH_HOME"} {
 					So(os.Getenv(name), ShouldContainSubstring, isolatedHome)
 				}
+
+				// DSH_AGENTS_HOME is pinned empty: the DSH adapter resolves
+				// its default (~/.agents) from each test's own home, so a
+				// developer's value cannot leak into the suite.
+				So(os.Getenv("DSH_AGENTS_HOME"), ShouldBeEmpty)
 			})
 		})
 	})

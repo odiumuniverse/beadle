@@ -14,6 +14,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/skill"
+	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
 // piMCPAdapterIssues warns that servers beadle manages on the Pi MCP surface
@@ -78,7 +79,7 @@ func (e *Engine) managedServersOn(ctx context.Context, surface agent.Surface) []
 // ~/.config/kilo/skills, so the other copies are surfaced here instead of
 // being silently duplicated: an Info for foreign copies, a Warn when a copy
 // already duplicates the canon and manual cleanup is due.
-func (e *Engine) kiloLegacySkillIssues(active []*agent.Agent) []Issue {
+func (e *Engine) kiloLegacySkillIssues(st *state.State, active []*agent.Agent) []Issue {
 	if e.home == "" {
 		return nil
 	}
@@ -118,7 +119,7 @@ func (e *Engine) kiloLegacySkillIssues(active []*agent.Agent) []Issue {
 
 		dirs = append(dirs, displayHomePath(dir, e.home))
 		legacy += len(names)
-		dupes += sameSkillTrees(dir, names, canon)
+		dupes += e.sameSkillTrees(st, dir, names, canon)
 	}
 
 	if legacy == 0 {
@@ -209,7 +210,7 @@ func skillNamesIn(dir string) ([]string, error) {
 }
 
 // sameSkillTrees counts the named skills whose tree matches the canon.
-func sameSkillTrees(dir string, names []string, canon map[string]skill.Tree) int {
+func (e *Engine) sameSkillTrees(st *state.State, dir string, names []string, canon map[string]skill.Tree) int {
 	count := 0
 
 	for _, name := range names {
@@ -218,12 +219,12 @@ func sameSkillTrees(dir string, names []string, canon map[string]skill.Tree) int
 			continue
 		}
 
-		read, err := skill.ReadTree(filepath.Join(dir, name))
+		digest, err := e.skillTreeDigest(st, filepath.Join(dir, name))
 		if err != nil {
 			continue
 		}
 
-		if skill.TreeDigest(read) == skill.TreeDigest(tree) {
+		if digest == skill.TreeDigest(tree) {
 			count++
 		}
 	}

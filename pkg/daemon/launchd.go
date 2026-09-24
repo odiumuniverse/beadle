@@ -45,6 +45,16 @@ func RenderLaunchd(spec Spec) (string, string, error) {
 	b.WriteString("\t<key>ProcessType</key><string>Background</string>\n")
 	b.WriteString("\t<key>SoftResourceLimits</key><dict><key>NumberOfFiles</key><integer>" + strconv.Itoa(fileLimit) + "</integer></dict>\n")
 
+	if len(spec.Env) > 0 {
+		b.WriteString("\t<key>EnvironmentVariables</key>\n\t<dict>\n")
+
+		for _, pair := range EnvPairs(spec.Env) {
+			b.WriteString("\t\t<key>" + xmlEscape(pair[0]) + "</key><string>" + xmlEscape(pair[1]) + "</string>\n")
+		}
+
+		b.WriteString("\t</dict>\n")
+	}
+
 	if spec.LogPath != "" {
 		writePlistString(&b, "StandardOutPath", spec.LogPath)
 	}

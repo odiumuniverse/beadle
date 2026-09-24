@@ -40,10 +40,34 @@ type Hooks map[string][]HookGroup
 // hooks/hooks.json with the inline manifest hooks; when both exist, the file
 // wins with a warning, because the host treats the locations as alternatives.
 func ReadHooks(installPath string) (Hooks, []string, error) {
+	return ReadHooksFor(SourceClaudeCode, installPath)
+}
+
+// ReadHooksFor reads the hook definitions of one installed plugin in the
+// document shape of its host: the Claude/Codex/Cursor wrapper, a bare event
+// map (Gemini CLI), or the Antigravity owner-keyed document.
+func ReadHooksFor(source, installPath string) (Hooks, []string, error) {
 	if installPath == "" || !filepath.IsAbs(installPath) {
 		return nil, []string{fmt.Sprintf("plugin install path %q is empty or not absolute; hooks not read", installPath)}, nil
 	}
 
+	switch source {
+	case SourceCodex:
+		return readCodexHooks(installPath)
+	case SourceCursor:
+		return readCursorHooks(installPath)
+	case SourceGeminiCLI:
+		return readHooksFile(filepath.Join(installPath, hooksDir, hooksFile))
+	case SourceAntigravityCLI:
+		return readAntigravityHooks(filepath.Join(installPath, hooksFile))
+	default:
+		return readClaudeHooks(installPath)
+	}
+}
+
+// readClaudeHooks merges hooks/hooks.json with the inline hooks of the
+// .claude-plugin/plugin.json manifest; the file wins when both exist.
+func readClaudeHooks(installPath string) (Hooks, []string, error) {
 	file, fileWarns, err := readHooksFile(filepath.Join(installPath, hooksDir, hooksFile))
 	if err != nil {
 		return nil, nil, err
@@ -65,6 +89,324 @@ func ReadHooks(installPath string) (Hooks, []string, error) {
 	default:
 		return inline, append(fileWarns, inlineWarns...), nil
 	}
+}
+
+// readCodexHooks reads the Codex hook locations: the explicit
+// extensions.com.openai.hooks of the portable manifest wins, then the legacy
+// .codex-plugin/plugin.json hooks, then the default hooks/hooks.json.
+func readCodexHooks(installPath string) (Hooks, []string, error) {
+	explicit, warns, err := codexManifestHooks(installPath)
+	if err != nil || len(explicit) > 0 {
+		return explicit, warns, err
+	}
+
+	// The default file is tried when the manifests declare no hooks: an
+	// explicit value replaces default-file discovery.
+	file, fileWarns, err := readHooksFile(filepath.Join(installPath, hooksDir, hooksFile))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return file, append(warns, fileWarns...), nil
+}
+
+// codexManifestHooks reads the explicit hook declaration of the Codex
+// manifests: extensions.com.openai.hooks of the portable root manifest wins
+// over the legacy .codex-plugin/plugin.json hooks field.
+func codexManifestHooks(installPath string) (Hooks, []string, error) {
+	raw, ok, err := codexPortableHooks(installPath)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if !ok {
+		raw, ok, err = manifestHookField(filepath.Join(installPath, metaDir, metaFile))
+		if err != nil {
+			return nil, nil, err
+		}
+
+		if !ok {
+			return nil, nil, nil
+		}
+	}
+
+	return readHookSources(installPath, raw)
+}
+
+// codexPortableHooks reports the explicit extensions.com.openai.hooks of the
+// portable root manifest.
+func codexPortableHooks(installPath string) (json.RawMessage, bool, error) {
+	path := filepath.Join(installPath, metaFile)
+
+	data, err := os.ReadFile(path) //nolint:gosec // G304: the path is built from the caller-provided install path
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
+
+	if err != nil {
+		return nil, false, fmt.Errorf("read %s: %w", path, err)
+	}
+
+	var portable struct {
+		Extensions map[string]json.RawMessage `json:"extensions"`
+	}
+
+	if err := json.Unmarshal(data, &portable); err != nil {
+		return nil, false, fmt.Errorf("parse %s: %w", path, err)
+	}
+
+	raw, ok := portable.Extensions["com.openai"]
+	if !ok {
+		return nil, false, nil
+	}
+
+	var openai struct {
+		Hooks json.RawMessage `json:"hooks"`
+	}
+
+	if err := json.Unmarshal(raw, &openai); err != nil {
+		return nil, false, fmt.Errorf("parse %s: extensions.com.openai: %w", path, err)
+	}
+
+	return openai.Hooks, len(openai.Hooks) > 0, nil
+}
+
+// manifestHookField reads the raw `hooks` field of one manifest file; ok is
+// false when the file is absent or declares no hooks.
+func manifestHookField(path string) (json.RawMessage, bool, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // G304: the path is built from the caller-provided install path
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, false, nil
+	}
+
+	if err != nil {
+		return nil, false, fmt.Errorf("read %s: %w", path, err)
+	}
+
+	var manifest struct {
+		Hooks json.RawMessage `json:"hooks"`
+	}
+
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return nil, false, fmt.Errorf("parse %s: %w", path, err)
+	}
+
+	return manifest.Hooks, len(manifest.Hooks) > 0, nil
+}
+
+// readCursorHooks reads the Cursor hook locations: the .cursor-plugin
+// manifest hooks field wins, then the default hooks/hooks.json.
+func readCursorHooks(installPath string) (Hooks, []string, error) {
+	raw, ok, err := manifestHookField(filepath.Join(installPath, cursorMetaDir, metaFile))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if ok {
+		return readHookSources(installPath, raw)
+	}
+
+	return readHooksFile(filepath.Join(installPath, hooksDir, hooksFile))
+}
+
+// readHookSources parses an explicit hooks declaration: a path (or a list of
+// paths), an inline document (or a list of inline documents), or a mix. The
+// documents merge; every path stays inside the plugin root.
+func readHookSources(installPath string, raw json.RawMessage) (Hooks, []string, error) {
+	out := Hooks{}
+
+	var warns []string
+
+	var asString string
+
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		hooks, pathWarns, err := readHookPath(installPath, asString)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		mergeHooks(out, hooks)
+
+		return out, pathWarns, nil
+	}
+
+	var asList []json.RawMessage
+
+	if err := json.Unmarshal(raw, &asList); err == nil {
+		for _, item := range asList {
+			var name string
+
+			if err := json.Unmarshal(item, &name); err == nil {
+				hooks, pathWarns, err := readHookPath(installPath, name)
+				if err != nil {
+					return nil, nil, err
+				}
+
+				warns = append(warns, pathWarns...)
+
+				mergeHooks(out, hooks)
+
+				continue
+			}
+
+			hooks, itemWarns, err := parseHookDocument(item)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			warns = append(warns, itemWarns...)
+
+			mergeHooks(out, hooks)
+		}
+
+		return out, warns, nil
+	}
+
+	hooks, docWarns, err := parseHookDocument(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return hooks, docWarns, nil
+}
+
+func readHookPath(installPath, rel string) (Hooks, []string, error) {
+	if !filepath.IsLocal(rel) {
+		return nil, []string{fmt.Sprintf("plugin %s: hooks path %q escapes the plugin root; ignored", installPath, rel)}, nil
+	}
+
+	return readHooksFile(filepath.Join(installPath, filepath.FromSlash(strings.TrimPrefix(rel, "./"))))
+}
+
+func mergeHooks(into, from Hooks) {
+	for event, groups := range from {
+		into[event] = append(into[event], groups...)
+	}
+}
+
+// readAntigravityHooks parses the owner-keyed Antigravity hooks.json:
+// {"<owner>": {"enabled": true, "PreToolUse": [{type, command, timeout, matcher}], …}}.
+func readAntigravityHooks(path string) (Hooks, []string, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // G304: the path is built from the caller-provided install path
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil, nil
+	}
+
+	if err != nil {
+		return nil, nil, fmt.Errorf("read %s: %w", path, err)
+	}
+
+	var doc map[string]json.RawMessage
+
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, nil, fmt.Errorf("%s: parse hooks: %w", path, err)
+	}
+
+	out := Hooks{}
+
+	var warns []string
+
+	for _, owner := range slices.Sorted(maps.Keys(doc)) {
+		var groups map[string]json.RawMessage
+
+		if err := json.Unmarshal(doc[owner], &groups); err != nil {
+			warns = append(warns, fmt.Sprintf("hook owner %s is not an object; ignored", owner))
+
+			continue
+		}
+
+		var enabled bool
+
+		if raw, ok := groups["enabled"]; ok {
+			if err := json.Unmarshal(raw, &enabled); err != nil {
+				warns = append(warns, fmt.Sprintf("hook owner %s: enabled is not a boolean; ignored", owner))
+
+				continue
+			}
+		} else {
+			enabled = true
+		}
+
+		if !enabled {
+			continue
+		}
+
+		for _, event := range slices.Sorted(maps.Keys(groups)) {
+			if event == "enabled" {
+				continue
+			}
+
+			var handlers []antigravityHandler
+
+			if err := json.Unmarshal(groups[event], &handlers); err != nil {
+				warns = append(warns, fmt.Sprintf("hook event %s of %s is not a list of handlers; ignored", event, owner))
+
+				continue
+			}
+
+			for _, handler := range handlers {
+				out[event] = append(out[event], HookGroup{Matcher: handler.Matcher, Hooks: []HookHandler{handler.hook()}})
+			}
+		}
+	}
+
+	return out, warns, nil
+}
+
+// antigravityHandler is one Antigravity hook handler: the matcher is part of
+// the handler, unlike the Claude matcher group.
+type antigravityHandler struct {
+	Type    string
+	Command string
+	Timeout float64
+	Matcher string
+	Rest    map[string]json.RawMessage
+}
+
+func (h *antigravityHandler) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	if matcher, ok := raw["matcher"]; ok {
+		if err := json.Unmarshal(matcher, &h.Matcher); err != nil {
+			h.Matcher = ""
+		}
+	}
+
+	delete(raw, "matcher")
+
+	h.Rest = map[string]json.RawMessage{}
+
+	for key, value := range raw {
+		switch key {
+		case "type":
+			if err := json.Unmarshal(value, &h.Type); err != nil {
+				h.Rest[key] = value
+			}
+		case "command":
+			if err := json.Unmarshal(value, &h.Command); err != nil {
+				h.Rest[key] = value
+			}
+		case "timeout":
+			if err := json.Unmarshal(value, &h.Timeout); err != nil {
+				h.Rest[key] = value
+			}
+		default:
+			h.Rest[key] = value
+		}
+	}
+
+	return nil
+}
+
+func (h antigravityHandler) hook() HookHandler {
+	handler := HookHandler{Type: h.Type, Command: h.Command, Timeout: int(h.Timeout)}
+	handler.Unsupported = slices.Sorted(maps.Keys(h.Rest))
+
+	return handler
 }
 
 // readHooksFile parses a hooks document: either {"hooks": {…}} or the bare

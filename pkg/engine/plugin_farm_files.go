@@ -15,6 +15,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/plugin"
 )
 
 const (
@@ -23,13 +24,17 @@ const (
 	// farmRenderDirName holds the rendered host-format copies of plugin
 	// definitions: <vault>/plugins/farm/<marketplace>/<plugin>/<kind>/<ns>.<ext>.
 	farmRenderDirName = "farm"
+	// markdownExt is the default definition format; sources whose
+	// definitions are not markdown declare their own extensions.
+	markdownExt = ".md"
 )
 
 // farmFileSpec describes one plugin-sourced file kind the farm presents:
 // agents or commands.
 type farmFileSpec struct {
 	Kind kind.ID
-	// DirName is the plugin subdirectory that holds the definitions.
+	// DirName is the well-known plugin subdirectory that holds the
+	// definitions; a manifest may declare another one, resolved per plugin.
 	DirName string
 	// Label names one definition in warnings ("agent", "command").
 	Label string
@@ -45,6 +50,56 @@ type farmFileSpec struct {
 	// Rename rewrites the definition identity to the namespaced name before
 	// rendering; nil when the host format carries no name field.
 	Rename func(ns string, markdown []byte) ([]byte, error)
+	// SourceExts maps a plugin source to the file extensions its definitions
+	// use, in priority order. An empty map means markdown only.
+	SourceExts map[string][]string
+	// Lift converts a non-markdown definition (Gemini CLI TOML commands) into
+	// canonical markdown; nil means every definition is already markdown.
+	Lift func(name string, data []byte) ([]byte, bool, error)
+}
+
+// extsFor returns the definition extensions of one plugin source.
+func (spec farmFileSpec) extsFor(source string) []string {
+	if exts, ok := spec.SourceExts[source]; ok && len(exts) > 0 {
+		return exts
+	}
+
+	return []string{markdownExt}
+}
+
+// sourceExts returns every definition extension of the spec, longest first so
+// a name never loses its full extension.
+func (spec farmFileSpec) sourceExts() []string {
+	exts := []string{markdownExt}
+
+	for _, source := range plugin.SourceHosts() {
+		exts = append(exts, spec.extsFor(source)...)
+	}
+
+	slices.SortFunc(exts, func(a, b string) int { return len(b) - len(a) })
+
+	return slices.Compact(exts)
+}
+
+// definitionName strips one definition extension from a file name.
+func (spec farmFileSpec) definitionName(file string) (string, bool) {
+	for _, ext := range spec.sourceExts() {
+		if name, ok := strings.CutSuffix(file, ext); ok && name != "" {
+			return name, true
+		}
+	}
+
+	return "", false
+}
+
+type farmFileLot struct {
+	Key    string
+	Plugin string
+	Name   string
+	// Dir is the plugin-relative payload directory of this definition.
+	Dir string
+	// File is the definition file name inside Dir.
+	File string
 }
 
 // farmFileName namespaces a plugin-sourced definition: flat host directories
@@ -52,10 +107,20 @@ type farmFileSpec struct {
 // names' way.
 func farmFileName(plugin, name string) string { return plugin + "--" + name }
 
-type farmFileLot struct {
-	Key    string
-	Plugin string
-	Name   string
+// farmKindDir resolves the payload directory of one file kind for a plugin:
+// a manifest can move the definitions, so the well-known name is only the
+// fallback.
+func farmKindDir(source, installPath string, k kind.ID) string {
+	skills, agents, commands := plugin.ArtifactDirs(source, installPath)
+
+	switch k {
+	case kind.Subagents:
+		return agents
+	case kind.Commands:
+		return commands
+	default:
+		return skills
+	}
 }
 
 // farmFilePlan is what every host with a file surface of the kind may present
@@ -79,6 +144,8 @@ func (e *Engine) buildFarmFilePlan(ledger pluginLedger, spec farmFileSpec) (farm
 
 	var warns []string
 
+	dedup := e.pluginDedup(ledger)
+
 	for _, key := range slices.Sorted(maps.Keys(ledger.Plugins)) {
 		rec := ledger.Plugins[key]
 
@@ -88,6 +155,11 @@ func (e *Engine) buildFarmFilePlan(ledger pluginLedger, spec farmFileSpec) (farm
 
 			continue
 		case !rec.RetiredAt.IsZero():
+			continue
+		}
+
+		if _, covered := dedup.Suppressed[key]; covered {
+			// The same plugin is already presented from another host.
 			continue
 		}
 
@@ -103,13 +175,16 @@ func (e *Engine) buildFarmFilePlan(ledger pluginLedger, spec farmFileSpec) (farm
 			continue
 		}
 
-		names, scanWarns := e.scanPluginFiles(key, rec.Target, root, spec)
+		source := recSource(rec)
+		dirName := farmKindDir(source, rec.Target, spec.Kind)
+
+		entries, scanWarns := e.scanPluginFiles(key, rec.Target, dirName, root, spec.extsFor(source), spec)
 		warns = append(warns, scanWarns...)
 
 		plan.Parked[key] = struct{}{}
 
-		for _, name := range names {
-			ns := farmFileName(plugin, name)
+		for _, entry := range entries {
+			ns := farmFileName(plugin, entry.Name)
 
 			if taken, ok := plan.Owner[ns]; ok {
 				warns = append(warns, fmt.Sprintf("plugin farm: %s %s of %s is already provided by %s", spec.Label, ns, key, taken))
@@ -118,7 +193,7 @@ func (e *Engine) buildFarmFilePlan(ledger pluginLedger, spec farmFileSpec) (farm
 			}
 
 			plan.Owner[ns] = key
-			plan.Desired[ns] = farmFileLot{Key: key, Plugin: plugin, Name: name}
+			plan.Desired[ns] = farmFileLot{Key: key, Plugin: plugin, Name: entry.Name, Dir: dirName, File: entry.File}
 		}
 	}
 
@@ -141,11 +216,17 @@ func (e *Engine) buildFarmFilePlan(ledger pluginLedger, spec farmFileSpec) (farm
 	return plan, warns
 }
 
-// scanPluginFiles lists the top-level markdown definitions of one parked
-// plugin. Nested definitions carry ids this flat presentation cannot express,
-// so they are skipped with one warning.
-func (e *Engine) scanPluginFiles(key, target, root string, spec farmFileSpec) ([]string, []string) {
-	dir := filepath.Join(target, spec.DirName)
+// farmFileEntry is one definition found in a plugin payload directory.
+type farmFileEntry struct {
+	Name string
+	File string
+}
+
+// scanPluginFiles lists the top-level definitions of one parked plugin in the
+// host's own file format. Nested definitions carry ids this flat presentation
+// cannot express, so they are skipped with one warning.
+func (e *Engine) scanPluginFiles(key, target, dirName, root string, exts []string, spec farmFileSpec) ([]farmFileEntry, []string) {
+	dir := filepath.Join(target, dirName)
 
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -153,11 +234,11 @@ func (e *Engine) scanPluginFiles(key, target, root string, spec farmFileSpec) ([
 	}
 
 	if err != nil {
-		return nil, []string{fmt.Sprintf("plugin %s %s cannot be read: %v", key, spec.DirName, err)}
+		return nil, []string{fmt.Sprintf("plugin %s %s cannot be read: %v", key, dirName, err)}
 	}
 
 	var (
-		names []string
+		files []farmFileEntry
 		warns []string
 	)
 
@@ -170,12 +251,12 @@ func (e *Engine) scanPluginFiles(key, target, root string, spec farmFileSpec) ([
 			continue
 		}
 
-		base, ok := strings.CutSuffix(entry.Name(), ".md")
+		name, ok := definitionNameFor(entry.Name(), exts)
 		if !ok {
 			continue
 		}
 
-		if !spec.ValidName(base) {
+		if !spec.ValidName(name) {
 			warns = append(warns, fmt.Sprintf("plugin %s %s %s is not a valid name (skipped)", key, spec.Label, entry.Name()))
 
 			continue
@@ -188,10 +269,32 @@ func (e *Engine) scanPluginFiles(key, target, root string, spec farmFileSpec) ([
 			continue
 		}
 
-		names = append(names, base)
+		files = append(files, farmFileEntry{Name: name, File: entry.Name()})
 	}
 
-	return names, warns
+	return files, warns
+}
+
+// definitionNameFor strips the first matching extension of a source.
+func definitionNameFor(file string, exts []string) (string, bool) {
+	for _, ext := range exts {
+		if name, ok := strings.CutSuffix(file, ext); ok && name != "" {
+			return name, true
+		}
+	}
+
+	return "", false
+}
+
+// markdownSource reports whether a payload file is already markdown, so the
+// lift never touches a markdown definition.
+func markdownSource(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case markdownExt, ".mdc", ".markdown", ".txt":
+		return true
+	default:
+		return false
+	}
 }
 
 // canonFileNames lists the names the vault canon owns for the kind: a plugin
@@ -205,7 +308,7 @@ func (e *Engine) canonFileNames(spec farmFileSpec) (map[string]struct{}, []strin
 	}
 
 	for key := range items {
-		names[strings.TrimSuffix(key, ".md")] = struct{}{}
+		names[strings.TrimSuffix(key, markdownExt)] = struct{}{}
 	}
 
 	return names, nil
@@ -275,7 +378,7 @@ func (e *Engine) farmFileSurface(agentID string, target agent.FarmTarget, plan f
 	}
 
 	renderer, renders := target.(agent.FarmRenderer)
-	if renders && strings.HasSuffix(target.FarmName("probe"), ".md") {
+	if renders && strings.HasSuffix(target.FarmName("probe"), markdownExt) {
 		// Markdown hosts read the plugin file as-is: the namespaced symlink
 		// carries the identity in its name, and the bytes stay untouched.
 		renderer, renders = nil, false
@@ -341,6 +444,10 @@ func (e *Engine) presentFarmFile(
 		return e.renderFarmFile(agentID, target, renderer, dir, ns, lot, source, spec)
 	}
 
+	if spec.Lift != nil && !markdownSource(source) {
+		return e.liftFarmFile(target, dir, ns, lot, source, spec)
+	}
+
 	return e.farmLink(filepath.Join(dir, target.FarmName(ns)), source)
 }
 
@@ -369,12 +476,53 @@ func (e *Engine) farmFileSource(agentID string, lot farmFileLot, spec farmFileSp
 		return "", false
 	}
 
-	source := filepath.Join(pivot, spec.DirName, lot.Name+".md")
+	source := filepath.Join(pivot, lot.Dir, lot.File)
 	if !isRegularFile(source) {
 		return "", false
 	}
 
 	return source, true
+}
+
+// farmFileMarkdown returns the canonical markdown of one definition: the raw
+// plugin bytes for a markdown source, the lifted host format otherwise.
+func (e *Engine) farmFileMarkdown(lot farmFileLot, source string, spec farmFileSpec) ([]byte, bool, error) {
+	data, err := os.ReadFile(source) //nolint:gosec // the source is a vault plugin pivot
+	if err != nil {
+		return nil, false, fmt.Errorf("read %s: %w", source, err)
+	}
+
+	if spec.Lift == nil || markdownSource(source) {
+		return data, true, nil
+	}
+
+	lifted, ok, err := spec.Lift(lot.Name, data)
+	if err != nil {
+		return nil, false, fmt.Errorf("lift %s: %w", lot.Name, err)
+	}
+
+	return lifted, ok, nil
+}
+
+// liftFarmFile converts a foreign-format plugin definition (Gemini CLI TOML
+// commands) into canonical markdown, writes it into the vault render area and
+// links it into a markdown host directory.
+func (e *Engine) liftFarmFile(target agent.FarmTarget, dir, ns string, lot farmFileLot, source string, spec farmFileSpec) (FarmAction, error) {
+	markdown, ok, err := e.farmFileMarkdown(lot, source, spec)
+	if err != nil {
+		return FarmNoop, err
+	}
+
+	if !ok {
+		return FarmSkipped, nil
+	}
+
+	artifact, err := e.writeFarmArtifact(lot, target.FarmName(ns), markdown, spec)
+	if err != nil {
+		return FarmNoop, err
+	}
+
+	return e.farmLink(filepath.Join(dir, target.FarmName(ns)), artifact)
 }
 
 // renderFarmFile renders the host-format copy of a plugin definition (Gemini
@@ -385,19 +533,23 @@ func (e *Engine) renderFarmFile(
 	agentID string, target agent.FarmTarget, renderer agent.FarmRenderer,
 	dir, ns string, lot farmFileLot, source string, spec farmFileSpec,
 ) (FarmAction, error) {
-	data, err := os.ReadFile(source) //nolint:gosec // the source is a vault plugin pivot
+	markdown, ok, err := e.farmFileMarkdown(lot, source, spec)
 	if err != nil {
-		return FarmNoop, fmt.Errorf("read %s: %w", source, err)
+		return FarmNoop, err
+	}
+
+	if !ok {
+		return FarmSkipped, nil
 	}
 
 	if spec.Rename != nil {
-		data, err = spec.Rename(ns, data)
+		markdown, err = spec.Rename(ns, markdown)
 		if err != nil {
 			return FarmSkipped, err
 		}
 	}
 
-	rendered, ok, err := renderer.FarmRender(ns, data)
+	rendered, ok, err := renderer.FarmRender(ns, markdown)
 	if err != nil {
 		return FarmNoop, fmt.Errorf("render %s: %w", ns, err)
 	}
@@ -406,24 +558,34 @@ func (e *Engine) renderFarmFile(
 		return FarmSkipped, nil
 	}
 
-	marketplace, plugin, _ := strings.Cut(lot.Key, "/")
-
-	// The rendered artifact lives outside the plugin pivot: the orphan-pivot
-	// cleanup only retires a pivot that holds nothing but the symlink.
-	lotDir := filepath.Join(e.vault.PluginsDir(), farmRenderDirName, marketplace, plugin, spec.Artifacts)
-	if err := os.MkdirAll(lotDir, 0o700); err != nil {
-		return FarmNoop, fmt.Errorf("create %s: %w", lotDir, err)
-	}
-
-	artifact := filepath.Join(lotDir, target.FarmName(ns))
-
-	if existing, err := os.ReadFile(artifact); err != nil || string(existing) != string(rendered) { //nolint:gosec // the artifact lives in the vault
-		if err := fsutil.WriteFileAtomic(artifact, rendered, 0o600); err != nil {
-			return FarmNoop, fmt.Errorf("write %s: %w", artifact, err)
-		}
+	artifact, err := e.writeFarmArtifact(lot, target.FarmName(ns), rendered, spec)
+	if err != nil {
+		return FarmNoop, err
 	}
 
 	return e.farmLink(filepath.Join(dir, target.FarmName(ns)), artifact)
+}
+
+// writeFarmArtifact writes one rendered or lifted definition into the vault
+// render area, outside the plugin pivot: the orphan-pivot cleanup only retires
+// a pivot that holds nothing but the symlink.
+func (e *Engine) writeFarmArtifact(lot farmFileLot, name string, data []byte, spec farmFileSpec) (string, error) {
+	marketplace, plugin, _ := strings.Cut(lot.Key, "/")
+
+	lotDir := filepath.Join(e.vault.PluginsDir(), farmRenderDirName, marketplace, plugin, spec.Artifacts)
+	if err := os.MkdirAll(lotDir, 0o700); err != nil {
+		return "", fmt.Errorf("create %s: %w", lotDir, err)
+	}
+
+	artifact := filepath.Join(lotDir, name)
+
+	if existing, err := os.ReadFile(artifact); err != nil || string(existing) != string(data) { //nolint:gosec // the artifact lives in the vault
+		if err := fsutil.WriteFileAtomic(artifact, data, 0o600); err != nil {
+			return "", fmt.Errorf("write %s: %w", artifact, err)
+		}
+	}
+
+	return artifact, nil
 }
 
 // pruneFarmArtifacts drops the rendered host-format copies the current plan
@@ -496,15 +658,19 @@ func (e *Engine) pruneFarmKindArtifacts(dir, key string, plan farmFilePlan) []st
 		return nil
 	}
 
+	desired := map[string]bool{}
+
+	for ns, lot := range plan.Desired {
+		if lot.Key == key {
+			desired[ns] = true
+		}
+	}
+
 	var warns []string
 
 	for _, file := range files {
-		ns, _, ok := strings.Cut(file.Name(), ".")
-		if !ok {
-			continue
-		}
-
-		if lot, desired := plan.Desired[ns]; desired && lot.Key == key {
+		name, ok := trimArtifactExt(file.Name())
+		if ok && desired[name] {
 			continue
 		}
 
@@ -514,6 +680,17 @@ func (e *Engine) pruneFarmKindArtifacts(dir, key string, plan farmFilePlan) []st
 	}
 
 	return warns
+}
+
+// trimArtifactExt strips the host extension of a rendered artifact. The last
+// dot is the boundary, so a plugin name carrying dots survives.
+func trimArtifactExt(name string) (string, bool) {
+	ext := filepath.Ext(name)
+	if ext == "" {
+		return "", false
+	}
+
+	return strings.TrimSuffix(name, ext), true
 }
 
 // removeFarmDir deletes a beadle-owned artifact directory file by file; the
@@ -633,10 +810,11 @@ func (e *Engine) farmFileOwner(path string, spec farmFileSpec) (string, bool) {
 	return key, ok
 }
 
-// farmFileLinkOwner parses a farmed link target; two shapes exist:
-// <vault>/plugins/<marketplace>/<plugin>/<pivot>/<kind>/<name>.md (markdown
-// hosts) and <vault>/plugins/farm/<marketplace>/<plugin>/<kind>/<name>.<ext>
-// (rendered hosts).
+// farmFileLinkOwner parses a farmed link target; three shapes exist:
+// <vault>/plugins/<origin>/<plugin>/<pivot>/<dir>/<file> (markdown hosts, the
+// payload dir is plugin-defined), <vault>/plugins/farm/<origin>/<plugin>/<kind>/<name>.<ext>
+// (host-format renders), and the same render shape with a markdown extension
+// (definitions lifted from a foreign format for markdown hosts).
 func (e *Engine) farmFileLinkOwner(link string, spec farmFileSpec) (string, string, bool) {
 	root := filepath.Clean(e.vault.PluginsDir())
 
@@ -647,17 +825,33 @@ func (e *Engine) farmFileLinkOwner(link string, spec farmFileSpec) (string, stri
 
 	parts := strings.Split(rel, string(filepath.Separator))
 
-	if len(parts) == 5 && parts[3] == spec.DirName && pivotEntryName(parts[2]) {
-		if name, ok := strings.CutSuffix(parts[4], ".md"); ok {
+	if len(parts) != 5 {
+		return "", "", false
+	}
+
+	// A rendered artifact in a non-markdown host format can never be mistaken
+	// for a plugin payload file: the payload lives in the source format.
+	if parts[0] == farmRenderDirName && !markdownSource(parts[4]) {
+		name, ok := trimArtifactExt(parts[4])
+		if !ok {
+			return "", "", false
+		}
+
+		return parts[1] + "/" + parts[2], name, true
+	}
+
+	// The markdown shape: the payload directory name comes from the plugin
+	// manifest, so no fixed name is required for the second-to-last part.
+	if pivotEntryName(parts[2]) {
+		if name, ok := spec.definitionName(parts[4]); ok {
 			return parts[0] + "/" + parts[1], name, true
 		}
 	}
 
-	// The rendered shape is tried when the markdown suffix does not match: a
-	// marketplace named like the artifact root can make a rendered link look
-	// like the markdown shape for the first five path parts.
-	if len(parts) == 5 && parts[0] == farmRenderDirName && parts[3] == spec.Artifacts {
-		name, _, ok := strings.Cut(parts[4], ".")
+	// The rendered markdown artifact of a definition lifted from a foreign
+	// format (Gemini CLI TOML commands).
+	if parts[0] == farmRenderDirName && parts[3] == spec.Artifacts {
+		name, ok := trimArtifactExt(parts[4])
 		if !ok {
 			return "", "", false
 		}

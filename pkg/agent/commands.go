@@ -11,6 +11,10 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/frontmatter"
 )
 
+// disableModelInvocationKey is the frontmatter key of the model-invocation
+// switch, shared by the command codecs and the DSH skill codec.
+const disableModelInvocationKey = "disable-model-invocation"
+
 // commandCodec reads and writes one markdown host's command files. The hosts
 // share the frontmatter schema and differ in the template dialect and in the
 // canonical fields they can express.
@@ -74,7 +78,7 @@ func (c commandCodec) managed() []string {
 	}
 
 	if c.disable {
-		out = append(out, "disable-model-invocation")
+		out = append(out, disableModelInvocationKey)
 	}
 
 	return out
@@ -158,7 +162,7 @@ func (c commandCodec) fields(doc command.Document, _ []byte) ([]frontmatter.Fiel
 	}
 
 	if c.disable && doc.DisableModelInvocation != nil {
-		fields = append(fields, frontmatter.Field{Key: "disable-model-invocation", Value: *doc.DisableModelInvocation})
+		fields = append(fields, frontmatter.Field{Key: disableModelInvocationKey, Value: *doc.DisableModelInvocation})
 	}
 
 	return fields, tpl.Body, nil
@@ -189,7 +193,7 @@ func (c commandCodec) audit(doc command.Document) []string {
 		{"argument-hint", doc.ArgumentHint != "", c.hint},
 		{"arguments", len(doc.Arguments) > 0, c.arguments},
 		{modelKey, doc.Model != "", c.model},
-		{"disable-model-invocation", doc.DisableModelInvocation != nil, c.disable},
+		{disableModelInvocationKey, doc.DisableModelInvocation != nil, c.disable},
 	} {
 		if field.set && !field.supported {
 			notes = append(notes, fmt.Sprintf("%s is not expressible for %s; the vault value stays", field.key, c.host))

@@ -151,7 +151,7 @@ func (e *Engine) attachSkillVisibility(spec kind.Spec, views []*view, st *state.
 	canon := skill.Group(vaultItems)
 
 	for _, v := range views {
-		if !v.mode.Pushes() || len(e.foreignReadDirs(v.surface)) == 0 {
+		if !v.mode.Pushes() || len(e.foreignReadDirs(v.agent, v.surface)) == 0 {
 			continue
 		}
 
@@ -422,9 +422,9 @@ func (e *Engine) readViews(
 				shadowChainView(chainSeen, a.ID, v)
 			}
 
-			for _, path := range slices.Sorted(maps.Values(v.snap.Unreadable)) {
+			for _, reason := range slices.Sorted(maps.Values(v.snap.Unreadable)) {
 				report.Warnings = append(report.Warnings, fmt.Sprintf(
-					"%s/%s: broken symlink %s; the item is left untouched", a.ID, spec.ID, path))
+					"%s/%s: %s; the item is left untouched", a.ID, spec.ID, reason))
 			}
 
 			for _, warning := range v.snap.Warnings {

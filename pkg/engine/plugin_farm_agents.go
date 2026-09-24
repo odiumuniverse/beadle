@@ -3,6 +3,7 @@ package engine
 import (
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/plugin"
 	"github.com/odiumuniverse/beadle/pkg/subagent"
 )
 
@@ -17,6 +18,9 @@ var farmAgentSpec = farmFileSpec{
 	Skip:      map[string]bool{agent.ClaudeCodeID: true},
 	ValidName: subagent.ValidName,
 	Rename:    renameFarmAgent,
+	SourceExts: map[string][]string{
+		plugin.SourceCursor: {markdownExt, ".mdc", ".markdown"},
+	},
 }
 
 // farmPluginAgents presents plugin-sourced agents to every file surface.

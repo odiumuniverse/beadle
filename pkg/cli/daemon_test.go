@@ -23,8 +23,9 @@ func TestDaemonSpecResolvesVaultRoot(t *testing.T) {
 		a := &app{}
 
 		Convey("When the daemon spec is built", func() {
-			spec, err := a.daemonSpec()
+			spec, vaultRoot, err := a.daemonSpec()
 			So(err, ShouldBeNil)
+			So(vaultRoot, ShouldEqual, root)
 
 			Convey("Then watch always carries the resolved vault root", func() {
 				So(spec.Args, ShouldResemble, []string{"watch", "--vault", root})
@@ -41,11 +42,12 @@ func TestDaemonSpecResolvesVaultRoot(t *testing.T) {
 
 			So(vault.New(flagRoot).Init(), ShouldBeNil)
 
-			spec, err := (&app{vaultPath: flagRoot}).daemonSpec()
+			spec, vaultRoot, err := (&app{vaultPath: flagRoot}).daemonSpec()
 			So(err, ShouldBeNil)
 
 			Convey("Then the flag wins", func() {
 				So(spec.Args, ShouldResemble, []string{"watch", "--vault", flagRoot})
+				So(vaultRoot, ShouldEqual, flagRoot)
 			})
 		})
 	})

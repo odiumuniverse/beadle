@@ -111,24 +111,27 @@ func TestRead(t *testing.T) {
 
 				So(manifest.Plugins, ShouldResemble, []plugin.Plugin{
 					{
+						Source:       plugin.SourceClaudeCode,
 						Name:         "ghost",
-						Marketplace:  "acme",
+						Origin:       "acme",
 						Version:      "1.0.0",
 						Scope:        "user",
 						InstallPath:  ghostDir,
 						GitCommitSha: "def5678",
 					},
 					{
+						Source:       plugin.SourceClaudeCode,
 						Name:         "fallback",
-						Marketplace:  "vmkteam",
+						Origin:       "vmkteam",
 						Version:      "2.0.0",
 						Scope:        "user",
 						InstallPath:  fallbackDir,
 						GitCommitSha: "beef001",
 					},
 					{
+						Source:         plugin.SourceClaudeCode,
 						Name:           "vmkteam-developer",
-						Marketplace:    "vmkteam",
+						Origin:         "vmkteam",
 						Version:        "1.1.0",
 						Scope:          "user",
 						InstallPath:    pluginDir,

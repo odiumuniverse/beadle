@@ -30,6 +30,7 @@ const (
 type ledgerTestRecord struct {
 	Version       string    `json:"version"`
 	Target        string    `json:"target"`
+	Source        string    `json:"source,omitempty"`
 	Servers       []string  `json:"servers,omitempty"`
 	QuarantinedAt time.Time `json:"quarantined_at"`
 	RetiredAt     time.Time `json:"retired_at"`
@@ -992,6 +993,10 @@ func TestDoctorPluginPivotIssuesNoRegistry(t *testing.T) {
 		Convey("When doctor runs", func() {
 			Convey("Then no pivot or plugin issue appears", func() {
 				for _, issue := range issues {
+					if strings.HasPrefix(issue.Message, "plugin source ") {
+						continue
+					}
+
 					So(issue.Message, ShouldNotContainSubstring, "pivot")
 					So(issue.Message, ShouldNotContainSubstring, "plugin")
 				}

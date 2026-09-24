@@ -17,15 +17,31 @@ import (
 
 const (
 	claudeDir        = ".claude"
+	codexDir         = ".codex"
+	geminiDir        = ".gemini"
+	agentsHomeDir    = ".agents"
 	pluginsDir       = "plugins"
 	cacheDir         = "cache"
 	installedFile    = "installed_plugins.json"
 	marketplacesFile = "known_marketplaces.json"
-	orphanMarker     = ".orphaned_at"
-	metaDir          = ".claude-plugin"
-	metaFile         = "plugin.json"
-	skillsDir        = "skills"
-	skillFile        = "SKILL.md"
+	marketplaceFile  = "marketplace.json"
+	extensionsDir    = "extensions"
+	extensionsFile   = "gemini-extension.json"
+	antigravityDir   = "antigravity-cli"
+	localPluginsDir  = "local"
+	portableMCPFile  = "mcp.json"
+	agyMCPFile       = "mcp_config.json"
+	markdownExt      = ".md"
+	// scopeUser is the install scope reported for every host: plugin installs
+	// are per-user (Claude Code records the same token for its user scope).
+	scopeUser     = "user"
+	orphanMarker  = ".orphaned_at"
+	metaDir       = ".claude-plugin"
+	metaFile      = "plugin.json"
+	cursorMetaDir = ".cursor-plugin"
+	codexMetaDir  = ".codex-plugin"
+	skillsDir     = "skills"
+	skillFile     = "SKILL.md"
 	// agentsDir holds the plugin's subagent definitions (Claude plugin
 	// layout): beadle presents them to hosts that do not read plugins.
 	agentsDir        = "agents"
@@ -44,9 +60,17 @@ type Manifest struct {
 	Warnings     []string
 }
 
+// Plugin is one installed plugin in the unified model shared by every host:
+// the Claude Code registry, the Codex cache and marketplaces, Gemini CLI
+// extensions, Antigravity plugins and Cursor local plugins.
 type Plugin struct {
+	// Source is the host that owns the install (SourceClaudeCode, …).
+	Source string
+	// Origin is the plugin's namespace inside its host: the marketplace name
+	// where the host has marketplaces, the host id where it has none. The
+	// vault pivot of the plugin is <vault>/plugins/<Origin>/<Name>.
+	Origin         string
 	Name           string
-	Marketplace    string
 	Version        string
 	Scope          string
 	InstallPath    string
@@ -102,6 +126,8 @@ type marketplaceRecord struct {
 	AutoUpdate      bool   `json:"autoUpdate"`
 }
 
+// Read reads the Claude Code plugin registry: the marketplaces and the
+// installed plugin records under <home>/.claude/plugins.
 func Read(home string) (Manifest, error) {
 	if home == "" {
 		return Manifest{}, errors.New("empty home directory")
@@ -127,16 +153,21 @@ func Read(home string) (Manifest, error) {
 	readMarketplaces(root, &manifest)
 	scanOrphans(root, listed, &manifest)
 
-	slices.SortFunc(manifest.Plugins, func(a, b Plugin) int {
+	sortPlugins(manifest.Plugins)
+
+	return manifest, nil
+}
+
+func sortPlugins(plugins []Plugin) {
+	slices.SortFunc(plugins, func(a, b Plugin) int {
 		return cmp.Or(
-			cmp.Compare(a.Marketplace, b.Marketplace),
+			cmp.Compare(a.Source, b.Source),
+			cmp.Compare(a.Origin, b.Origin),
 			cmp.Compare(a.Name, b.Name),
 			cmp.Compare(a.Scope, b.Scope),
 			cmp.Compare(a.Version, b.Version),
 		)
 	})
-
-	return manifest, nil
 }
 
 func readInstalled(root string, manifest *Manifest) (map[string]struct{}, error) {
@@ -182,8 +213,9 @@ func readInstalled(root string, manifest *Manifest) (map[string]struct{}, error)
 
 func pluginFromRecord(name, marketplace string, record installRecord, manifest *Manifest) Plugin {
 	p := Plugin{
+		Source:       SourceClaudeCode,
 		Name:         name,
-		Marketplace:  marketplace,
+		Origin:       marketplace,
 		Version:      record.Version,
 		Scope:        record.Scope,
 		InstallPath:  record.InstallPath,
@@ -373,11 +405,11 @@ func scanAgents(installPath string) []string {
 	var names []string
 
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), markdownExt) {
 			continue
 		}
 
-		names = append(names, strings.TrimSuffix(entry.Name(), ".md"))
+		names = append(names, strings.TrimSuffix(entry.Name(), markdownExt))
 	}
 
 	slices.Sort(names)

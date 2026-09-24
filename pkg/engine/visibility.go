@@ -361,7 +361,8 @@ func (e *Engine) visibilityForHost(host bundle.Host) visibility {
 }
 
 // visibilityForAgent resolves the canon skills against every copy the agent
-// can read. It reads only; a scan error fails open with a warning.
+// can read, loading the state itself. It reads only; a scan error fails open
+// with a warning.
 func (e *Engine) visibilityForAgent(a *agent.Agent) visibility {
 	surface := a.Surface(kind.Skills)
 	if surface == nil {
@@ -418,7 +419,7 @@ func (e *Engine) skillProviders(a *agent.Agent, surface agent.Surface, st *state
 	}
 
 	bases := e.skillSurfaceBases(st)
-	shared := e.sharedSkillsDir()
+	shared := e.sharedSkillRoots(a)
 	plugins := filepath.Clean(e.vault.PluginsDir())
 	ownDir := surface.Path()
 
@@ -428,7 +429,7 @@ func (e *Engine) skillProviders(a *agent.Agent, surface agent.Surface, st *state
 	)
 
 	for _, ref := range refs {
-		tree, err := skill.ReadTree(ref.Root)
+		digest, err := e.skillTreeDigest(st, ref.Root)
 		if err != nil {
 			warns = append(warns, fmt.Sprintf("skills: cannot read %s: %v; the canon copy stays", ref.Root, err))
 
@@ -448,7 +449,7 @@ func (e *Engine) skillProviders(a *agent.Agent, surface agent.Surface, st *state
 			dir:    ref.Dir,
 			path:   path,
 			file:   ref.File,
-			digest: skill.TreeDigest(tree),
+			digest: digest,
 		})
 	}
 
@@ -457,15 +458,15 @@ func (e *Engine) skillProviders(a *agent.Agent, surface agent.Surface, st *state
 
 // classifySkillCopy places one readable copy on the delivery map: a farm link
 // (raw target or resolved root under the plugin farm), the own writable real
-// directory recorded in the base, the shared surface; everything else is
-// foreign — user symlinks, unmanaged trees, other agents' directories.
-func classifySkillCopy(ref agent.SkillRef, ownDir, shared, link string, symlink bool, plugins string, bases map[string]state.Base) providerClass {
+// directory recorded in the base, a shared root; everything else is foreign —
+// user symlinks, unmanaged trees, other agents' directories.
+func classifySkillCopy(ref agent.SkillRef, ownDir string, shared []string, link string, symlink bool, plugins string, bases map[string]state.Base) providerClass {
 	switch {
 	case symlink && (underDir(filepath.Clean(link), plugins) || underDir(ref.Root, plugins)):
 		return classFarm
 	case ref.Dir == ownDir && !symlink && baseOwns(bases[ref.Dir], kind.Skills, ref.Name):
 		return classOwn
-	case ref.Dir == shared:
+	case slices.Contains(shared, ref.Dir):
 		return classShared
 	default:
 		return classForeign
@@ -499,14 +500,14 @@ func (e *Engine) bundleSkillProviders(host bundle.Host, st *state.State, canon m
 			continue
 		}
 
-		tree, err := skill.ReadTree(dir)
+		digest, err := e.skillTreeDigest(st, dir)
 		if err != nil {
 			warns = append(warns, fmt.Sprintf("skills: cannot read the rendered bundle skill %s: %v", dir, err))
 
 			continue
 		}
 
-		providers = append(providers, provider{class: classBundle, name: name, dir: root, path: dir, digest: skill.TreeDigest(tree)})
+		providers = append(providers, provider{class: classBundle, name: name, dir: root, path: dir, digest: digest})
 	}
 
 	return providers, warns
@@ -571,22 +572,43 @@ func bundleHostFor(agentID string) (bundle.Host, bool) {
 	return "", false
 }
 
+// sharedSkillRoots lists the read roots that count as shared for one agent:
+// beadle's shared skills surface plus the DSH agents-home root, which DSH
+// reads at rank 500 ($DSH_AGENTS_HOME or ~/.agents). A copy in a shared root
+// is never a foreign deliverer — it cannot release the agent's own write —
+// and it is never reported as a foreign duplicate.
+func (e *Engine) sharedSkillRoots(a *agent.Agent) []string {
+	var roots []string
+
+	if shared := e.sharedSkillsDir(); shared != "" {
+		roots = append(roots, shared)
+	}
+
+	if a != nil && a.ID == agent.DSHID {
+		if root := agent.DSHSharedSkillsDir(e.home); root != "" {
+			roots = append(roots, root)
+		}
+	}
+
+	return roots
+}
+
 // foreignReadDirs lists the read directories that can hold a copy foreign to
-// the agent: its own directory cannot (one entry per name) and the shared
-// surface is beadle's own channel.
-func (e *Engine) foreignReadDirs(surface agent.Surface) []string {
+// the agent: its own directory cannot (one entry per name) and a shared root
+// is beadle's own channel.
+func (e *Engine) foreignReadDirs(a *agent.Agent, surface agent.Surface) []string {
 	area, ok := surface.(agent.SkillReadArea)
 	if !ok {
 		return nil
 	}
 
 	own := surface.Path()
-	shared := e.sharedSkillsDir()
+	shared := e.sharedSkillRoots(a)
 
 	var out []string
 
 	for _, dir := range area.ReadDirs() {
-		if dir == own || dir == shared {
+		if dir == own || slices.Contains(shared, dir) {
 			continue
 		}
 

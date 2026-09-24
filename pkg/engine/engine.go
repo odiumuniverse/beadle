@@ -21,6 +21,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/lock"
 	"github.com/odiumuniverse/beadle/pkg/memory"
+	"github.com/odiumuniverse/beadle/pkg/plugin"
 	proj "github.com/odiumuniverse/beadle/pkg/project"
 	"github.com/odiumuniverse/beadle/pkg/rulings"
 	"github.com/odiumuniverse/beadle/pkg/secret"
@@ -46,6 +47,11 @@ type Engine struct {
 	rulings      *rulings.Ledger
 	rulingsDirty bool
 	autoBundles  bool
+	// skillCache keeps the digests one process resolved, on top of the
+	// persisted state cache; skillCacheOff disables both, so every scan reads
+	// the trees again (tests and diagnosis).
+	skillCache    map[string]state.SkillTree
+	skillCacheOff bool
 }
 
 type Option func(*Engine)
@@ -78,6 +84,13 @@ func WithBundleAutoEnable() Option {
 	return func(e *Engine) { e.autoBundles = true }
 }
 
+// WithSkillCacheDisabled turns the skill manifest cache off, so every scan
+// reads and hashes the trees again. Tests use it to prove the cached and
+// uncached scans decide identically.
+func WithSkillCacheDisabled() Option {
+	return func(e *Engine) { e.skillCacheOff = true }
+}
+
 func New(v *vault.Vault, cfg *config.Config, agents []*agent.Agent, opts ...Option) (*Engine, error) {
 	e := &Engine{
 		vault:  v,
@@ -104,7 +117,36 @@ func New(v *vault.Vault, cfg *config.Config, agents []*agent.Agent, opts ...Opti
 
 	e.secrets = secrets
 
+	e.ignorePluginRoots()
+
 	return e, nil
+}
+
+// ignorePluginRoots keeps plugin install areas out of the canon sync: a farm
+// symlink in a skills directory resolves into the install path of some host,
+// and that resolved copy is a read-only plugin presentation, not a skill the
+// vault should adopt.
+func (e *Engine) ignorePluginRoots() {
+	if e.home == "" {
+		return
+	}
+
+	roots := []string{filepath.Clean(e.vault.PluginsDir())}
+
+	for _, source := range plugin.SourceHosts() {
+		roots = append(roots, e.pluginSourceRoots(source)...)
+	}
+
+	for _, a := range e.agents {
+		surface := a.Surface(kind.Skills)
+		if surface == nil {
+			continue
+		}
+
+		if ignore, ok := surface.(agent.SkillIgnoreRoots); ok {
+			ignore.AddSkillIgnoreRoots(roots...)
+		}
+	}
 }
 
 func (e *Engine) Agents() []*agent.Agent {
@@ -207,6 +249,8 @@ func (e *Engine) commitSync(ctx context.Context, st *state.State, report *Report
 	if err := e.secrets.Save(); err != nil {
 		return report, err
 	}
+
+	e.pruneSkillTrees(st)
 
 	if err := st.Save(e.vault.StatePath()); err != nil {
 		return report, err

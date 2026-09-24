@@ -78,6 +78,7 @@ type pluginLedgerRec struct {
 	Version       string    `json:"version"`
 	Sha           string    `json:"sha,omitempty"`
 	Target        string    `json:"target"`
+	Source        string    `json:"source,omitempty"`
 	Servers       []string  `json:"servers,omitempty"`
 	QuarantinedAt time.Time `json:"quarantined_at,omitzero"`
 	RetiredAt     time.Time `json:"retired_at,omitzero"`
@@ -85,30 +86,31 @@ type pluginLedgerRec struct {
 }
 
 type pluginGroup struct {
-	Marketplace string
-	Name        string
-	Plugins     []plugin.Plugin
+	Origin  string
+	Name    string
+	Plugins []plugin.Plugin
 }
 
 // reconcilePlugins parks installed plugins and reports whether orphan
 // cleanup is safe this run (a malformed ledger knows nothing about
 // ownership).
-func (e *Engine) reconcilePlugins(_ context.Context) ([]PluginResult, []string, bool, error) {
+func (e *Engine) reconcilePlugins(_ context.Context) ([]PluginResult, []string, []string, bool, error) {
 	var warns []string
 
 	if err := e.vault.EnsureGitIgnore(); err != nil {
-		return nil, []string{"plugins: " + err.Error()}, false, nil //nolint:nilerr // a broken .gitignore must not fail the whole sync; nothing plugin-related is written without it
+		return nil, []string{"plugins: " + err.Error()}, nil, false, nil //nolint:nilerr // a broken .gitignore must not fail the whole sync; nothing plugin-related is written without it
 	}
 
 	if e.home == "" {
-		return nil, warns, false, nil
+		return nil, warns, nil, false, nil
 	}
 
 	manifest, manifestWarns, err := stableManifest(e.home)
 	warns = append(warns, manifestWarns...)
+	warns = append(warns, manifest.Warnings...)
 
 	if err != nil {
-		return nil, warns, false, err
+		return nil, warns, nil, false, err
 	}
 
 	ledger, ledgerWarns, err := loadPluginLedger(e.vault.PluginsLedgerPath())
@@ -126,19 +128,23 @@ func (e *Engine) reconcilePlugins(_ context.Context) ([]PluginResult, []string, 
 		dirty = true
 	}
 
-	groups := groupPlugins(manifest.Plugins)
+	groups, groupNotes, groupWarns := groupPlugins(manifest.Plugins)
+	warns = append(warns, groupWarns...)
+
+	notes := slices.Clone(groupNotes)
+
 	results := make([]PluginResult, 0, len(groups)+len(ledger.Plugins))
 	installed := make(map[string]struct{}, len(groups))
 
 	for _, group := range groups {
-		key := pluginKey(group.Marketplace, group.Name)
+		key := pluginKey(group.Origin, group.Name)
 		installed[key] = struct{}{}
 
 		if key == bundlePluginKey() {
 			continue
 		}
 
-		if !validPluginKey(group.Marketplace, group.Name) {
+		if !validPluginKey(group.Origin, group.Name) {
 			results = append(results, PluginResult{Key: key, Action: PluginSkipped, Note: noteInvalidPluginKey})
 			warns = append(warns, "plugins: "+noteInvalidPluginKey+" "+key)
 
@@ -167,7 +173,7 @@ func (e *Engine) reconcilePlugins(_ context.Context) ([]PluginResult, []string, 
 
 	slices.SortFunc(results, func(a, b PluginResult) int { return cmp.Compare(a.Key, b.Key) })
 
-	return results, warns, !ledgerBroken, nil //nolint:nilerr // a broken ledger is a warning, not a failed sync: it is rebuilt from the registry
+	return results, warns, notes, !ledgerBroken, nil //nolint:nilerr // a broken ledger is a warning, not a failed sync: it is rebuilt from the registry
 }
 
 // reconcileOrphanEdges retires orphan pivots, prunes pin pivots and saves
@@ -566,11 +572,11 @@ func (e *Engine) pivotPlugin(key string, group pluginGroup, prev pluginLedgerRec
 		return e.quarantinePlugin(key, prev, result)
 	}
 
-	pivot := filepath.Join(e.vault.PluginsDir(), group.Marketplace, group.Name, farmPivotName)
+	pivot := filepath.Join(e.vault.PluginsDir(), group.Origin, group.Name, farmPivotName)
 
 	link, linkErr := os.Readlink(pivot)
 	if link == target && prev.Version == record.Version && prev.Sha == record.GitCommitSha && prev.Target == target &&
-		prev.QuarantinedAt.IsZero() && prev.RetiredAt.IsZero() {
+		prev.Source == record.Source && prev.QuarantinedAt.IsZero() && prev.RetiredAt.IsZero() {
 		result.Action = PluginNoop
 
 		return result, prev, false
@@ -599,6 +605,7 @@ func (e *Engine) pivotPlugin(key string, group pluginGroup, prev pluginLedgerRec
 		Version:   record.Version,
 		Sha:       record.GitCommitSha,
 		Target:    target,
+		Source:    record.Source,
 		Servers:   prev.Servers,
 		UpdatedAt: e.now(),
 	}
@@ -687,7 +694,7 @@ func stableManifest(home string) (plugin.Manifest, []string, error) {
 			return plugin.Manifest{}, nil, err
 		}
 
-		manifest, err := plugin.Read(home)
+		manifest, err := plugin.ReadAll(home)
 		if err != nil {
 			return plugin.Manifest{}, nil, err
 		}
@@ -762,30 +769,127 @@ func emptyPluginLedger() pluginLedger {
 	return pluginLedger{Version: pluginLedgerVersion, Plugins: map[string]pluginLedgerRec{}}
 }
 
-func groupPlugins(plugins []plugin.Plugin) []pluginGroup {
+// groupPlugins groups plugin records by their vault key and resolves the
+// cross-source collisions: one key installed by several hosts presents the
+// copy of the first source in host order. A byte-identical duplicate is a
+// note; a divergent copy is a warning. The caller keeps the losing records
+// out of the ledger, so exactly one host owns the key.
+func groupPlugins(plugins []plugin.Plugin) ([]pluginGroup, []string, []string) {
 	index := map[string]int{}
 
 	var groups []pluginGroup
 
 	for _, p := range plugins {
-		key := pluginKey(p.Marketplace, p.Name)
+		key := pluginKey(p.Origin, p.Name)
 
 		i, ok := index[key]
 		if !ok {
 			i = len(groups)
 			index[key] = i
 
-			groups = append(groups, pluginGroup{Marketplace: p.Marketplace, Name: p.Name})
+			groups = append(groups, pluginGroup{Origin: p.Origin, Name: p.Name})
 		}
 
 		groups[i].Plugins = append(groups[i].Plugins, p)
 	}
 
+	var notes, warns []string
+
+	for i := range groups {
+		resolved, groupNotes, groupWarns := resolveSourceConflict(groups[i])
+
+		groups[i].Plugins = resolved
+
+		notes = append(notes, groupNotes...)
+		warns = append(warns, groupWarns...)
+	}
+
 	slices.SortFunc(groups, func(a, b pluginGroup) int {
-		return cmp.Compare(pluginKey(a.Marketplace, a.Name), pluginKey(b.Marketplace, b.Name))
+		return cmp.Compare(pluginKey(a.Origin, a.Name), pluginKey(b.Origin, b.Name))
 	})
 
-	return groups
+	return groups, notes, warns
+}
+
+// resolveSourceConflict picks one source for a key installed by several
+// hosts. Copies with an identical artifact digest are the same plugin and
+// produce a note; divergent copies produce a warning, because silently
+// choosing one would hide the other. A source whose install cannot be read
+// does not win while a readable source exists — presenting a broken copy
+// would hide the working one; when every copy is unreadable the source order
+// decides and the reader warnings stay.
+func resolveSourceConflict(group pluginGroup) ([]plugin.Plugin, []string, []string) {
+	bySource := map[string][]plugin.Plugin{}
+
+	for _, p := range group.Plugins {
+		bySource[p.Source] = append(bySource[p.Source], p)
+	}
+
+	if len(bySource) < 2 {
+		return group.Plugins, nil, nil
+	}
+
+	ordered := orderedSources(bySource)
+
+	winner, winnerDigest := "", ""
+
+	for _, source := range ordered {
+		digest, err := plugin.ArtifactDigest(source, bySource[source][0].InstallPath)
+		if err != nil {
+			continue
+		}
+
+		winner, winnerDigest = source, digest
+
+		break
+	}
+
+	if winner == "" {
+		winner = ordered[0]
+	}
+
+	var notes, warns []string
+
+	for _, source := range ordered {
+		if source == winner {
+			continue
+		}
+
+		digest, err := plugin.ArtifactDigest(source, bySource[source][0].InstallPath)
+		if winnerDigest == "" || err != nil {
+			continue
+		}
+
+		if digest == winnerDigest {
+			notes = append(notes, duplicateNote(group.Name, source, winner))
+
+			continue
+		}
+
+		warns = append(warns, duplicateWarn(group.Name, source, winner))
+	}
+
+	return bySource[winner], notes, warns
+}
+
+// orderedSources lists the sources of a key in host-registration order;
+// unknown sources follow alphabetically.
+func orderedSources(bySource map[string][]plugin.Plugin) []string {
+	var ordered []string
+
+	for _, source := range plugin.SourceHosts() {
+		if _, ok := bySource[source]; ok {
+			ordered = append(ordered, source)
+		}
+	}
+
+	for _, source := range slices.Sorted(maps.Keys(bySource)) {
+		if !slices.Contains(ordered, source) {
+			ordered = append(ordered, source)
+		}
+	}
+
+	return ordered
 }
 
 func chooseRecord(plugins []plugin.Plugin) plugin.Plugin {

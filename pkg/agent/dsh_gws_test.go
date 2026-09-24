@@ -9,6 +9,7 @@ import (
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/kind"
 )
 
 // withoutDSHHome unsets DSH_HOME for the test: t.Setenv cannot express
@@ -104,13 +105,15 @@ func TestDSHDetect(t *testing.T) {
 
 				adapter := agent.DSH(t.TempDir(), t.TempDir())
 				So(adapter.ID, ShouldEqual, agent.DSHID)
-				So(adapter.Surfaces, ShouldHaveLength, 2)
+				So(adapter.Surfaces, ShouldHaveLength, 3)
 				So(agent.ByID(agent.All(t.TempDir(), t.TempDir()), agent.DSHID), ShouldNotBeNil)
 
-				// A-38 flips the rules surface to write; skills stay pull
-				// until A-39.
+				// A-38 made the rules surface writable; A-39 flipped the
+				// skills surface to sync as well; A-44 added the MCP surface.
 				So(adapter.Surfaces[0].Traits().DefaultMode, ShouldEqual, config.ModeSync)
-				So(adapter.Surfaces[1].Traits().DefaultMode, ShouldEqual, config.ModePull)
+				So(adapter.Surfaces[1].Traits().DefaultMode, ShouldEqual, config.ModeSync)
+				So(adapter.Surfaces[2].Kind(), ShouldEqual, kind.MCP)
+				So(adapter.Surfaces[2].Traits().DefaultMode, ShouldEqual, config.ModeSync)
 			})
 		})
 	})

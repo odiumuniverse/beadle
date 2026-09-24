@@ -18,8 +18,7 @@ import (
 type skillsSurface struct {
 	dir         string
 	ignoreUnder []string
-	alsoReads   []string
-	// shadowing tells whether the host collapses same-name copies of its
+	alsoReads   []string // shadowing tells whether the host collapses same-name copies of its
 	// read directories into one visible skill. Undeclared hosts read every
 	// copy (conservative: duplicates stay visible and are never hidden).
 	shadowing bool
@@ -32,9 +31,22 @@ type skillsSurface struct {
 	// never collapses with and never shadows a file copy.
 	namespacedBundle bool
 	// flatSkills tells whether the host reads flat `<name>.md` copies from
-	// its own directory as skills (OpenCode, Pi): the name is the basename.
+	// its own directory as skills (OpenCode, Pi, DSH): the name is the
+	// basename.
 	flatSkills bool
-	traits     Traits
+	// codec checks and maps the canon trees into the host's frontmatter
+	// dialect on write. Nil stores the trees verbatim.
+	codec  skillTreeCodec
+	traits Traits
+}
+
+// skillTreeCodec checks and maps one host's skill trees. A host whose skill
+// dialect is the canon dialect needs validation only, so toHost returns the
+// tree unchanged; a host with its own dialect renders it.
+type skillTreeCodec interface {
+	// toHost renders one canon skill tree in the host dialect, refusing a
+	// name or tree the host cannot read.
+	toHost(name string, tree skill.Tree) (skill.Tree, error)
 }
 
 // SkillCaps describes how an agent composes same-name skill copies from its
@@ -279,7 +291,7 @@ func (s *skillsSurface) Read(context.Context) (Snapshot, error) {
 
 			if _, err := filepath.EvalSymlinks(path); err != nil {
 				snap.ReadOnly[name] = "broken symlink: " + path
-				snap.Unreadable[name] = path
+				snap.Unreadable[name] = "broken symlink " + path
 
 				continue
 			}
@@ -381,7 +393,7 @@ func (s *skillsSurface) flatCopy(entry fs.DirEntry, name string, snap *Snapshot)
 	target, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		snap.ReadOnly[name] = "broken symlink: " + path
-		snap.Unreadable[name] = path
+		snap.Unreadable[name] = "broken symlink " + path
 
 		return "", "", false
 	}
@@ -437,6 +449,25 @@ func (s *skillsSurface) ignored(target string) bool {
 	return false
 }
 
+// SkillIgnoreRoots lets the engine mark read-area roots whose copies never
+// enter the canon: plugin install areas hold host-native plugin payloads the
+// farm presents as symlinks.
+type SkillIgnoreRoots interface {
+	AddSkillIgnoreRoots(dirs ...string)
+}
+
+// AddSkillIgnoreRoots appends plugin install roots to the ignored list of the
+// surface; an existing entry is not duplicated.
+func (s *skillsSurface) AddSkillIgnoreRoots(dirs ...string) {
+	for _, dir := range dirs {
+		if dir == "" || slices.Contains(s.ignoreUnder, dir) {
+			continue
+		}
+
+		s.ignoreUnder = append(s.ignoreUnder, dir)
+	}
+}
+
 func (s *skillsSurface) Write(ctx context.Context, desired kind.Items) error {
 	current, err := s.Read(ctx)
 	if err != nil {
@@ -444,6 +475,11 @@ func (s *skillsSurface) Write(ctx context.Context, desired kind.Items) error {
 	}
 
 	want := skill.Group(desired)
+
+	if want, err = s.renderTrees(want); err != nil {
+		return err
+	}
+
 	have := skill.Group(current.Items)
 
 	for _, name := range slices.Sorted(maps.Keys(have)) {
@@ -472,6 +508,30 @@ func (s *skillsSurface) Write(ctx context.Context, desired kind.Items) error {
 	}
 
 	return nil
+}
+
+// renderTrees maps the wanted canon trees into the host dialect. Without a
+// codec the trees travel verbatim. With one, the trees are rendered in name
+// order through the codec; a name or tree the host dialect cannot express
+// refuses the write with a diagnostic instead of being dropped silently by
+// skill.Group.
+func (s *skillsSurface) renderTrees(want map[string]skill.Tree) (map[string]skill.Tree, error) {
+	if s.codec == nil {
+		return want, nil
+	}
+
+	out := make(map[string]skill.Tree, len(want))
+
+	for _, name := range slices.Sorted(maps.Keys(want)) {
+		rendered, err := s.codec.toHost(name, want[name])
+		if err != nil {
+			return nil, err
+		}
+
+		out[name] = rendered
+	}
+
+	return out, nil
 }
 
 // removeCopy deletes the copies of a name that left the canon: the directory

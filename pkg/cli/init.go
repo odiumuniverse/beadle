@@ -153,14 +153,31 @@ func (a *app) applyInitMigrationDefaults(e *engine.Engine, out io.Writer) {
 }
 
 // installDaemonOnInitStep runs the daemon part of init and reports whether the
-// `beadle daemon install` hint belongs in the next steps.
+// `beadle daemon install` hint belongs in the next steps. A temporary home or
+// vault skips the service with a note — an explicit --daemon is refused — so
+// init never leaves a unit that outlives its temporary tree.
 func (a *app) installDaemonOnInitStep(cmd *cobra.Command, out io.Writer, forceDaemon, installDaemon bool) (bool, error) {
-	switch {
-	case !installDaemon:
+	if !installDaemon {
 		fmt.Fprintln(out, "\ndaemon: skipped (--no-daemon)")
 
 		return false, nil
-	case forceDaemon:
+	}
+
+	if spec, vaultRoot, err := a.daemonSpec(); err == nil {
+		if refusal := a.temporaryDaemonRefusal(spec, vaultRoot, "use a permanent HOME/BEADLE_HOME or pass --no-daemon"); refusal != nil {
+			if forceDaemon {
+				return false, refusal
+			}
+
+			fmt.Fprintln(out, "\ndaemon: skipped (temporary home)")
+
+			// No install hint: the explicit command would refuse the same
+			// temporary path.
+			return false, nil
+		}
+	}
+
+	if forceDaemon {
 		return false, a.installDaemonOnInit(cmd, out, true)
 	}
 
@@ -219,7 +236,7 @@ func (a *app) enableProjectDefaultsOnInit(cmd *cobra.Command, e *engine.Engine, 
 }
 
 func (a *app) installDaemonOnInit(cmd *cobra.Command, out io.Writer, force bool) error {
-	spec, err := a.daemonSpec()
+	spec, _, err := a.daemonSpec()
 	if err != nil {
 		return err
 	}

@@ -14,11 +14,13 @@ const (
 	// DSHID identifies the DeepSeek Harness adapter.
 	DSHID = "deepseek-harness"
 
-	dshHomeEnv     = "DSH_HOME"
-	dshDirName     = ".dsh"
-	dshBinary      = "dsh"
-	dshSkillsDir   = "skills"
-	dshProfilesDir = "profiles"
+	dshHomeEnv       = "DSH_HOME"
+	dshAgentsHomeEnv = "DSH_AGENTS_HOME"
+	dshDirName       = ".dsh"
+	dshAgentsDirName = ".agents"
+	dshBinary        = "dsh"
+	dshSkillsDir     = "skills"
+	dshProfilesDir   = "profiles"
 )
 
 // DSHHomeNote explains the empty DSH_HOME case: DSH itself ignores the empty
@@ -60,12 +62,35 @@ func DSHDetected(home string) (bool, error) {
 	return false, nil
 }
 
-// DSHSurfacePaths returns the read-only paths the adapter reports: the
-// user-level instructions file and the skills directory.
+// DSHSurfacePaths returns the adapter's two user-level surface paths: the
+// user-global instructions file and the skills directory. Both are write
+// surfaces (sync + creatable); the project chain adds per-file surfaces.
 func DSHSurfacePaths(home string) (rules, skills string) {
 	dir, _ := DSHHome(home)
 
 	return filepath.Join(dir, agentsMarkdown), filepath.Join(dir, dshSkillsDir)
+}
+
+// DSHAgentsHome resolves the shared agents root the way DSH does: a non-empty
+// DSH_AGENTS_HOME wins, otherwise ~/.agents. An empty value falls back to
+// ~/.agents, following the DSH_HOME blank rule (DSH's own nullish coalescing
+// would resolve an empty value against cwd — a live probe can pin that
+// divergence). Like DSH_HOME, the non-empty value is taken literally: no
+// trim, no ~ expansion, and a relative path resolves from cwd.
+func DSHAgentsHome(home string) string {
+	if value := os.Getenv(dshAgentsHomeEnv); value != "" {
+		return value
+	}
+
+	return filepath.Join(home, dshAgentsDirName)
+}
+
+// DSHSharedSkillsDir returns the shared skill root DSH reads at rank 500:
+// <agentsHome>/skills, where agentsHome is $DSH_AGENTS_HOME or ~/.agents.
+// With the default agents home it is the ~/.agents/skills hub beadle's
+// shared surface owns.
+func DSHSharedSkillsDir(home string) string {
+	return filepath.Join(DSHAgentsHome(home), dshSkillsDir)
 }
 
 // DSHProfiles lists the profile directories under <home>/profiles.
@@ -91,14 +116,18 @@ func DSHProfiles(home string) []string {
 }
 
 // DSH builds the DeepSeek Harness adapter: the user-global instructions file
-// is a write surface (kind rules, like GEMINI.md for Gemini), and the project
+// is a write surface (kind rules, like GEMINI.md for Gemini), the project
 // instruction chain (AGENTS.md/CLAUDE.md from the nearest .git root down to
-// cwd) is pulled per file with root-relative rels. The skills surface stays
-// read-only by default until A-39 flips it; an explicit mode flip
-// (beadle agents mode ... sync) writes every surface, like every other
-// pull-default surface.
+// cwd) is pulled per file with root-relative rels, the skills surface writes
+// `$DSH_HOME/skills` (kind skills) while reading the shared agents-home skills
+// root (`$DSH_AGENTS_HOME` or `~/.agents`) read-only, and the MCP surface
+// writes beadle's servers into the home patch layer `$DSH_HOME/cordis.patch.yml`
+// (kind mcp). DSH resolves same-name skills by root rank — `$DSH_HOME/skills`
+// (400) wins over the shared agents-home (500) — so the shared copy is
+// shadowed by design and never removed.
 func DSH(home, cwd string) *Agent {
 	rules, skills := DSHSurfacePaths(home)
+	shared := DSHSharedSkillsDir(home)
 
 	id := project.Resolve(cwd).ID
 
@@ -112,12 +141,22 @@ func DSH(home, cwd string) *Agent {
 			},
 		},
 		&skillsSurface{
-			dir: skills,
+			dir:         skills,
+			ignoreUnder: []string{filepath.Join(home, ".claude", "plugins")},
+			alsoReads:   []string{shared},
+			// DSH merges same-name skills by root rank: the user-dsh root
+			// (400) wins over the shared user-agents root (500).
+			shadowing:  true,
+			readOrder:  []string{skills, shared},
+			flatSkills: true,
+			codec:      dshSkillCodec{},
 			traits: Traits{
-				DefaultMode: config.ModePull,
-				Note:        "read-only by default: beadle reads $DSH_HOME/skills and writes only after an explicit mode flip (A-39 flips the default)",
+				DefaultMode: config.ModeSync,
+				Creatable:   true,
+				Note:        "DSH reads $DSH_HOME/skills (rank 400) before the shared agents-home ($DSH_AGENTS_HOME or ~/.agents, rank 500); the shared copy is read-only and shadowed by design",
 			},
 		},
+		&dshMCPSurface{file: DSHPatchPath(home)},
 	}
 
 	return &Agent{

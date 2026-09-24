@@ -41,9 +41,12 @@ func (a *Agent) SurfacesOf(k kind.ID) []Surface {
 }
 
 type Snapshot struct {
-	Items      kind.Items
-	Present    bool
-	ReadOnly   map[string]string
+	Items    kind.Items
+	Present  bool
+	ReadOnly map[string]string
+	// Unreadable maps an item key to the reason the surface cannot read the
+	// item (a broken symlink, a damaged DSH record). The engine reports the
+	// reason and leaves the item untouched instead of treating it as deleted.
 	Unreadable map[string]string
 	// Warnings carries per-run diagnostics the surface produced while
 	// reading (skipped files, duplicate definitions, unsupported layouts).

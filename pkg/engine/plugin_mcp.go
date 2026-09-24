@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 	"maps"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/bundle"
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/plugin"
 	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
@@ -45,7 +45,6 @@ func (e *Engine) bundlePresentsPluginMCP(st *state.State, agentID string, plan p
 }
 
 const (
-	pluginMCPFile   = ".mcp.json"
 	mcpPluginPrefix = "plugin mcp: "
 )
 
@@ -163,8 +162,10 @@ func (e *Engine) buildPluginMCPPlan(ledger pluginLedger, canon map[string]struct
 
 	var warns []string
 
+	dedup := e.pluginDedup(ledger)
+
 	for _, a := range e.agents {
-		agentWarns := e.buildPluginMCPAgent(&plan, a.ID, ledger, canon)
+		agentWarns := e.buildPluginMCPAgent(&plan, a.ID, ledger, dedup.Suppressed, canon)
 
 		warns = appendUniqueWarns(warns, agentWarns)
 	}
@@ -174,7 +175,7 @@ func (e *Engine) buildPluginMCPPlan(ledger pluginLedger, canon map[string]struct
 	return plan, warns
 }
 
-func (e *Engine) buildPluginMCPAgent(plan *pluginMCPPlan, agentID string, ledger pluginLedger, canon map[string]struct{}) []string {
+func (e *Engine) buildPluginMCPAgent(plan *pluginMCPPlan, agentID string, ledger pluginLedger, suppressed map[string]string, canon map[string]struct{}) []string {
 	items := kind.Items{}
 	servers := map[string][]string{}
 	owner := map[string]string{}
@@ -183,38 +184,17 @@ func (e *Engine) buildPluginMCPAgent(plan *pluginMCPPlan, agentID string, ledger
 
 	failed := false
 
-	for _, key := range pluginLedgerKeys(ledger) {
-		marketplace, name, ok := strings.Cut(key, "/")
-		if !ok || !validPluginKey(marketplace, name) {
-			continue
-		}
-
+	for _, key := range pluginPresentedKeys(ledger, suppressed) {
 		pluginItems, pluginWarns, pluginFailed := e.pluginMCPServers(agentID, key, ledger.Plugins[key])
 
 		warns = append(warns, pluginWarns...)
 
 		failed = failed || pluginFailed
 
-		for _, name := range slices.Sorted(maps.Keys(pluginItems)) {
-			if _, isCanon := canon[name]; isCanon {
-				warns = append(warns, fmt.Sprintf("%sserver %q of %s collides with the vault canon", mcpPluginPrefix, name, key))
-
-				continue
-			}
-
-			if keeper, taken := owner[name]; taken {
-				warns = append(warns, fmt.Sprintf("%sserver %q of %s is already provided by %s", mcpPluginPrefix, name, key, keeper))
-
-				continue
-			}
-
-			owner[name] = key
-			items[name] = pluginItems[name]
-			servers[key] = append(servers[key], name)
-		}
+		collectPluginServers(items, owner, servers, canon, key, pluginItems, &warns)
 	}
 
-	inboundItems, _, err := e.inbound(kind.MCP, items)
+	inboundItems, extracted, err := e.inbound(kind.MCP, items)
 	if err != nil {
 		failed = true
 		items = kind.Items{}
@@ -222,6 +202,10 @@ func (e *Engine) buildPluginMCPAgent(plan *pluginMCPPlan, agentID string, ledger
 		warns = append(warns, mcpPluginPrefix+err.Error())
 	} else {
 		items = normalize(inboundItems)
+
+		if extracted {
+			warns = append(warns, mcpPluginPrefix+"a plugin-sourced server carried a literal secret value; it moved to the vault secret store, the canon keeps a {secret:…} reference")
+		}
 	}
 
 	plan.Items[agentID] = items
@@ -241,6 +225,34 @@ func (e *Engine) buildPluginMCPAgent(plan *pluginMCPPlan, agentID string, ledger
 	}
 
 	return warns
+}
+
+// collectPluginServers adds the servers one plugin offers to the agent plan:
+// a canon name wins, then the first plugin by key; the winner keeps the
+// ownership record.
+func collectPluginServers(items kind.Items, owner map[string]string, servers map[string][]string, canon map[string]struct{}, key string, pluginItems kind.Items, warns *[]string) {
+	origin, name, ok := strings.Cut(key, "/")
+	if !ok || !validPluginKey(origin, name) {
+		return
+	}
+
+	for _, server := range slices.Sorted(maps.Keys(pluginItems)) {
+		if _, isCanon := canon[server]; isCanon {
+			*warns = append(*warns, fmt.Sprintf("%sserver %q of %s collides with the vault canon", mcpPluginPrefix, server, key))
+
+			continue
+		}
+
+		if keeper, taken := owner[server]; taken {
+			*warns = append(*warns, fmt.Sprintf("%sserver %q of %s is already provided by %s", mcpPluginPrefix, server, key, keeper))
+
+			continue
+		}
+
+		owner[server] = key
+		items[server] = pluginItems[server]
+		servers[key] = append(servers[key], server)
+	}
 }
 
 func appendUniqueWarns(warns, extra []string) []string {
@@ -271,13 +283,12 @@ func (e *Engine) pluginMCPServers(agentID, key string, rec pluginLedgerRec) (kin
 	if !ok {
 		warns := prefixWarns(mcpPluginPrefix, targetWarns)
 
-		return nil, warns, len(targetWarns) > 0 && !e.pluginCacheReachable()
+		return nil, warns, len(targetWarns) > 0 && !e.pluginCacheReachable(recSource(rec))
 	}
 
-	marketplace, name, _ := strings.Cut(key, "/")
-	pivot := filepath.Join(e.vault.PluginsDir(), marketplace, name, farmPivotName)
+	pivot := e.pluginPivotDir(key)
 
-	return e.readPluginMCPServers(key, rec.Target, pivot, root)
+	return e.readPluginMCPServers(key, recSource(rec), rec.Target, pivot, root)
 }
 
 func (e *Engine) pinnedPluginMCPServers(agentID, key string) (kind.Items, []string, bool) {
@@ -291,42 +302,35 @@ func (e *Engine) pinnedPluginMCPServers(agentID, key string) (kind.Items, []stri
 		return nil, []string{fmt.Sprintf("%splugin %s cache cannot be resolved: %v", mcpPluginPrefix, key, err)}, true
 	}
 
-	return e.readPluginMCPServers(key, pivot, pivot, root)
+	return e.readPluginMCPServers(key, plugin.SourceClaudeCode, pivot, pivot, root)
 }
 
-func (e *Engine) readPluginMCPServers(key, manifestDir, expansionRoot, root string) (kind.Items, []string, bool) {
-	path := filepath.Join(manifestDir, pluginMCPFile)
-
-	resolved, err := filepath.EvalSymlinks(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil, false
+// readPluginMCPServers decodes the MCP document of one plugin. A file-backed
+// document must resolve inside the plugin install root; a manifest-backed
+// document (Gemini CLI) is synthesized from the manifest.
+func (e *Engine) readPluginMCPServers(key, source, manifestDir, expansionRoot, root string) (kind.Items, []string, bool) {
+	data, rel, docWarns, ok := plugin.MCPDocument(source, manifestDir)
+	if !ok {
+		return nil, prefixWarns(mcpPluginPrefix, docWarns), len(docWarns) > 0
 	}
 
-	if err != nil {
-		return nil, []string{fmt.Sprintf("%splugin %s mcp config cannot be read: %v", mcpPluginPrefix, key, err)}, true
+	if rel != "" {
+		resolved, err := filepath.EvalSymlinks(filepath.Join(manifestDir, rel))
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil, false
+		}
+
+		if err != nil || !underDir(resolved, root) {
+			return nil, []string{fmt.Sprintf("%splugin %s mcp config resolves outside the plugin cache", mcpPluginPrefix, key)}, true
+		}
 	}
 
-	if !underDir(resolved, root) {
-		return nil, []string{fmt.Sprintf("%splugin %s mcp config resolves outside the plugin cache", mcpPluginPrefix, key)}, true
-	}
-
-	data, err := os.ReadFile(resolved)
-	if err != nil {
-		return nil, []string{fmt.Sprintf("%splugin %s mcp config cannot be read: %v", mcpPluginPrefix, key, err)}, true
-	}
-
-	items, warns, err := agent.PluginMCPServers(data, expansionRoot)
+	items, warns, err := agent.PluginMCPServersFor(source, data, expansionRoot)
 	if err != nil {
 		return nil, []string{fmt.Sprintf("%splugin %s mcp config is invalid: %v", mcpPluginPrefix, key, err)}, true
 	}
 
 	return items, prefixWarns(mcpPluginPrefix, warns), false
-}
-
-func (e *Engine) pluginCacheReachable() bool {
-	_, err := filepath.EvalSymlinks(filepath.Join(e.home, ".claude", "plugins"))
-
-	return err == nil
 }
 
 func (e *Engine) presentPluginMCP(views []*view, plan pluginMCPPlan, report *KindReport) {
@@ -432,4 +436,16 @@ func pluginLedgerKeys(ledger pluginLedger) []string {
 	}
 
 	return out
+}
+
+// pluginPresentedKeys lists the ledger keys whose presentation another host's
+// copy does not already cover.
+func pluginPresentedKeys(ledger pluginLedger, suppressed map[string]string) []string {
+	keys := pluginLedgerKeys(ledger)
+
+	return slices.DeleteFunc(keys, func(key string) bool {
+		_, covered := suppressed[key]
+
+		return covered
+	})
 }

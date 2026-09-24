@@ -68,12 +68,16 @@ type farmPlan struct {
 	Owner       map[string]string
 	Desired     map[string]struct{}
 	Canon       map[string]struct{}
+	// SkillDirs maps a plugin key to the plugin-relative directory its skills
+	// live in (a manifest can move them).
+	SkillDirs map[string]string
 }
 
 func (e *Engine) syncPluginSurfaces(ctx context.Context, report *Report, active []*agent.Agent, opts SyncOptions) {
-	results, warnings, orphansSafe, err := e.reconcilePlugins(ctx)
+	results, warnings, notes, orphansSafe, err := e.reconcilePlugins(ctx)
 
 	report.Warnings = append(report.Warnings, warnings...)
+	report.Notes = append(report.Notes, notes...)
 
 	if err != nil {
 		report.Warnings = append(report.Warnings, "plugins: "+err.Error())
@@ -83,6 +87,13 @@ func (e *Engine) syncPluginSurfaces(ctx context.Context, report *Report, active 
 
 	if opts.Direction == config.ModePull {
 		return
+	}
+
+	if ledger, _, err := loadPluginLedger(e.vault.PluginsLedgerPath()); err == nil {
+		dedup := e.pluginDedup(ledger)
+
+		report.Notes = append(report.Notes, dedup.Notes...)
+		report.Warnings = append(report.Warnings, dedup.Warns...)
 	}
 
 	var (
@@ -193,6 +204,7 @@ func (e *Engine) buildFarmPlan(ledger pluginLedger) (farmPlan, []string) {
 		Owner:       map[string]string{},
 		Desired:     map[string]struct{}{},
 		Canon:       map[string]struct{}{},
+		SkillDirs:   map[string]string{},
 	}
 
 	warns := e.scanLedgerPlan(plan, ledger)
@@ -232,6 +244,8 @@ func (e *Engine) buildFarmPlan(ledger pluginLedger) (farmPlan, []string) {
 func (e *Engine) scanLedgerPlan(plan farmPlan, ledger pluginLedger) []string {
 	var warns []string
 
+	dedup := e.pluginDedup(ledger)
+
 	for _, key := range slices.Sorted(maps.Keys(ledger.Plugins)) {
 		rec := ledger.Plugins[key]
 
@@ -248,7 +262,12 @@ func (e *Engine) scanLedgerPlan(plan farmPlan, ledger pluginLedger) []string {
 			continue
 		}
 
-		names, ok, pluginWarns := e.parkedPluginSkills(key, rec)
+		if _, covered := dedup.Suppressed[key]; covered {
+			// The same plugin is already presented from another host.
+			continue
+		}
+
+		names, dir, ok, pluginWarns := e.parkedPluginSkills(key, rec)
 
 		for _, warn := range pluginWarns {
 			warns = append(warns, "plugin farm: "+warn)
@@ -259,23 +278,28 @@ func (e *Engine) scanLedgerPlan(plan farmPlan, ledger pluginLedger) []string {
 		}
 
 		plan.Parked[key] = names
+		plan.SkillDirs[key] = dir
 	}
 
 	return warns
 }
 
-func (e *Engine) parkedPluginSkills(key string, rec pluginLedgerRec) ([]string, bool, []string) {
+func (e *Engine) parkedPluginSkills(key string, rec pluginLedgerRec) ([]string, string, bool, []string) {
 	marketplace, name, ok := strings.Cut(key, "/")
 	if !ok || !validPluginKey(marketplace, name) {
-		return nil, false, nil
+		return nil, "", false, nil
 	}
 
 	root, warns, ok := e.pluginTargetRoot(key, rec)
 	if !ok {
-		return nil, false, warns
+		return nil, "", false, warns
 	}
 
-	return e.scanPluginSkills(key, rec.Target, root)
+	dir := farmKindDir(recSource(rec), rec.Target, kind.Skills)
+
+	names, ok, scanWarns := e.scanPluginSkills(key, rec.Target, dir, root)
+
+	return names, dir, ok, append(warns, scanWarns...)
 }
 
 func (e *Engine) pluginTargetRoot(key string, rec pluginLedgerRec) (string, []string, bool) {
@@ -283,25 +307,25 @@ func (e *Engine) pluginTargetRoot(key string, rec pluginLedgerRec) (string, []st
 		return "", nil, false
 	}
 
-	if !e.underPluginCache(rec.Target) {
-		return "", []string{fmt.Sprintf("plugin %s install path is outside the plugin cache: %s", key, rec.Target)}, false
-	}
-
-	root, err := filepath.EvalSymlinks(filepath.Join(e.home, ".claude", "plugins"))
-	if err != nil {
-		return "", []string{fmt.Sprintf("plugin %s cache cannot be resolved: %v", key, err)}, false
-	}
-
 	resolved, err := filepath.EvalSymlinks(rec.Target)
-	if err != nil || !underDir(resolved, root) {
+	if err != nil {
 		return "", []string{fmt.Sprintf("plugin %s install path resolves outside the plugin cache: %s", key, rec.Target)}, false
 	}
 
-	return root, nil, true
+	for _, candidate := range e.pluginSourceRoots(recSource(rec)) {
+		root, err := filepath.EvalSymlinks(candidate)
+		if err != nil || !underDir(resolved, root) {
+			continue
+		}
+
+		return root, nil, true
+	}
+
+	return "", []string{fmt.Sprintf("plugin %s install path is outside the plugin cache: %s", key, rec.Target)}, false
 }
 
-func (e *Engine) scanPluginSkills(key, target, root string) ([]string, bool, []string) {
-	entries, err := os.ReadDir(filepath.Join(target, farmSkillsDir))
+func (e *Engine) scanPluginSkills(key, target, dir, root string) ([]string, bool, []string) {
+	entries, err := os.ReadDir(filepath.Join(target, dir))
 	if errors.Is(err, fs.ErrNotExist) {
 		return []string{}, true, nil
 	}
@@ -316,7 +340,7 @@ func (e *Engine) scanPluginSkills(key, target, root string) ([]string, bool, []s
 	)
 
 	for _, entry := range entries {
-		path := filepath.Join(target, farmSkillsDir, entry.Name())
+		path := filepath.Join(target, dir, entry.Name())
 		if !isDir(path) || !skill.HasRoot(path) {
 			continue
 		}
@@ -332,10 +356,6 @@ func (e *Engine) scanPluginSkills(key, target, root string) ([]string, bool, []s
 	}
 
 	return names, true, warns
-}
-
-func (e *Engine) underPluginCache(target string) bool {
-	return underDir(target, filepath.Join(e.home, ".claude", "plugins"))
 }
 
 func underDir(path, root string) bool {
@@ -404,12 +424,22 @@ func pivotValid(path string) bool {
 }
 
 func (e *Engine) agentSkillTarget(agentID, key, skillName string) (string, bool) {
+	return e.agentSkillTargetIn(agentID, key, farmSkillsDir, skillName)
+}
+
+// agentSkillTargetIn resolves one skill of a plugin in the payload directory
+// the plugin manifest declares (defaults to skills/).
+func (e *Engine) agentSkillTargetIn(agentID, key, dir, skillName string) (string, bool) {
+	if dir == "" {
+		dir = farmSkillsDir
+	}
+
 	pivot, ok := e.pluginPivotFor(agentID, key)
-	if !ok || !filepath.IsLocal(skillName) {
+	if !ok || !filepath.IsLocal(skillName) || !filepath.IsLocal(dir) {
 		return "", false
 	}
 
-	return filepath.Join(pivot, farmSkillsDir, skillName), true
+	return filepath.Join(pivot, dir, skillName), true
 }
 
 func (e *Engine) notePinnedMiss(warns []string, warned map[string]bool, agentID, key string) []string {
@@ -469,7 +499,7 @@ func (e *Engine) farmAgentSkills(agentID, dir string, plan farmPlan) ([]FarmResu
 	for _, skillName := range slices.Sorted(maps.Keys(plan.Desired)) {
 		plugin := plan.Owner[skillName]
 
-		target, ok := e.agentSkillTarget(agentID, plugin, skillName)
+		target, ok := e.agentSkillTargetIn(agentID, plugin, plan.SkillDirs[plugin], skillName)
 		if !ok {
 			warns = e.notePinnedMiss(warns, warned, agentID, plugin)
 
@@ -760,6 +790,10 @@ func (e *Engine) farmOwned(link string) bool {
 	return strings.HasPrefix(link, filepath.Clean(e.vault.PluginsDir())+string(filepath.Separator))
 }
 
+// farmLinkOwner parses a farmed skill link target:
+// <vault>/plugins/<origin>/<plugin>/<pivot>/<dir>/<name>. The payload
+// directory is plugin-defined (a manifest can move it), so any directory
+// under the pivot counts as beadle's own.
 func (e *Engine) farmLinkOwner(link string) (string, string, bool) {
 	prefix := filepath.Clean(e.vault.PluginsDir()) + string(filepath.Separator)
 
@@ -769,7 +803,7 @@ func (e *Engine) farmLinkOwner(link string) (string, string, bool) {
 	}
 
 	parts := strings.Split(rest, "/")
-	if len(parts) != 5 || !pivotEntryName(parts[2]) || parts[3] != farmSkillsDir {
+	if len(parts) != 5 || !pivotEntryName(parts[2]) {
 		return "", "", false
 	}
 

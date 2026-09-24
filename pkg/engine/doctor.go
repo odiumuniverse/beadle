@@ -82,7 +82,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	}
 
 	issues = append(issues, e.skillCollisionIssues(active)...)
-	issues = append(issues, e.skillShadowIssues(active)...)
+	issues = append(issues, e.skillShadowIssues(st, active)...)
 	issues = append(issues, e.visibilityIssues(st, active)...)
 	issues = append(issues, e.skillReferenceIssues(st, active)...)
 	issues = append(issues, e.adoptionIssues(st)...)
@@ -94,6 +94,8 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.claudeProjectRulesIssues(active)...)
 	issues = append(issues, e.pluginRefIssues(active)...)
 	issues = append(issues, e.pluginPivotIssues(ctx)...)
+	issues = append(issues, e.pluginSourceIssues()...)
+	issues = append(issues, e.pluginDuplicateIssues()...)
 	issues = append(issues, e.orphanPivotIssues()...)
 	issues = append(issues, e.pluginPinIssues(active)...)
 	issues = append(issues, e.pluginMigrationIssues(ctx, ledger)...)
@@ -108,7 +110,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.openCodeInlineAgentIssues()...)
 	issues = append(issues, e.daemonIssues()...)
 	issues = append(issues, e.piMCPAdapterIssues(ctx, active)...)
-	issues = append(issues, e.kiloLegacySkillIssues(active)...)
+	issues = append(issues, e.kiloLegacySkillIssues(st, active)...)
 	issues = append(issues, e.hookFileIssues(active)...)
 	issues = append(issues, e.pluginHookIssues()...)
 	issues = append(issues, e.hookSecretIssues()...)
@@ -116,6 +118,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.FarmAgentIssues()...)
 	issues = append(issues, e.FarmCommandIssues()...)
 	issues = append(issues, e.DSHIssues()...)
+	issues = append(issues, e.dshMCPIssues(active)...)
 
 	return issues, nil
 }
@@ -139,7 +142,7 @@ func (e *Engine) daemonIssues() []Issue {
 		return []Issue{{Severity: SeverityWarn, Message: fmt.Sprintf(
 			"daemon is installed but not loaded; load %s with launchctl/systemctl or reinstall it with beadle daemon install", status.Path)}}
 	default:
-		return nil
+		return e.daemonEnvIssues(status)
 	}
 }
 
@@ -670,7 +673,7 @@ func (e *Engine) skillCollisionIssues(active []*agent.Agent) []Issue {
 	return issues
 }
 
-func (e *Engine) skillShadowIssues(active []*agent.Agent) []Issue {
+func (e *Engine) skillShadowIssues(st *state.State, active []*agent.Agent) []Issue {
 	var issues []Issue
 
 	for _, a := range active {
@@ -691,13 +694,13 @@ func (e *Engine) skillShadowIssues(active []*agent.Agent) []Issue {
 			continue
 		}
 
-		issues = append(issues, e.skillShadowIssuesFor(a, refs)...)
+		issues = append(issues, e.skillShadowIssuesFor(st, a, refs)...)
 	}
 
 	return issues
 }
 
-func (e *Engine) skillShadowIssuesFor(a *agent.Agent, refs []agent.SkillRef) []Issue {
+func (e *Engine) skillShadowIssuesFor(st *state.State, a *agent.Agent, refs []agent.SkillRef) []Issue {
 	if surface := a.Surface(kind.Skills); surface != nil && skillCaps(surface).Shadowing {
 		// A host with verified precedence shows one copy per name: hidden
 		// copies are not user-visible duplicates. The visible winner is still
@@ -711,8 +714,6 @@ func (e *Engine) skillShadowIssuesFor(a *agent.Agent, refs []agent.SkillRef) []I
 		byName[ref.Name] = append(byName[ref.Name], ref)
 	}
 
-	cache := map[string]skill.Tree{}
-
 	var issues []Issue
 
 	for _, name := range slices.Sorted(maps.Keys(byName)) {
@@ -724,7 +725,7 @@ func (e *Engine) skillShadowIssuesFor(a *agent.Agent, refs []agent.SkillRef) []I
 					continue
 				}
 
-				same, err := e.sameSkillTree(cache, copies[i].Root, copies[j].Root)
+				same, err := e.sameSkillTree(st, copies[i].Root, copies[j].Root)
 				if err != nil {
 					issues = append(issues, Issue{
 						Severity: SeverityWarn, Kind: kind.Skills, Agent: a.ID,
@@ -765,7 +766,7 @@ func (e *Engine) visibilityIssues(st *state.State, active []*agent.Agent) []Issu
 
 	for _, a := range active {
 		surface := a.Surface(kind.Skills)
-		if surface == nil || len(e.foreignReadDirs(surface)) == 0 || e.bundleActiveFor(st, a.ID) {
+		if surface == nil || len(e.foreignReadDirs(a, surface)) == 0 || e.bundleActiveFor(st, a.ID) {
 			continue
 		}
 
@@ -832,33 +833,18 @@ func (e *Engine) bundleActiveFor(st *state.State, agentID string) bool {
 	return ok && entry.Enabled
 }
 
-func (e *Engine) sameSkillTree(cache map[string]skill.Tree, left, right string) (bool, error) {
-	leftTree, err := cachedSkillTree(cache, left)
+func (e *Engine) sameSkillTree(st *state.State, left, right string) (bool, error) {
+	leftDigest, err := e.skillTreeDigest(st, left)
 	if err != nil {
 		return false, err
 	}
 
-	rightTree, err := cachedSkillTree(cache, right)
+	rightDigest, err := e.skillTreeDigest(st, right)
 	if err != nil {
 		return false, err
 	}
 
-	return maps.Equal(skill.ManifestOf(leftTree), skill.ManifestOf(rightTree)), nil
-}
-
-func cachedSkillTree(cache map[string]skill.Tree, root string) (skill.Tree, error) {
-	if tree, ok := cache[root]; ok {
-		return tree, nil
-	}
-
-	tree, err := skill.ReadTree(root)
-	if err != nil {
-		return nil, err
-	}
-
-	cache[root] = tree
-
-	return tree, nil
+	return leftDigest == rightDigest, nil
 }
 
 func (e *Engine) secretIssues() []Issue {
@@ -1082,7 +1068,7 @@ func (e *Engine) pluginPinIssues(active []*agent.Agent) []Issue {
 		return []Issue{{Severity: SeverityWarn, Message: "cannot read the plugin ledger: " + err.Error()}}
 	}
 
-	manifest, manifestErr := plugin.Read(e.home)
+	manifest, manifestErr := plugin.ReadAll(e.home)
 
 	activeIDs := make(map[string]struct{}, len(active))
 
@@ -1107,10 +1093,31 @@ func (e *Engine) pluginPinIssues(active []*agent.Agent) []Issue {
 	return append(issues, e.strayPinPivotIssues(ledger)...)
 }
 
+// pinSource reports the host that provides the plugin of a pin: the parked
+// ledger record wins, then the installed manifest.
+func pinSource(key string, ledger pluginLedger, manifest plugin.Manifest) string {
+	if rec, parked := ledger.Plugins[key]; parked {
+		return recSource(rec)
+	}
+
+	for _, p := range manifest.Plugins {
+		if pluginKey(p.Origin, p.Name) == key {
+			return p.Source
+		}
+	}
+
+	return ""
+}
+
 func (e *Engine) pinIssues(agentID, key, version string, ledger pluginLedger, manifest plugin.Manifest, manifestErr error) []Issue {
 	marketplace, name, ok := strings.Cut(key, "/")
 	if !ok || !validPluginKey(marketplace, name) {
 		return []Issue{pinIssue(SeverityWarn, agentID, fmt.Sprintf("plugin pin %q has an invalid key", key))}
+	}
+
+	if source := pinSource(key, ledger, manifest); source != "" && source != plugin.SourceClaudeCode {
+		return []Issue{pinIssue(SeverityWarn, agentID, fmt.Sprintf(
+			"plugin %s belongs to %s; version pins cover the Claude Code plugin cache only, so the pin has no effect", key, source))}
 	}
 
 	var issues []Issue
@@ -1150,7 +1157,7 @@ func (e *Engine) pinUnknownPlugin(key string, ledger pluginLedger, manifest plug
 	}
 
 	for _, p := range manifest.Plugins {
-		if pluginKey(p.Marketplace, p.Name) == key {
+		if pluginKey(p.Origin, p.Name) == key {
 			return false
 		}
 	}
@@ -1266,7 +1273,7 @@ func (e *Engine) pluginPivotIssues(_ context.Context) []Issue {
 		return nil
 	}
 
-	manifest, err := plugin.Read(e.home)
+	manifest, err := plugin.ReadAll(e.home)
 	if err != nil {
 		return []Issue{{Severity: SeverityWarn, Message: "cannot read the plugin registry: " + err.Error()}}
 	}
@@ -1278,8 +1285,10 @@ func (e *Engine) pluginPivotIssues(_ context.Context) []Issue {
 
 	installed := map[string]plugin.Plugin{}
 
-	for _, group := range groupPlugins(manifest.Plugins) {
-		installed[pluginKey(group.Marketplace, group.Name)] = chooseRecord(group.Plugins)
+	groups, _, _ := groupPlugins(manifest.Plugins)
+
+	for _, group := range groups {
+		installed[pluginKey(group.Origin, group.Name)] = chooseRecord(group.Plugins)
 	}
 
 	keys := make(map[string]struct{}, len(installed)+len(ledger.Plugins))
@@ -1324,7 +1333,7 @@ func (e *Engine) pivotDriftIssues(key string, record plugin.Plugin, installed bo
 
 	issues = append(issues, pivotTargetIssues(key, record, rec)...)
 
-	pivot := filepath.Join(e.vault.PluginsDir(), record.Marketplace, record.Name, "current")
+	pivot := filepath.Join(e.vault.PluginsDir(), record.Origin, record.Name, "current")
 
 	link, err := os.Readlink(pivot)
 	switch {
