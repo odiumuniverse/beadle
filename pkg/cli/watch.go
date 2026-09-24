@@ -21,7 +21,7 @@ func (a *app) newWatchCmd() *cobra.Command {
 		Use:   "watch",
 		Short: "Watch agent configs and the vault, and synchronize on every change",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			e, err := a.engine()
+			e, err := a.engine(engine.WithUnattended())
 			if err != nil {
 				return err
 			}
@@ -47,8 +47,11 @@ func (a *app) newWatchCmd() *cobra.Command {
 	return cmd
 }
 
+// watchSync runs one unattended sync: a service manager may start the watcher
+// without the user's shell PATH, so the engine reaches host CLIs through the
+// locations attended runs recorded and records none itself.
 func (a *app) watchSync(ctx context.Context) error {
-	e, err := a.engine()
+	e, err := a.engine(engine.WithUnattended())
 	if err != nil {
 		return err
 	}

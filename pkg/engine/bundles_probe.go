@@ -2,12 +2,14 @@ package engine
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/odiumuniverse/beadle/pkg/bundle"
+	"github.com/odiumuniverse/beadle/pkg/hostcli"
 	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
@@ -44,8 +46,22 @@ func (e *Engine) probeBundle(host bundle.Host, dir, version string) (string, str
 	}
 }
 
+// unreachableProbe maps a CLI that vanished before its probe ran to the tier
+// a missing CLI gets: unverifiable, never failed.
+func unreachableProbe(host bundle.Host, err error) (string, string, bool) {
+	if !errors.Is(err, hostcli.ErrNotFound) {
+		return "", "", false
+	}
+
+	return state.VerifyUnverifiable, host.Binary() + " CLI not found; the bundle stays unverified", true
+}
+
 func (e *Engine) probeClaudeBundle(version string) (string, string) {
-	stdout, code, err := bundlesRunner.Run("claude", []string{cliPlugin, "list", "--json"}, nil)
+	stdout, code, err := e.runHost(bundle.Claude, cliPlugin, "list", "--json")
+	if tier, note, ok := unreachableProbe(bundle.Claude, err); ok {
+		return tier, note
+	}
+
 	if err != nil || code != 0 {
 		// The listing embeds resolved headers; only the stderr-bearing error
 		// is safe to keep, never stdout.
@@ -81,7 +97,11 @@ func (e *Engine) probeClaudeBundle(version string) (string, string) {
 }
 
 func (e *Engine) probeGeminiBundle() (string, string) {
-	stdout, code, err := bundlesRunner.Run("gemini", []string{"extensions", "list", "--output-format", "json"}, nil)
+	stdout, code, err := e.runHost(bundle.Gemini, "extensions", "list", "--output-format", "json")
+	if tier, note, ok := unreachableProbe(bundle.Gemini, err); ok {
+		return tier, note
+	}
+
 	if err != nil || code != 0 {
 		return state.VerifyFailed, "gemini extensions list failed: " + runOutput(err, stdout)
 	}
@@ -169,7 +189,11 @@ func nonEmptyField(value any) string {
 // probeAntigravityBundle combines the host listing with a structural file
 // check. The host is not launched, so the note says the check is structural.
 func (e *Engine) probeAntigravityBundle() (string, string) {
-	stdout, code, err := bundlesRunner.Run("agy", []string{"plugin", "list"}, nil)
+	stdout, code, err := e.runHost(bundle.Antigravity, "plugin", "list")
+	if tier, note, ok := unreachableProbe(bundle.Antigravity, err); ok {
+		return tier, note
+	}
+
 	if err != nil || code != 0 {
 		return state.VerifyFailed, "agy plugin list failed: " + runOutput(err, stdout)
 	}

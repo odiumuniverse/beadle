@@ -17,20 +17,25 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/hostcli"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
 type fakeCLI struct {
 	calls   [][]string
+	bins    []hostcli.Binary
 	failOn  map[string]error
 	respond func(name string, args []string) ([]byte, bool)
 	after   func(name string, args []string)
 	output  string
 }
 
-func (f *fakeCLI) Run(name string, args []string, _ []byte) ([]byte, int, error) {
+func (f *fakeCLI) Run(bin hostcli.Binary, args []string, _ []byte) ([]byte, int, error) {
+	name := bin.Name
+
 	f.calls = append(f.calls, append([]string{name}, args...))
+	f.bins = append(f.bins, bin)
 
 	if f.respond != nil {
 		if data, ok := f.respond(name, args); ok {

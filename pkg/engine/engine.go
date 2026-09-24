@@ -47,6 +47,10 @@ type Engine struct {
 	rulings      *rulings.Ledger
 	rulingsDirty bool
 	autoBundles  bool
+	// unattended marks the watcher: a service manager may start it without
+	// the user's shell PATH, so it resolves host CLIs through the locations
+	// attended runs recorded and never records its own.
+	unattended bool
 	// skillCache keeps the digests one process resolved, on top of the
 	// persisted state cache; skillCacheOff disables both, so every scan reads
 	// the trees again (tests and diagnosis).
@@ -82,6 +86,13 @@ func WithKeyring(keyring secret.Keyring) Option {
 // host CLI on their own.
 func WithBundleAutoEnable() Option {
 	return func(e *Engine) { e.autoBundles = true }
+}
+
+// WithUnattended marks a run nobody watches (the watcher): it never records
+// where it finds a host CLI, because its PATH is the service manager's, not
+// the user's.
+func WithUnattended() Option {
+	return func(e *Engine) { e.unattended = true }
 }
 
 // WithSkillCacheDisabled turns the skill manifest cache off, so every scan
@@ -200,6 +211,7 @@ func (e *Engine) sync(ctx context.Context, opts SyncOptions) (*Report, error) {
 	e.beginRulings(opts)
 
 	if !opts.DryRun {
+		report.Warnings = append(report.Warnings, e.recordHostCLIs()...)
 		e.syncPluginSurfaces(ctx, report, active, opts)
 	}
 

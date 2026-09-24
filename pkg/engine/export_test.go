@@ -6,7 +6,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/secret"
 )
 
-func SetBundlesRunnerForTest(runner secret.Runner) func() {
+func SetBundlesRunnerForTest(runner hostRunner) func() {
 	previous := bundlesRunner
 	bundlesRunner = runner
 

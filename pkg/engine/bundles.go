@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os/exec"
@@ -16,8 +17,8 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/bundle"
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/hooks"
+	"github.com/odiumuniverse/beadle/pkg/hostcli"
 	"github.com/odiumuniverse/beadle/pkg/kind"
-	"github.com/odiumuniverse/beadle/pkg/secret"
 	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
@@ -45,8 +46,8 @@ const (
 )
 
 var (
-	bundlesRunner   secret.Runner = secret.ExecRunner{}
-	bundlesLookPath               = exec.LookPath
+	bundlesRunner   hostRunner = execHostRunner{}
+	bundlesLookPath            = exec.LookPath
 )
 
 func bundleRegisterCommands(host bundle.Host, dir string) [][]string {
@@ -155,6 +156,8 @@ func (e *Engine) BundlesEnable(ctx context.Context, hostName string) (Report, er
 			return report, err
 		}
 	}
+
+	report.Warnings = append(report.Warnings, e.recordHostCLIs()...)
 
 	if err := e.bundleEnable(ctx, host, st, &report, false); err != nil {
 		return report, err
@@ -417,24 +420,23 @@ func (e *Engine) registerBundle(host bundle.Host, dir string, entry *state.Bundl
 	case entry.Registered && entry.Version == version:
 		return bundleNoop, ""
 	case entry.Registered:
-		ok, output := e.runBundleCommands(host, bundleUpdateCommands(host, dir))
-		if !ok {
-			report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: updating %s failed: %s", host, output))
+		if err := e.runBundleCommands(host, bundleUpdateCommands(host, dir)); err != nil {
+			report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: updating %s failed: %v", host, err))
 
-			return bundleEnabled, output
+			return bundleEnabled, err.Error()
 		}
 
 		entry.Version = version
 
 		return bundleEnabled, ""
 	default:
-		ok, output := e.runBundleCommands(host, bundleRegisterCommands(host, dir))
-		entry.Registered = ok
+		err := e.runBundleCommands(host, bundleRegisterCommands(host, dir))
+		entry.Registered = err == nil
 
-		if !ok {
-			report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: registering %s failed: %s", host, output))
+		if err != nil {
+			report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: registering %s failed: %v", host, err))
 
-			return bundleGenerated, output
+			return bundleGenerated, err.Error()
 		}
 
 		entry.Version = version
@@ -481,6 +483,8 @@ func (e *Engine) BundlesDisable(ctx context.Context, hostName string) (Report, e
 	if !ok || (!entry.Enabled && !entry.Registered) {
 		return e.bundleDisableNoop(host, st, &report)
 	}
+
+	report.Warnings = append(report.Warnings, e.recordHostCLIs()...)
 
 	dir := filepath.Join(e.vault.BundlesDir(), string(host))
 
@@ -579,11 +583,10 @@ func (e *Engine) unregisterBundle(host bundle.Host, dir string, entry state.Bund
 
 		return true, ""
 	case entry.Registered:
-		ok, output := e.runBundleCommands(host, bundleUnregisterCommands(host, dir))
-		if !ok {
-			report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: unregistering %s failed: %s", host, output))
+		if err := e.runBundleCommands(host, bundleUnregisterCommands(host, dir)); err != nil {
+			report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: unregistering %s failed: %v", host, err))
 
-			return false, output
+			return false, err.Error()
 		}
 	}
 
@@ -596,8 +599,10 @@ func (e *Engine) unregisterBundle(host bundle.Host, dir string, entry state.Bund
 	return true, ""
 }
 
+// binaryMissing reports that this run reaches the host CLI neither on its
+// PATH nor at a recorded location.
 func (e *Engine) binaryMissing(host bundle.Host) bool {
-	_, err := bundlesLookPath(host.Binary())
+	_, err := e.hostCLI(host)
 
 	return err != nil
 }
@@ -613,17 +618,28 @@ func (e *Engine) antigravityLinked() bool {
 	return slices.ContainsFunc(e.antigravityLinks(), isDir)
 }
 
-func (e *Engine) runBundleCommands(host bundle.Host, commands [][]string) (bool, string) {
-	binary := host.Binary()
+// runBundleCommands runs the host CLI commands in order. A CLI this run cannot
+// reach (missing, or gone before it ran) keeps hostcli.ErrNotFound in the
+// chain, so the caller can treat it as unverifiable; any other failure carries
+// the host output as its message.
+func (e *Engine) runBundleCommands(host bundle.Host, commands [][]string) error {
+	bin, err := e.hostCLI(host)
+	if err != nil {
+		return err
+	}
 
 	for _, args := range commands {
-		stdout, code, err := bundlesRunner.Run(binary, args, nil)
+		stdout, code, err := bundlesRunner.Run(bin, args, nil)
+		if errors.Is(err, hostcli.ErrNotFound) {
+			return err
+		}
+
 		if err != nil || code != 0 {
-			return false, runOutput(err, stdout)
+			return errors.New(runOutput(err, stdout))
 		}
 	}
 
-	return true, ""
+	return nil
 }
 
 // runOutput renders one runner result without leaking more than the caller
@@ -898,8 +914,17 @@ func (e *Engine) refreshBundleHost(host bundle.Host, dir string, entry state.Bun
 		return
 	}
 
-	ok, output := e.runBundleCommands(host, bundleUpdateCommands(host, dir))
-	if !ok {
+	if err := e.runBundleCommands(host, bundleUpdateCommands(host, dir)); err != nil {
+		// The CLI vanished between the check and the run: still unverifiable,
+		// never a failure of the host.
+		if errors.Is(err, hostcli.ErrNotFound) {
+			e.deferBundleRefresh(host, entry, result.Version, st, report)
+
+			return
+		}
+
+		output := err.Error()
+
 		entry.VerifyTier = state.VerifyFailed
 		entry.ProbeNote = truncateNote(output)
 		syncAttemptTier(&entry)
@@ -1055,7 +1080,7 @@ func (e *Engine) validateClaudeBundle(dir string) (string, bool) {
 	// validated as well, because `claude plugin validate` does not descend
 	// into its plugins on its own.
 	for _, target := range []string{filepath.Join(dir, "plugins", bundle.PluginName), dir} {
-		stdout, code, err := bundlesRunner.Run("claude", []string{cliPlugin, "validate", "--json", "--strict", target}, nil)
+		stdout, code, err := e.runHost(bundle.Claude, cliPlugin, "validate", "--json", "--strict", target)
 
 		message, valid := parseClaudeValidation(stdout)
 
@@ -1392,7 +1417,7 @@ func (e *Engine) validateActiveClaudeBundle(st *state.State) []Issue {
 		return nil
 	}
 
-	if _, err := bundlesLookPath("claude"); err != nil {
+	if e.binaryMissing(bundle.Claude) {
 		return nil
 	}
 

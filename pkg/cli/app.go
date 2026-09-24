@@ -121,7 +121,7 @@ func (a *app) reportConfigMigration(cfg *config.Config) {
 	cfg.TakeMigrationNotes()
 }
 
-func (a *app) engine() (*engine.Engine, error) {
+func (a *app) engine(extra ...engine.Option) (*engine.Engine, error) {
 	v, cfg, err := a.loadConfig()
 	if err != nil {
 		return nil, err
@@ -132,13 +132,13 @@ func (a *app) engine() (*engine.Engine, error) {
 		return nil, err
 	}
 
-	return a.engineWith(v, cfg, agents)
+	return a.engineWith(v, cfg, agents, extra...)
 }
 
 // engineWith builds the engine from an already loaded config: commands that
 // load the config themselves must not load it twice, or the one-time
 // migration notes would be rendered twice.
-func (a *app) engineWith(v *vault.Vault, cfg *config.Config, agents []*agent.Agent) (*engine.Engine, error) {
+func (a *app) engineWith(v *vault.Vault, cfg *config.Config, agents []*agent.Agent, extra ...engine.Option) (*engine.Engine, error) {
 	home, _, err := homeAndCwd()
 	if err != nil {
 		return nil, err
@@ -149,7 +149,7 @@ func (a *app) engineWith(v *vault.Vault, cfg *config.Config, agents []*agent.Age
 		opts = append(opts, engine.WithBundleAutoEnable())
 	}
 
-	return engine.New(v, cfg, agents, opts...)
+	return engine.New(v, cfg, agents, append(opts, extra...)...)
 }
 
 func homeAndCwd() (string, string, error) {

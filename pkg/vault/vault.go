@@ -175,6 +175,12 @@ func (v *Vault) MergetoolPath() string {
 	return filepath.Join(v.root, "state", mergetoolFileName)
 }
 
+// HostCLIPath returns the machine-local file recording where attended runs
+// found each host CLI, so the watcher reaches it without the shell PATH.
+func (v *Vault) HostCLIPath() string {
+	return filepath.Join(v.root, "state", "hostcli.json")
+}
+
 const mergetoolFileName = "mergetool.json"
 
 func (v *Vault) RulingsPath() string {
