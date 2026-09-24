@@ -60,8 +60,12 @@ everywhere. Skills arrive as links in every host's skills directory (Claude
 included, next to its native plugin copy). Subagents and commands arrive as
 links for the md hosts; Codex gets rendered TOML subagents, Gemini rendered
 TOML commands (and a TOML command from a Gemini plugin arrives as markdown
-elsewhere), Claude reads both natively and Codex commands are skipped
-(`prompts` is pull-only). MCP servers are merged into the MCP kind.
+elsewhere), and Codex commands are skipped (`prompts` is pull-only). A host
+reads its **own** plugins' subagents, commands and MCP servers natively — its
+own copy is never re-presented; every other host receives them. When the same
+plugin is installed in several hosts, the host whose copy lost the pick keeps
+its native copy and receives nothing from the winner either. MCP servers
+are merged into the MCP kind.
 Subagent and command names are namespaced `<plugin>--<name>`; skills and MCP
 servers keep their own names. Your canon wins on a collision, then the first
 plugin by key; removed plugins are pruned and moved ones are quarantined with a
@@ -76,8 +80,10 @@ approve them yourself:
 beadle hooks approve --plugin <origin>/<name>
 ```
 
-beadle never executes hooks. The Claude bundle is excluded (Claude runs its own
-plugin hooks natively); non-command hooks are skipped with a warning.
+beadle never executes hooks. A plugin's own host runs its hooks natively, so
+that host's channel is skipped and the hook reaches the others (the Claude
+bundle carries non-Claude plugins' hooks); non-command hooks are skipped with a
+warning.
 
 ![Plugin flow](../assets/guide-plugin-flow.svg)
 

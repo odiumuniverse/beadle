@@ -72,6 +72,10 @@ func (e *Engine) pluginPivotDir(key string) string {
 type pluginDedup struct {
 	// Suppressed maps every losing key to the winning key.
 	Suppressed map[string]string
+	// LoserHosts maps a presented key to the source hosts whose own copy lost
+	// the dedup or the same-key source conflict: those hosts read their
+	// native copy and must not receive the winner's presentation too.
+	LoserHosts map[string]map[string]bool
 	// Notes describe the suppressed duplicates.
 	Notes []string
 	// Warns describe divergent copies; nothing is suppressed for them.
@@ -80,7 +84,7 @@ type pluginDedup struct {
 
 // pluginDedup computes the duplicate-plugin presentation from the ledger.
 func (e *Engine) pluginDedup(ledger pluginLedger) pluginDedup {
-	dedup := pluginDedup{Suppressed: map[string]string{}}
+	dedup := pluginDedup{Suppressed: map[string]string{}, LoserHosts: map[string]map[string]bool{}}
 
 	groups := map[string][]string{}
 
@@ -95,6 +99,8 @@ func (e *Engine) pluginDedup(ledger pluginLedger) pluginDedup {
 		if !ok || !validPluginKey(origin, name) {
 			continue
 		}
+
+		dedup.markLosers(key, rec.Overridden)
 
 		groups[name] = append(groups[name], key)
 	}
@@ -150,7 +156,20 @@ func (e *Engine) dedupDuplicateGroup(dedup *pluginDedup, keys []string, ledger p
 
 		dedup.Suppressed[key] = winner
 
+		dedup.markLosers(winner, []string{recSource(rec)})
+
 		dedup.Notes = append(dedup.Notes, duplicateNote(nameOfKey(key), key, winner))
+	}
+}
+
+// markLosers records the hosts whose own copy of a key lost the presentation.
+func (dedup *pluginDedup) markLosers(key string, sources []string) {
+	for _, source := range sources {
+		if dedup.LoserHosts[key] == nil {
+			dedup.LoserHosts[key] = map[string]bool{}
+		}
+
+		dedup.LoserHosts[key][source] = true
 	}
 }
 

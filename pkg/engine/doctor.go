@@ -1318,13 +1318,13 @@ func (e *Engine) pluginPivotIssues(_ context.Context) []Issue {
 }
 
 func (e *Engine) pivotDriftIssues(key string, record plugin.Plugin, installed bool, rec pluginLedgerRec, parked bool) []Issue {
-	if issues, final := pivotLifecycleIssues(key, rec); final {
+	if issues, final := pivotLifecycleIssues(key, rec, installed); final {
 		return issues
 	}
 
 	switch {
 	case parked && !installed:
-		return []Issue{pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s is no longer installed (pivot left in place)", key))}
+		return []Issue{pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s is no longer installed; run beadle sync to retire the pivot and farm artifacts", key))}
 	case installed && !parked:
 		return []Issue{pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s is not parked yet; run beadle sync", key))}
 	}
@@ -1366,13 +1366,22 @@ func pivotTargetIssues(key string, record plugin.Plugin, rec pluginLedgerRec) []
 	return issues
 }
 
-func pivotLifecycleIssues(key string, rec pluginLedgerRec) ([]Issue, bool) {
+// pivotLifecycleIssues reports the lifecycle state of one ledger record: a
+// quarantine is an Error with the heal hint, a retire is an Info only when the
+// plugin disappeared from every registry — a record healed while its host
+// registry still lists the plugin stays silent (there is nothing to change).
+func pivotLifecycleIssues(key string, rec pluginLedgerRec, installed bool) ([]Issue, bool) {
 	switch {
+	case !rec.RetiredAt.IsZero():
+		if installed {
+			return nil, true
+		}
+
+		return []Issue{pivotIssue(SeverityInfo, fmt.Sprintf(
+			"plugin %s was removed from its host registry; the pivot and farm artifacts are retired (no heal needed)", key))}, true
 	case !rec.QuarantinedAt.IsZero():
 		return []Issue{pivotIssue(SeverityError, fmt.Sprintf("plugin %s@%s is quarantined since %s; run beadle heal",
 			key, rec.Version, rec.QuarantinedAt.Format(time.RFC3339)))}, true
-	case !rec.RetiredAt.IsZero():
-		return nil, true
 	default:
 		return nil, false
 	}

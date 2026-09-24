@@ -41,9 +41,11 @@ type farmFileSpec struct {
 	// Artifacts is the artifact subdirectory under plugins/farm/...; it keeps
 	// the rendered copies of different kinds apart.
 	Artifacts string
-	// Skip lists the hosts that read plugin definitions natively or take no
-	// writes for this kind.
-	Skip map[string]bool
+	// Skip lists, per host, the plugin sources whose definitions must not be
+	// presented there: a host reads its own plugin definitions natively, while
+	// another host's plugin has no native path. An empty source list skips
+	// every source for that host.
+	Skip map[string][]string
 	// ValidName reports whether a definition name is a canonical slug for the
 	// kind: hosts that cannot express a name must not fail one by one.
 	ValidName func(string) bool
@@ -56,6 +58,18 @@ type farmFileSpec struct {
 	// Lift converts a non-markdown definition (Gemini CLI TOML commands) into
 	// canonical markdown; nil means every definition is already markdown.
 	Lift func(name string, data []byte) ([]byte, bool, error)
+}
+
+// skipHost reports whether one host/source pair is excluded: a host reads its
+// own plugin definitions natively, and an empty source list excludes every
+// source (a surface that takes no writes for this kind).
+func (spec farmFileSpec) skipHost(agentID, source string) bool {
+	sources, listed := spec.Skip[agentID]
+	if !listed {
+		return false
+	}
+
+	return len(sources) == 0 || slices.Contains(sources, source)
 }
 
 // extsFor returns the definition extensions of one plugin source.
@@ -96,6 +110,9 @@ type farmFileLot struct {
 	Key    string
 	Plugin string
 	Name   string
+	// Source is the plugin host the definition came from; the presentation
+	// skips its own host, which reads the definition natively.
+	Source string
 	// Dir is the plugin-relative payload directory of this definition.
 	Dir string
 	// File is the definition file name inside Dir.
@@ -131,6 +148,17 @@ type farmFilePlan struct {
 	Parked      map[string]struct{}
 	Quarantined map[string]pluginLedgerRec
 	Canon       map[string]struct{}
+	// LoserHosts maps a plugin key to the source hosts whose own copy lost the
+	// dedup or the same-key source conflict: those hosts read their native
+	// copy and must not receive the winner's presentation.
+	LoserHosts map[string]map[string]bool
+}
+
+// loserHost reports whether one host's own copy of a plugin lost the dedup or
+// the same-key source conflict: the host reads its native copy, so the
+// winner's presentation must not reach it too.
+func (p farmFilePlan) loserHost(agentID, key string) bool {
+	return p.LoserHosts[key][agentID]
 }
 
 func (e *Engine) buildFarmFilePlan(ledger pluginLedger, spec farmFileSpec) (farmFilePlan, []string) {
@@ -146,15 +174,20 @@ func (e *Engine) buildFarmFilePlan(ledger pluginLedger, spec farmFileSpec) (farm
 
 	dedup := e.pluginDedup(ledger)
 
+	plan.LoserHosts = dedup.LoserHosts
+
 	for _, key := range slices.Sorted(maps.Keys(ledger.Plugins)) {
 		rec := ledger.Plugins[key]
 
 		switch {
+		case !rec.RetiredAt.IsZero():
+			// A retired record outranks a leftover quarantine flag: the
+			// plugin is gone from the registry, so nothing is presented and
+			// no stub is needed.
+			continue
 		case !rec.QuarantinedAt.IsZero():
 			plan.Quarantined[key] = rec
 
-			continue
-		case !rec.RetiredAt.IsZero():
 			continue
 		}
 
@@ -193,7 +226,7 @@ func (e *Engine) buildFarmFilePlan(ledger pluginLedger, spec farmFileSpec) (farm
 			}
 
 			plan.Owner[ns] = key
-			plan.Desired[ns] = farmFileLot{Key: key, Plugin: plugin, Name: entry.Name, Dir: dirName, File: entry.File}
+			plan.Desired[ns] = farmFileLot{Key: key, Plugin: plugin, Name: entry.Name, Source: source, Dir: dirName, File: entry.File}
 		}
 	}
 
@@ -315,7 +348,8 @@ func (e *Engine) canonFileNames(spec farmFileSpec) (map[string]struct{}, []strin
 }
 
 // farmPluginFiles presents plugin-sourced definitions of one kind to every
-// host whose surface takes files; the hosts in spec.Skip are left alone.
+// host whose surface takes files; the host/source pairs in spec.Skip are left
+// alone (a host reads its own plugin definitions natively).
 func (e *Engine) farmPluginFiles(active []*agent.Agent, spec farmFileSpec) ([]FarmResult, []string) {
 	if e.home == "" || !e.config.KindEnabled(spec.Kind) {
 		return nil, nil
@@ -332,10 +366,6 @@ func (e *Engine) farmPluginFiles(active []*agent.Agent, spec farmFileSpec) ([]Fa
 	var results []FarmResult
 
 	for _, a := range active {
-		if spec.Skip[a.ID] {
-			continue
-		}
-
 		surface := a.Surface(spec.Kind)
 		if surface == nil {
 			continue
@@ -368,10 +398,29 @@ func (e *Engine) farmPluginFiles(active []*agent.Agent, spec farmFileSpec) ([]Fa
 	return results, warns
 }
 
+// desiredFarmLots lists the definitions one host presents: the plan's lots
+// minus the host/source pairs the spec skips and minus the plugins whose own
+// copy of that host lost the dedup (it reads its native copy).
+func desiredFarmLots(agentID string, plan farmFilePlan, spec farmFileSpec) []string {
+	var desired []string
+
+	for _, ns := range slices.Sorted(maps.Keys(plan.Desired)) {
+		lot := plan.Desired[ns]
+		if spec.skipHost(agentID, lot.Source) || plan.loserHost(agentID, lot.Key) {
+			continue
+		}
+
+		desired = append(desired, ns)
+	}
+
+	return desired
+}
+
 func (e *Engine) farmFileSurface(agentID string, target agent.FarmTarget, plan farmFilePlan, spec farmFileSpec) ([]FarmResult, []string) {
 	dir := target.FarmDir()
+	desired := desiredFarmLots(agentID, plan, spec)
 
-	if len(plan.Desired) > 0 && !isDir(dir) {
+	if len(desired) > 0 && !isDir(dir) {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, []string{"plugin farm: " + err.Error()}
 		}
@@ -391,7 +440,7 @@ func (e *Engine) farmFileSurface(agentID string, target agent.FarmTarget, plan f
 	warned := map[string]bool{}
 	files := map[string]string{}
 
-	for _, ns := range slices.Sorted(maps.Keys(plan.Desired)) {
+	for _, ns := range desired {
 		lot := plan.Desired[ns]
 		file := target.FarmName(ns)
 

@@ -165,7 +165,7 @@ func (e *Engine) buildPluginMCPPlan(ledger pluginLedger, canon map[string]struct
 	dedup := e.pluginDedup(ledger)
 
 	for _, a := range e.agents {
-		agentWarns := e.buildPluginMCPAgent(&plan, a.ID, ledger, dedup.Suppressed, canon)
+		agentWarns := e.buildPluginMCPAgent(&plan, a.ID, ledger, dedup, canon)
 
 		warns = appendUniqueWarns(warns, agentWarns)
 	}
@@ -175,7 +175,7 @@ func (e *Engine) buildPluginMCPPlan(ledger pluginLedger, canon map[string]struct
 	return plan, warns
 }
 
-func (e *Engine) buildPluginMCPAgent(plan *pluginMCPPlan, agentID string, ledger pluginLedger, suppressed map[string]string, canon map[string]struct{}) []string {
+func (e *Engine) buildPluginMCPAgent(plan *pluginMCPPlan, agentID string, ledger pluginLedger, dedup pluginDedup, canon map[string]struct{}) []string {
 	items := kind.Items{}
 	servers := map[string][]string{}
 	owner := map[string]string{}
@@ -184,8 +184,25 @@ func (e *Engine) buildPluginMCPAgent(plan *pluginMCPPlan, agentID string, ledger
 
 	failed := false
 
-	for _, key := range pluginPresentedKeys(ledger, suppressed) {
-		pluginItems, pluginWarns, pluginFailed := e.pluginMCPServers(agentID, key, ledger.Plugins[key])
+	for _, key := range pluginPresentedKeys(ledger, dedup.Suppressed) {
+		rec := ledger.Plugins[key]
+
+		// The source host reads its own plugin's MCP natively (Claude's
+		// .mcp.json, Codex's mcp.json, Gemini's inline mcpServers, Antigravity's
+		// mcp_config.json, Cursor's mcp.json): rendering it there would
+		// duplicate the server and make the host skip one copy.
+		if recSource(rec) == agentID {
+			continue
+		}
+
+		// A host whose own copy lost the dedup or the same-key source conflict
+		// keeps reading its native copy; the winner's servers must not be
+		// presented there as a second copy of the same plugin.
+		if dedup.LoserHosts[key][agentID] {
+			continue
+		}
+
+		pluginItems, pluginWarns, pluginFailed := e.pluginMCPServers(agentID, key, rec)
 
 		warns = append(warns, pluginWarns...)
 
@@ -424,11 +441,16 @@ func prefixWarns(prefix string, warns []string) []string {
 	return out
 }
 
+// pluginLedgerKeys lists the ledger keys whose artifacts are still presented
+// and owned: retired records are gone from every registry, so they own their
+// server names (collectOwnedServers) but present nothing.
 func pluginLedgerKeys(ledger pluginLedger) []string {
 	var out []string
 
 	for _, key := range slices.Sorted(maps.Keys(ledger.Plugins)) {
-		if key == bundlePluginKey() {
+		rec := ledger.Plugins[key]
+
+		if key == bundlePluginKey() || !rec.RetiredAt.IsZero() {
 			continue
 		}
 

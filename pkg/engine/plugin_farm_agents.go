@@ -8,14 +8,15 @@ import (
 )
 
 // farmAgentSpec presents plugin-sourced subagents to the hosts whose agent
-// directories take files. Claude Code reads plugin agents natively, so its
-// surface is left alone.
+// directories take files. Claude Code reads its own plugins' agents natively;
+// another host's plugin has no native path there, so only the same-source pair
+// is skipped.
 var farmAgentSpec = farmFileSpec{
 	Kind:      kind.Subagents,
 	DirName:   farmAgentsDirName,
 	Label:     "agent",
 	Artifacts: farmAgentsDirName,
-	Skip:      map[string]bool{agent.ClaudeCodeID: true},
+	Skip:      map[string][]string{agent.ClaudeCodeID: {plugin.SourceClaudeCode}},
 	ValidName: subagent.ValidName,
 	Rename:    renameFarmAgent,
 	SourceExts: map[string][]string{

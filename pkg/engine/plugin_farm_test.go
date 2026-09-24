@@ -14,7 +14,6 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/engine"
-	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/skill"
 )
@@ -360,7 +359,6 @@ func TestPluginFarmStubsOnQuarantine(t *testing.T) {
 		write(t, filepath.Join(foreignTarget, "SKILL.md"), "# helper\n")
 		So(os.Symlink(foreignTarget, filepath.Join(claudeSkillsDir(f.home), "Helper")), ShouldBeNil)
 
-		removeFromRegistry(t, f.home, "acme", "tool")
 		So(os.RemoveAll(plugin), ShouldBeNil)
 
 		report := f.sync(t)
@@ -414,7 +412,6 @@ func TestPluginFarmReplacesStubOnReinstall(t *testing.T) {
 
 		f.sync(t)
 
-		removeFromRegistry(t, f.home, "acme", "tool")
 		So(os.RemoveAll(plugin), ShouldBeNil)
 
 		f.sync(t)
@@ -458,7 +455,6 @@ func TestPluginFarmPrunesOrphanStub(t *testing.T) {
 
 		f.sync(t)
 
-		removeFromRegistry(t, f.home, "acme", "tool")
 		So(os.RemoveAll(plugin), ShouldBeNil)
 
 		f.sync(t)
@@ -510,7 +506,6 @@ func TestPluginFarmStubSkipsShadowedName(t *testing.T) {
 
 			So(farmLink(t, claudeSkillsDir(f.home), "shared"), ShouldEqual, filepath.Join(f.vault.PluginsDir(), "aaa", "loser", "current", "skills", "shared"))
 
-			removeFromRegistry(t, f.home, "aaa", "loser")
 			So(os.RemoveAll(loser), ShouldBeNil)
 
 			report := f.sync(t)
@@ -536,7 +531,6 @@ func TestPluginFarmStubSkipsShadowedName(t *testing.T) {
 
 			write(t, filepath.Join(f.vault.SkillsDir(), "alpha", "SKILL.md"), "# canon\n")
 
-			removeFromRegistry(t, f.home, "acme", "tool")
 			So(os.RemoveAll(plugin), ShouldBeNil)
 
 			report := f.sync(t)
@@ -563,7 +557,6 @@ func TestPluginFarmStubSymlinkNotReadAsSkill(t *testing.T) {
 
 		f.sync(t)
 
-		removeFromRegistry(t, f.home, "acme", "tool")
 		So(os.RemoveAll(plugin), ShouldBeNil)
 
 		f.sync(t)
@@ -590,7 +583,7 @@ func TestPluginFarmStubSymlinkNotReadAsSkill(t *testing.T) {
 }
 
 func TestPluginFarmRemoval(t *testing.T) {
-	Convey("Given a plugin whose cache is removed", t, func() {
+	Convey("Given a plugin removed from the registry", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := newFixture(t)
@@ -601,42 +594,42 @@ func TestPluginFarmRemoval(t *testing.T) {
 
 		f.sync(t)
 
-		want := pluginCurrentSkill(f, "alpha")
-
 		removeFromRegistry(t, f.home, "acme", "tool")
 
 		report := f.sync(t)
 
-		So(report.Farm, ShouldBeEmpty)
-		So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, want)
-		So(fsutil.Exists(filepath.Join(claudeSkillsDir(f.home), "alpha")), ShouldBeTrue)
-
-		So(os.RemoveAll(plugin), ShouldBeNil)
-
-		report = f.sync(t)
-
-		issues, err := f.engine.Doctor(t.Context())
-		So(err, ShouldBeNil)
-
-		Convey("When the cache disappears", func() {
-			Convey("Then each host gets a stub and doctor reports quarantine, not a broken link", func() {
-				So(report.Farm, ShouldHaveLength, 2)
-
+		Convey("When the registry drops it while the cache stays", func() {
+			Convey("Then the farm links are pruned without a stub", func() {
 				for _, result := range report.Farm {
-					So(result.Action, ShouldEqual, engine.FarmStubbed)
+					So(result.Action, ShouldEqual, engine.FarmPruned)
 					So(result.Plugin, ShouldEqual, "acme/tool")
 					So(result.Count, ShouldEqual, 1)
 				}
 
 				for _, dir := range []string{claudeSkillsDir(f.home), openCodeSkillsDir(f.home)} {
-					info, err := os.Lstat(filepath.Join(dir, "alpha"))
-					So(err, ShouldBeNil)
-					So(info.Mode()&fs.ModeSymlink, ShouldEqual, fs.FileMode(0))
-					So(isStub(t, filepath.Join(dir, "alpha")), ShouldBeTrue)
+					_, linkErr := os.Lstat(filepath.Join(dir, "alpha"))
+					So(errors.Is(linkErr, fs.ErrNotExist), ShouldBeTrue)
 				}
 
-				So(hasIssue(issues, engine.SeverityError, "is quarantined"), ShouldBeTrue)
-				So(hasIssue(issues, engine.SeverityError, "broken symlink"), ShouldBeFalse)
+				Convey("And removing the cache keeps it retired, never stubbed", func() {
+					So(os.RemoveAll(plugin), ShouldBeNil)
+
+					report = f.sync(t)
+
+					issues, err := f.engine.Doctor(t.Context())
+					So(err, ShouldBeNil)
+
+					So(report.Farm, ShouldBeEmpty)
+
+					for _, dir := range []string{claudeSkillsDir(f.home), openCodeSkillsDir(f.home)} {
+						_, linkErr := os.Lstat(filepath.Join(dir, "alpha"))
+						So(errors.Is(linkErr, fs.ErrNotExist), ShouldBeTrue)
+					}
+
+					So(hasIssue(issues, engine.SeverityError, "is quarantined"), ShouldBeFalse)
+					So(hasIssue(issues, engine.SeverityError, "broken symlink"), ShouldBeFalse)
+					So(hasIssue(issues, engine.SeverityInfo, "was removed from its host registry"), ShouldBeTrue)
+				})
 			})
 		})
 	})

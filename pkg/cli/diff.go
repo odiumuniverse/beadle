@@ -52,29 +52,11 @@ func (a *app) newDiffCmd() *cobra.Command {
 }
 
 func printDiff(w io.Writer, report *engine.Report, agentID string) {
-	empty := printReportErrors(w, report)
+	printed := printReportErrors(w, report)
 
 	for _, kr := range report.Kinds {
-		for _, change := range kr.Pulled {
-			if agentID != "" && change.Agent != agentID {
-				continue
-			}
-
-			empty = false
-
-			fmt.Fprintf(w, "%s: %s changed %s%s (goes into the vault on sync)\n", kr.Kind, change.Agent, opSymbol(change.Op), change.Key)
-		}
-
-		for _, result := range kr.Agents {
-			if agentID != "" && result.Agent != agentID {
-				continue
-			}
-
-			for _, change := range result.Changes {
-				empty = false
-
-				printItemDiff(w, kr.Kind, result.Agent, change)
-			}
+		if printKindDiff(w, kr, agentID) {
+			printed = true
 		}
 	}
 
@@ -83,14 +65,52 @@ func printDiff(w io.Writer, report *engine.Report, agentID string) {
 			continue
 		}
 
-		empty = false
+		printed = true
 
 		fmt.Fprintf(w, "%s: conflict %s on %s with %s (%s): beadle conflicts %s\n", c.Kind, c.ID(), c.TargetKey(), c.Agent, c.Reason, c.ID())
 	}
 
-	if empty {
+	if !printed {
 		fmt.Fprintln(w, "no differences")
 	}
+}
+
+// printKindDiff renders one kind's pending changes and reports whether it
+// printed anything. A surface a sync will not write (a missing config file the
+// host never initializes) is marked instead of shown as pending: its item diff
+// is empty.
+func printKindDiff(w io.Writer, kr engine.KindReport, agentID string) bool {
+	printed := false
+
+	for _, change := range kr.Pulled {
+		if agentID != "" && change.Agent != agentID {
+			continue
+		}
+
+		printed = true
+
+		fmt.Fprintf(w, "%s: %s changed %s%s (goes into the vault on sync)\n", kr.Kind, change.Agent, opSymbol(change.Op), change.Key)
+	}
+
+	for _, result := range kr.Agents {
+		if agentID != "" && result.Agent != agentID {
+			continue
+		}
+
+		for _, change := range result.Changes {
+			printed = true
+
+			printItemDiff(w, kr.Kind, result.Agent, change)
+		}
+
+		if result.Action == engine.ActionSkipped && result.Note != "" {
+			printed = true
+
+			fmt.Fprintf(w, "%s: %s skipped: %s\n", kr.Kind, result.Agent, result.Note)
+		}
+	}
+
+	return printed
 }
 
 func printReportErrors(w io.Writer, report *engine.Report) bool {

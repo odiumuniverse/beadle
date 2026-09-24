@@ -235,13 +235,12 @@ func TestPluginPinMCPRoot(t *testing.T) {
 
 		f.sync(t)
 
-		claude := hostMCPServers(t, f.claudeConfig(), "mcpServers")
 		openCode := hostMCPServers(t, f.openCodeConfig(), "mcp")
 
 		Convey("When the MCP root is rendered per agent", func() {
-			Convey("Then each agent resolves against its own pivot", func() {
-				So(claude["plug"]["command"], ShouldEqual, filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current", "bin", "plug"))
+			Convey("Then the pin resolves against its own pivot and the source host reads natively", func() {
 				So(openCode["plug"]["command"], ShouldResemble, []any{filepath.Join(f.vault.PluginsDir(), "acme", "tool", "at-1.0.0", "bin", "plug"), "serve"})
+				So(hostMCPServers(t, f.claudeConfig(), "mcpServers"), ShouldNotContainKey, "plug")
 			})
 		})
 	})

@@ -545,7 +545,7 @@ func TestBundlesEnableSkipsSecretServerAndKeepsHost(t *testing.T) {
 		Convey("When the verified bundle is enabled", func() {
 			Convey("Then the secret server keeps its host copy instead of entering the bundle", func() {
 				So(report.Bundles[0].Withdrawn, ShouldNotContain, "mcp api")
-				So(containsWarning(report.Notes, "mcp api carries secrets; delivered via the host config, not the bundle"), ShouldBeTrue)
+				So(containsWarning(report.Notes, "mcp api carries secrets; delivered via the host config, not the claude bundle"), ShouldBeTrue)
 				So(containsWarning(report.Warnings, "unresolved secrets"), ShouldBeFalse)
 
 				cfg := read(t, f.claudeConfig())
@@ -646,7 +646,7 @@ func TestBundlesSkipSecretBearingServers(t *testing.T) {
 				So(bundleMCP, ShouldNotContainSubstring, "secret")
 				So(bundleMCP, ShouldNotContainSubstring, "tok-live-123")
 
-				So(containsWarning(report.Notes, "mcp secret carries secrets; delivered via the host config, not the bundle"), ShouldBeTrue)
+				So(containsWarning(report.Notes, "mcp secret carries secrets; delivered via the host config, not the claude bundle"), ShouldBeTrue)
 			})
 
 			Convey("And the host config keeps it with the resolved value", func() {
@@ -662,12 +662,12 @@ func TestBundlesSkipSecretBearingServers(t *testing.T) {
 				issues, err := f.engine.Doctor(t.Context())
 				So(err, ShouldBeNil)
 				So(hasIssue(issues, engine.SeverityError, "claude plugin validate failed"), ShouldBeFalse)
-				So(hasIssue(issues, engine.SeverityInfo, "mcp secret carries secrets; delivered via the host config, not the bundle"), ShouldBeTrue)
+				So(hasIssue(issues, engine.SeverityInfo, "mcp secret carries secrets; delivered via the host config, not the claude bundle"), ShouldBeTrue)
 
 				infos := 0
 
 				for _, issue := range issues {
-					if strings.Contains(issue.Message, "mcp secret carries secrets; delivered via the host config, not the bundle") {
+					if strings.Contains(issue.Message, "mcp secret carries secrets; delivered via the host config, not the claude bundle") {
 						infos++
 					}
 				}
@@ -1583,7 +1583,7 @@ func TestBundlesGeminiSkipsSecretServer(t *testing.T) {
 				So(doc.MCPServers, ShouldHaveLength, 1)
 				So(doc.MCPServers, ShouldContainKey, "plain")
 
-				So(containsWarning(report.Notes, "mcp secret carries secrets; delivered via the host config, not the bundle"), ShouldBeTrue)
+				So(containsWarning(report.Notes, "mcp secret carries secrets; delivered via the host config, not the gemini bundle"), ShouldBeTrue)
 
 				Convey("And the host MCP surface keeps the resolved value", func() {
 					settings := hostMCPServers(t, filepath.Join(f.home, ".gemini", "settings.json"), "mcpServers")

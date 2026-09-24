@@ -8,18 +8,20 @@ import (
 )
 
 // farmCommandSpec presents plugin-sourced commands to the hosts whose command
-// directories take files. Claude Code reads plugin commands natively, and the
-// Codex prompt surface is pull-only, so both are left alone. A Claude plugin
-// may still package TOML commands for Gemini (cross-host packages ship both):
-// those lift through the same codec as a Gemini extension's commands.
+// directories take files. Claude Code reads its own plugins' commands natively
+// (another host's plugin has no native path there), and the Codex prompt
+// surface is pull-only for every source, so both are skipped selectively. A
+// Claude plugin may still package TOML commands for Gemini (cross-host
+// packages ship both): those lift through the same codec as a Gemini
+// extension's commands.
 var farmCommandSpec = farmFileSpec{
 	Kind:      kind.Commands,
 	DirName:   farmCommandsDirName,
 	Label:     "command",
 	Artifacts: farmCommandsDirName,
-	Skip: map[string]bool{
-		agent.ClaudeCodeID: true,
-		agent.CodexID:      true,
+	Skip: map[string][]string{
+		agent.ClaudeCodeID: {plugin.SourceClaudeCode},
+		agent.CodexID:      nil,
 	},
 	ValidName: command.ValidName,
 	SourceExts: map[string][]string{

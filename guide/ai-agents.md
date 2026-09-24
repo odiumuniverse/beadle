@@ -40,9 +40,12 @@ agent both changed the same item it records a **conflict** instead of guessing.
   `beadle bundles disable <host>`, `beadle project disable <file>`.
 - **Hooks run only after a personal approve.** Plugin command hooks are scanned
   and reported as `doctor` Info; nothing is written until the human runs
-  `beadle hooks approve --plugin <origin>/<name>`. The Claude bundle is
-  excluded (Claude runs its own plugin hooks natively); non-command hooks are
-  skipped with a warning. beadle never executes hooks itself.
+  `beadle hooks approve --plugin <origin>/<name>`. The plugin's own host runs
+  its hooks natively, so beadle skips that host's channel and delivers the
+  hook to the others — the Claude bundle gets non-Claude plugins' hooks, while
+  Claude plugins' hooks reach the Cursor/Codex files and the Gemini/Antigravity
+  bundles; non-command hooks are skipped with a warning. beadle never executes
+  hooks itself.
 - **User-level `.claude/rules/` is not managed** (project `.claude/rules/*.md`
   is, when enabled): `doctor` reports it as Info.
 - **DeepSeek Harness:** permissions, subagents and slash commands are a
@@ -61,7 +64,8 @@ to the active hosts: install it in one and it reaches the others. Skills,
 subagents and commands use the farm; MCP servers go through the MCP kind; hooks
 wait for a personal approve. The same plugin installed in two hosts is
 presented once — the first host wins with a note — and copies that differ are
-reported instead of hidden.
+reported instead of hidden; the host whose copy lost the pick keeps its native
+copy and receives nothing from the winner either.
 
 Sources: `~/.claude/plugins` (registry + marketplaces), `~/.codex/plugins/cache`
 plus the personal marketplace `~/.agents/plugins/marketplace.json`,
@@ -72,10 +76,10 @@ plus the personal marketplace `~/.agents/plugins/marketplace.json`,
 | Plugin artifact | Where it lands |
 |---|---|
 | `skills/` | farm link in **every active host's skills directory** (Claude included, next to its native plugin copy); the plugin's own skill name is kept |
-| `agents/` | farm link for the md hosts (OpenCode, Cursor, Kilo, Gemini, Antigravity) as `<plugin>--<name>.md`; Codex gets a rendered TOML in the farm zone; Claude reads them natively, Pi has no subagents |
-| `commands/` | farm link for the md hosts with a commands surface (OpenCode, Kilo, Pi) as `<plugin>--<name>.md`; Gemini gets a rendered TOML; Claude reads them natively; Codex is skipped (`prompts` is pull-only) |
-| MCP servers (`.mcp.json`, portable `mcp.json`, `mcp_config.json`, Gemini's inline `mcpServers`) | presented through the MCP kind (plan from the ledger); servers keep their names and each host's plugin-root placeholder resolves to the pivot |
-| hooks | `doctor` Info only; after `beadle hooks approve --plugin <origin>/<name>` they render into the Gemini and Antigravity bundles and the `~/.cursor/hooks.json` / `~/.codex/hooks.json` files; the Claude bundle is excluded (Claude runs its own plugin hooks natively) |
+| `agents/` | farm link for the md hosts (Claude, OpenCode, Cursor, Kilo, Gemini, Antigravity) as `<plugin>--<name>.md`; Codex gets a rendered TOML in the farm zone; the source host reads its own plugin's agents natively (no duplicate), Pi has no subagents |
+| `commands/` | farm link for the md hosts with a commands surface (Claude, OpenCode, Kilo, Pi) as `<plugin>--<name>.md`; Gemini gets a rendered TOML; the source host reads its own plugin's commands natively; Codex is skipped (`prompts` is pull-only) |
+| MCP servers (`.mcp.json`, portable `mcp.json`, `mcp_config.json`, Gemini's inline `mcpServers`) | presented through the MCP kind (plan from the ledger) to every host **except the source host**, which reads its own plugin's servers natively; servers keep their names and each host's plugin-root placeholder resolves to the pivot |
+| hooks | `doctor` Info only; after `beadle hooks approve --plugin <origin>/<name>` they render into the Gemini and Antigravity bundles and the `~/.cursor/hooks.json` / `~/.codex/hooks.json` files, and — for non-Claude plugins — the Claude bundle (the plugin's own host runs its hooks natively, so that one channel is skipped) |
 
 Rules: a name the **canon already owns wins** — the plugin artifact is skipped
 with a warning. Between plugins the first key wins (warn). The

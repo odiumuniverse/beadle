@@ -260,6 +260,7 @@ func TestPiNonCreatableMCP(t *testing.T) {
 				So(result.Action, ShouldEqual, engine.ActionSkipped)
 				So(result.Note, ShouldContainSubstring, "no config file to write into")
 				So(result.Note, ShouldContainSubstring, piMCPPath(f))
+				So(result.Changes, ShouldBeEmpty)
 				So(read(t, f.vault.ServersPath()), ShouldEqual, canon)
 				So(fsutil.Exists(piMCPPath(f)), ShouldBeFalse)
 			})

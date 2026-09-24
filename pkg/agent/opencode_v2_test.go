@@ -545,6 +545,66 @@ func TestOpenCodeV2DetectionGuards(t *testing.T) {
 	})
 }
 
+func TestOpenCodePermissionsFollowMCPDialect(t *testing.T) {
+	Convey("Given a V1 config with top-level mcp servers", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		home := t.TempDir()
+		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
+		writeFile(t, path, `{"mcp":{"a":{"type":"local","command":["a-mcp"]}}}`)
+
+		Convey("When permissions and a server are written", func() {
+			So(openCodeSurface(t, home, kind.Permissions).Write(t.Context(), kind.Items{"tool:read": []byte("allow")}), ShouldBeNil)
+			So(openCodeSurface(t, home, kind.MCP).Write(t.Context(), kind.Items{"b": mcp.Encode(mcp.Server{Transport: mcp.TransportStdio, Command: []string{"b-mcp"}})}), ShouldBeNil)
+
+			Convey("Then both stay in the V1 dialect: no V2 array in a V1 file", func() {
+				doc := jsonDoc(t, readFile(t, path))
+				So(jsonMap(t, doc, "permission")["read"], ShouldEqual, "allow")
+				So(doc, ShouldNotContainKey, "permissions")
+				So(jsonMap(t, doc, "mcp"), ShouldContainKey, "b")
+				So(jsonMap(t, doc, "mcp"), ShouldNotContainKey, "servers")
+			})
+		})
+	})
+
+	Convey("Given an empty v1 mcp object", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		home := t.TempDir()
+		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
+		writeFile(t, path, `{"mcp":{}}`)
+
+		Convey("When permissions are written", func() {
+			So(openCodeSurface(t, home, kind.Permissions).Write(t.Context(), kind.Items{"tool:read": []byte("allow")}), ShouldBeNil)
+
+			Convey("Then they use the V1 object, not the V2 array", func() {
+				doc := jsonDoc(t, readFile(t, path))
+				So(jsonMap(t, doc, "permission")["read"], ShouldEqual, "allow")
+				So(doc, ShouldNotContainKey, "permissions")
+			})
+		})
+	})
+
+	Convey("Given a V2 mcp container", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		home := t.TempDir()
+		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
+		writeFile(t, path, `{"mcp":{"servers":{}}}`)
+
+		Convey("When permissions are written", func() {
+			So(openCodeSurface(t, home, kind.Permissions).Write(t.Context(), kind.Items{"tool:read": []byte("allow")}), ShouldBeNil)
+
+			Convey("Then they use the V2 array, not the V1 object", func() {
+				doc := jsonDoc(t, readFile(t, path))
+				So(doc, ShouldContainKey, "permissions")
+				So(jsonList(t, doc, "permissions"), ShouldHaveLength, 1)
+				So(doc, ShouldNotContainKey, "permission")
+			})
+		})
+	})
+}
+
 func TestOpenCodeDialectDefaultsPerKind(t *testing.T) {
 	Convey("Given an empty v1 mcp object", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")

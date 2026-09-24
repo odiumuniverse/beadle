@@ -23,6 +23,7 @@ import (
 
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/mcp"
+	"github.com/odiumuniverse/beadle/pkg/secret"
 	"github.com/odiumuniverse/beadle/pkg/skill"
 )
 
@@ -198,9 +199,10 @@ type mcpDocument struct {
 
 func renderServers(pkg *Package, servers mcp.Servers) error {
 	rendered := map[string]any{}
+	announced := map[string]bool{}
 
 	for _, name := range slices.Sorted(maps.Keys(servers)) {
-		entry, warnings, ok := renderServer(name, servers[name])
+		entry, warnings, ok := renderServer(name, servers[name], announced)
 
 		pkg.Warnings = append(pkg.Warnings, warnings...)
 
@@ -228,48 +230,140 @@ func renderServers(pkg *Package, servers mcp.Servers) error {
 	return nil
 }
 
+// serverRenderer renders one kind of server (remote or stdio) into the closed
+// union.
+type serverRenderer func(name string, server mcp.Server, secrets map[string]string) (map[string]any, []string, bool)
+
 // renderServer renders one canonical server into the closed union. The second
-// result carries the skip warning, the third reports whether the server
-// rendered at all.
-func renderServer(name string, server mcp.Server) (map[string]any, []string, bool) {
+// result carries the warnings (skip, converted secret and client-managed
+// ones), the third reports whether the server rendered at all.
+func renderServer(name string, server mcp.Server, announced map[string]bool) (map[string]any, []string, bool) {
+	server, secrets := portableServer(server)
+
+	render, skip := pickServerRenderer(name, server)
+	if skip != "" {
+		return nil, []string{skip}, false
+	}
+
+	entry, warnings, ok := render(name, server, secrets)
+	if ok {
+		warnings = append(warnings, announceSecrets(secrets, announced)...)
+	}
+
+	return entry, warnings, ok
+}
+
+// pickServerRenderer reports which renderer one server needs; a non-empty skip
+// message means the server is not part of the Agent Plugins v1 union.
+func pickServerRenderer(name string, server mcp.Server) (serverRenderer, string) {
+	if skip := serverShapeSkip(name, server); skip != "" {
+		return nil, skip
+	}
+
+	values := append(slices.Clone(server.Command), envValues(server.Env)...)
+	if slices.ContainsFunc(values, escapesRoot) {
+		return nil, fmt.Sprintf("mcp %s is skipped: a %s or relative reference escapes the package root", name, pluginRootVar)
+	}
+
+	switch {
+	case server.URL != "":
+		return renderRemoteServer, ""
+	case server.Transport == mcp.TransportHTTP || server.Transport == mcp.TransportSSE:
+		return nil, fmt.Sprintf("mcp %s is skipped: the %s transport carries no url", name, server.Transport)
+	default:
+		return renderStdioServer, ""
+	}
+}
+
+// serverShapeSkip reports whether the transport, url and command combination
+// is outside the closed union; an empty string means the shape is valid.
+func serverShapeSkip(name string, server mcp.Server) string {
 	hasURL := server.URL != ""
 	hasCommand := len(server.Command) > 0
 
 	switch server.Transport {
 	case "", mcp.TransportStdio, mcp.TransportHTTP, mcp.TransportSSE:
 	default:
-		return nil, []string{fmt.Sprintf("mcp %s is skipped: transport %s is not part of the Agent Plugins v1 union", name, server.Transport)}, false
+		return fmt.Sprintf("mcp %s is skipped: transport %s is not part of the Agent Plugins v1 union", name, server.Transport)
 	}
 
-	if hasURL && hasCommand {
-		return nil, []string{fmt.Sprintf("mcp %s is skipped: the server carries both a command and a url", name)}, false
+	switch {
+	case hasURL && hasCommand:
+		return fmt.Sprintf("mcp %s is skipped: the server carries both a command and a url", name)
+	case hasURL && server.Transport == mcp.TransportStdio:
+		return fmt.Sprintf("mcp %s is skipped: the stdio transport carries a url", name)
+	case !hasURL && !hasCommand:
+		return fmt.Sprintf("mcp %s is skipped: the server has no command", name)
+	default:
+		return ""
 	}
-
-	if hasURL && server.Transport == mcp.TransportStdio {
-		return nil, []string{fmt.Sprintf("mcp %s is skipped: the stdio transport carries a url", name)}, false
-	}
-
-	if !hasURL && !hasCommand {
-		return nil, []string{fmt.Sprintf("mcp %s is skipped: the server has no command", name)}, false
-	}
-
-	values := append(slices.Clone(server.Command), envValues(server.Env)...)
-	if slices.ContainsFunc(values, escapesRoot) {
-		return nil, []string{fmt.Sprintf("mcp %s is skipped: a %s or relative reference escapes the package root", name, pluginRootVar)}, false
-	}
-
-	if hasURL {
-		return renderRemoteServer(name, server)
-	}
-
-	if server.Transport == mcp.TransportHTTP || server.Transport == mcp.TransportSSE {
-		return nil, []string{fmt.Sprintf("mcp %s is skipped: the %s transport carries no url", name, server.Transport)}, false
-	}
-
-	return renderStdioServer(name, server)
 }
 
-func renderRemoteServer(name string, server mcp.Server) (map[string]any, []string, bool) {
+// portableServer rewrites the whole-value canon {secret:NAME} references of one
+// server into the portable ${NAME} form an installing client expands itself and
+// returns the placeholder names by their reference. Other values pass through:
+// the canon keeps references whole, so a nested "{secret:…}" is ordinary text.
+func portableServer(server mcp.Server) (mcp.Server, map[string]string) {
+	secrets := map[string]string{}
+
+	convert := func(value string) string {
+		name, ok := secret.ParseRef(value)
+		if !ok {
+			return value
+		}
+
+		ref := "${" + name + "}"
+		secrets[ref] = name
+
+		return ref
+	}
+
+	converted := server
+	converted.URL = convert(server.URL)
+	converted.Command = make([]string, len(server.Command))
+
+	for i, arg := range server.Command {
+		converted.Command[i] = convert(arg)
+	}
+
+	converted.Env = make(map[string]string, len(server.Env))
+
+	for key, value := range server.Env {
+		converted.Env[key] = convert(value)
+	}
+
+	converted.Headers = make(map[string]string, len(server.Headers))
+
+	for key, value := range server.Headers {
+		converted.Headers[key] = convert(value)
+	}
+
+	if len(secrets) == 0 {
+		return server, nil
+	}
+
+	return converted, secrets
+}
+
+// announceSecrets reports each converted reference once per package: the
+// secret placeholder replaces the client-managed warning for the same value.
+func announceSecrets(secrets map[string]string, announced map[string]bool) []string {
+	var warnings []string
+
+	for _, ref := range slices.Sorted(maps.Keys(secrets)) {
+		if announced[ref] {
+			continue
+		}
+
+		announced[ref] = true
+
+		warnings = append(warnings, fmt.Sprintf("secret %s is exported as %s; the installing host supplies the value", secrets[ref], ref))
+	}
+
+	return warnings
+}
+
+func renderRemoteServer(name string, server mcp.Server, secrets map[string]string) (map[string]any, []string, bool) {
 	if !validRemoteURL(server.URL) {
 		return nil, []string{fmt.Sprintf(
 			"mcp %s is skipped: the url %q must be https without user-info or a fragment (http is allowed on loopback only)", name, server.URL)}, false
@@ -282,20 +376,20 @@ func renderRemoteServer(name string, server mcp.Server) (map[string]any, []strin
 
 	entry := map[string]any{"type": transport, "url": server.URL}
 
-	warnings := clientManagedWarnings(name, "url", []string{server.URL}, false)
+	warnings := clientManagedWarnings(name, "url", []string{server.URL}, false, secrets)
 
 	if len(server.Headers) > 0 {
 		entry["headers"] = server.Headers
 	}
 
 	for _, key := range slices.Sorted(maps.Keys(server.Headers)) {
-		warnings = append(warnings, clientManagedWarnings(name, "headers "+key, []string{server.Headers[key]}, false)...)
+		warnings = append(warnings, clientManagedWarnings(name, "headers "+key, []string{server.Headers[key]}, false, secrets)...)
 	}
 
 	return entry, warnings, true
 }
 
-func renderStdioServer(name string, server mcp.Server) (map[string]any, []string, bool) {
+func renderStdioServer(name string, server mcp.Server, secrets map[string]string) (map[string]any, []string, bool) {
 	command := server.Command[0]
 
 	if !portableCommand(command) {
@@ -310,7 +404,7 @@ func renderStdioServer(name string, server mcp.Server) (map[string]any, []string
 		entry["args"] = server.Command[1:]
 
 		for i, arg := range server.Command[1:] {
-			warnings = append(warnings, clientManagedWarnings(name, fmt.Sprintf("args [%d]", i), []string{arg}, true)...)
+			warnings = append(warnings, clientManagedWarnings(name, fmt.Sprintf("args [%d]", i), []string{arg}, true, secrets)...)
 		}
 	}
 
@@ -319,7 +413,7 @@ func renderStdioServer(name string, server mcp.Server) (map[string]any, []string
 	}
 
 	for _, key := range slices.Sorted(maps.Keys(server.Env)) {
-		warnings = append(warnings, clientManagedWarnings(name, "env "+key, []string{server.Env[key]}, true)...)
+		warnings = append(warnings, clientManagedWarnings(name, "env "+key, []string{server.Env[key]}, true, secrets)...)
 	}
 
 	return entry, warnings, true
@@ -387,13 +481,18 @@ func validRemoteURL(raw string) bool {
 // clientManagedWarnings reports the ${VAR} references a client will not expand.
 // The spec defines ${PLUGIN_ROOT}/${PLUGIN_DATA} for args, env and cwd only:
 // with expandable false — and for every other name — the reference stays a
-// literal and the client manages that authentication itself.
-func clientManagedWarnings(name, label string, values []string, expandable bool) []string {
+// literal and the client manages that authentication itself. A reference that
+// came from a canon {secret:NAME} is skipped: its own warning already named it.
+func clientManagedWarnings(name, label string, values []string, expandable bool, secrets map[string]string) []string {
 	var warnings []string
 
 	for _, value := range values {
 		for _, ref := range placeholderRefs(value) {
 			if expandable && (ref == pluginRootVar || ref == pluginDataVar) {
+				continue
+			}
+
+			if _, secret := secrets[ref]; secret {
 				continue
 			}
 

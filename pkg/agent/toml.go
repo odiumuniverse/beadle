@@ -100,7 +100,7 @@ func (s *tomlMCPSurface) rewrite(data []byte, desired kind.Items) ([]byte, bool,
 			return nil, false, nil
 		}
 
-		return appendTOMLBlocks(data, joinBlocks(renders, order), eol), true, nil
+		return appendTOMLBlocks(data, joinBlocks(renders, order, eol), eol), true, nil
 	}
 
 	ix := newTOMLIndex(data)
@@ -118,7 +118,7 @@ func (s *tomlMCPSurface) rewrite(data []byte, desired kind.Items) ([]byte, bool,
 	}
 
 	if len(inserts) > 0 {
-		out = appendTOMLBlocks(out, joinBlocks(renders, inserts), eol)
+		out = appendTOMLBlocks(out, joinBlocks(renders, inserts, eol), eol)
 	}
 
 	if !changed {
@@ -566,6 +566,11 @@ func (ix tomlLineIndex) line(n int) string {
 	return string(ix.data[start:end])
 }
 
+// renderServerBlock renders one [mcp_servers.<name>] table in the canonical
+// form: keys at the top level of the table, sorted, no indentation. The block
+// carries no trailing blank line — the splice keeps whatever separated the
+// table before, and the append path inserts the separator, so a rewrite
+// touches only the table's own lines.
 func renderServerBlock(name string, entry map[string]any, eol string) ([]byte, error) {
 	var b strings.Builder
 
@@ -582,28 +587,34 @@ func renderServerBlock(name string, entry map[string]any, eol string) ([]byte, e
 			return nil, fmt.Errorf("server %s: key %s: %w", name, key, err)
 		}
 
-		b.WriteString("  ")
 		b.WriteString(tomlKey(key))
 		b.WriteString(" = ")
 		b.WriteString(value)
 		b.WriteString(eol)
 	}
 
-	b.WriteString(eol)
-
 	return []byte(b.String()), nil
 }
 
-func joinBlocks(renders map[string][]byte, names []string) []byte {
+// joinBlocks renders the named blocks in order, one blank line apart.
+func joinBlocks(renders map[string][]byte, names []string, eol string) []byte {
 	var out []byte
 
-	for _, name := range names {
+	for i, name := range names {
+		if i > 0 {
+			out = append(out, eol...)
+		}
+
 		out = append(out, renders[name]...)
 	}
 
 	return out
 }
 
+// appendTOMLBlocks appends rendered tables to the file: the last existing line
+// is terminated and exactly one blank line separates it from the new table, so
+// a grown config reads like a hand-written one. An empty file gets no leading
+// blank line.
 func appendTOMLBlocks(data, blocks []byte, eol string) []byte {
 	if len(blocks) == 0 {
 		return data
@@ -611,11 +622,31 @@ func appendTOMLBlocks(data, blocks []byte, eol string) []byte {
 
 	out := append([]byte{}, data...)
 
-	if len(out) > 0 && out[len(out)-1] != '\n' {
+	if len(out) == 0 {
+		return append(out, blocks...)
+	}
+
+	if out[len(out)-1] != '\n' {
+		out = append(out, eol...)
+	}
+
+	if !endsWithBlankLine(out, eol) {
 		out = append(out, eol...)
 	}
 
 	return append(out, blocks...)
+}
+
+// endsWithBlankLine reports whether the buffer ends with an empty line, so the
+// separator is not doubled.
+func endsWithBlankLine(data []byte, eol string) bool {
+	for _, blank := range []string{"\n\n", "\n\r\n", "\r\n\n", eol + eol} {
+		if bytes.HasSuffix(data, []byte(blank)) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func tomlEOL(data []byte) string {

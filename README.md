@@ -270,7 +270,8 @@ Plugin caches are skipped; symlinked skills are read but never overwritten;
 plugin skills are farmed through a stable pivot so upgrades do not break
 links. Plugin agents and commands are farmed the same way (`<plugin>--<name>.md`
 for markdown hosts, a rendered TOML copy for Codex agents and Gemini commands;
-Claude reads plugin agents and commands natively, Codex prompts are pull-only).
+a host reads its own plugins' agents and commands natively — another host's
+plugin reaches it as a farmed file, and Codex prompts are pull-only).
 Plugins are read from every host with file-based plugins — Claude Code, Codex, Gemini CLI
 extensions, Antigravity and Cursor — and what one installs reaches the others:
 a plugin put into Codex shows up for Claude, OpenCode, Gemini and Cursor, and
@@ -335,7 +336,10 @@ secrets are kept as references, never expanded: a reference in `url` or
 `headers` always draws a warning (those fields are never interpolated), and in
 `args`/`env` any placeholder other than `${PLUGIN_ROOT}`/`${PLUGIN_DATA}` does —
 portable clients do not expand it, so that authentication stays the client's
-own. The render is deterministic and idempotent; a re-export removes the
+own. A canon `{secret:NAME}` reference is exported as the portable `${NAME}`
+and announced once (the installing host supplies the value); only whole-value
+references are recognized, so a `{secret:…}` nested inside a larger string
+stays ordinary text. The render is deterministic and idempotent; a re-export removes the
 manifest, `mcp.json` and the `SKILL.md` of any skill that is no longer rendered
 (a directory is removed only when that left it empty) — beadle cannot tell a
 foreign skill directory from its own previous render, so a leftover directory

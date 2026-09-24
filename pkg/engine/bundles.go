@@ -707,7 +707,7 @@ func (e *Engine) bundleRequest(host bundle.Host) (bundle.Request, []string, []st
 
 		items, skipped := splitSecretBearingServers(items)
 		for _, name := range skipped {
-			notes = append(notes, fmt.Sprintf("mcp %s carries secrets; delivered via the host config, not the bundle", name))
+			notes = append(notes, fmt.Sprintf("mcp %s carries secrets; delivered via the host config, not the %s bundle", name, host))
 		}
 
 		resolved, _, err := e.outbound(kind.MCP, items)
@@ -1093,29 +1093,7 @@ func (e *Engine) bundleIssues(ctx context.Context) []Issue {
 
 	issues = append(issues, e.validateActiveClaudeBundle(st)...)
 
-	return dedupSecretNotes(issues)
-}
-
-// dedupSecretNotes keeps one Info per secret-bearing server: every bundle host
-// reports the same canon server.
-func dedupSecretNotes(issues []Issue) []Issue {
-	seen := map[string]bool{}
-
-	out := make([]Issue, 0, len(issues))
-
-	for _, issue := range issues {
-		if strings.Contains(issue.Message, "carries secrets; delivered via the host config, not the bundle") {
-			if seen[issue.Message] {
-				continue
-			}
-
-			seen[issue.Message] = true
-		}
-
-		out = append(out, issue)
-	}
-
-	return out
+	return issues
 }
 
 func (e *Engine) bundleHostStateIssues(ctx context.Context, st *state.State, host bundle.Host, hostName string, entry state.BundleState, exists bool) []Issue {

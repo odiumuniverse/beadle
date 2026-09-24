@@ -66,7 +66,7 @@ func TestTOMLConfigMissingAndEmpty(t *testing.T) {
 				back := snapshot(t, agent.Codex(home, home), kind.MCP)
 
 				Convey("Then the file is created and the server round-trips", func() {
-					So(readFile(t, path), ShouldEqual, "[mcp_servers.srv]\n  command = \"run\"\n  env = { K = \"V\" }\n\n")
+					So(readFile(t, path), ShouldEqual, "[mcp_servers.srv]\ncommand = \"run\"\nenv = { K = \"V\" }\n")
 					So(back.Items, ShouldHaveLength, 1)
 					So(server(t, back.Items["srv"]).Command, ShouldResemble, []string{"run"})
 				})
@@ -132,6 +132,52 @@ func TestTOMLWriteDeleteKeepsForeign(t *testing.T) {
 				So(out, ShouldContainSubstring, "# codex config, do not edit")
 				So(out, ShouldContainSubstring, "# unrelated section")
 				So(out, ShouldContainSubstring, "timeout = 30")
+			})
+		})
+	})
+}
+
+func TestTOMLWriteMinimalDiff(t *testing.T) {
+	Convey("Given a canonically formatted Codex config", t, func() {
+		home := t.TempDir()
+		path := codexMCPFile(home)
+		writeFile(t, path, codexConfigFixture)
+
+		Convey("When the owned server changes", func() {
+			So(codexSurface(t, home).Write(t.Context(), kind.Items{"owned": stdioServer("new", "--flag")}), ShouldBeNil)
+
+			Convey("Then only that table's lines change: the rest is byte-identical", func() {
+				So(readFile(t, path), ShouldEqual,
+					"# codex config, do not edit\n"+
+						"model = \"gpt-5\"        # chosen model\n"+
+						"approval_policy = \"on-request\"\n"+
+						"\n"+
+						"[mcp_servers.foreign]\n"+
+						"enabled = false        # foreign comment\n"+
+						"tool_timeout_sec = 12\n"+
+						"\n"+
+						"[mcp_servers.owned]\n"+
+						"args = [\"--flag\"]\n"+
+						"command = \"new\"\n"+
+						"enabled_tools = [\"search\"]\n"+
+						"env = { K = \"V\" }\n"+
+						"tool_timeout_sec = 7\n"+
+						"\n"+
+						"[bash]\n"+
+						"timeout = 30           # unrelated section\n")
+			})
+		})
+
+		Convey("When a new server is appended", func() {
+			So(codexSurface(t, home).Write(t.Context(), kind.Items{"owned": stdioServer("old", "serve"), "added": stdioServer("go")}), ShouldBeNil)
+
+			Convey("Then the new table lands after a blank line, unindented", func() {
+				out := readFile(t, path)
+
+				So(out, ShouldContainSubstring, "timeout = 30           # unrelated section\n\n[mcp_servers.added]\ncommand = \"go\"\nenv = { K = \"V\" }\n")
+				So(out, ShouldContainSubstring, "\n\n[mcp_servers.added]")
+				So(out, ShouldNotContainSubstring, "  command")
+				So(out, ShouldNotContainSubstring, "\n\n\n")
 			})
 		})
 	})

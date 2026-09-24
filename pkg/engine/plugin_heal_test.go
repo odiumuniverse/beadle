@@ -27,8 +27,8 @@ func quarantinePlugin(t *testing.T, f *fixture) {
 		t.Fatal("expected two farm results")
 	}
 
-	removeFromRegistry(t, f.home, "acme", "tool")
-
+	// The registry record stays: only the install path is gone, which is the
+	// broken-install case that quarantines (a registry-removed plugin retires).
 	if err := os.RemoveAll(plugin); err != nil {
 		t.Fatalf("remove plugin: %v", err)
 	}
@@ -84,7 +84,12 @@ func TestHealRemovesQuarantine(t *testing.T) {
 
 				So(resultsAgain, ShouldBeEmpty)
 				So(report.Farm, ShouldBeEmpty)
-				So(report.Plugins, ShouldBeEmpty)
+
+				// The host registry still lists the plugin with a missing
+				// path: the healed record stays retired and quiet.
+				So(report.Plugins, ShouldHaveLength, 1)
+				So(report.Plugins[0].Action, ShouldEqual, engine.PluginSkipped)
+				So(report.Plugins[0].Note, ShouldContainSubstring, "retired")
 				So(read(t, f.vault.PluginsLedgerPath()), ShouldEqual, before)
 			})
 		})
@@ -252,7 +257,8 @@ func TestHealKeepsOwnership(t *testing.T) {
 
 		report := f.sync(t)
 		So(report.Kind(kind.MCP).Warnings, ShouldBeEmpty)
-		So(hostMCPServers(t, f.claudeConfig(), "mcpServers"), ShouldContainKey, "plug")
+		So(hostMCPServers(t, f.openCodeConfig(), "mcp"), ShouldContainKey, "plug")
+		So(hostMCPServers(t, f.claudeConfig(), "mcpServers"), ShouldNotContainKey, "plug")
 
 		removeFromRegistry(t, f.home, "acme", "tool")
 		So(os.RemoveAll(plugin), ShouldBeNil)

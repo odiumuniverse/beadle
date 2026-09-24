@@ -120,7 +120,7 @@ func codexManifestHooks(installPath string) (Hooks, []string, error) {
 	}
 
 	if !ok {
-		raw, ok, err = manifestHookField(filepath.Join(installPath, metaDir, metaFile))
+		raw, ok, err = manifestHookField(filepath.Join(installPath, codexMetaDir, metaFile))
 		if err != nil {
 			return nil, nil, err
 		}

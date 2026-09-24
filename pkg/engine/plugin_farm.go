@@ -68,9 +68,20 @@ type farmPlan struct {
 	Owner       map[string]string
 	Desired     map[string]struct{}
 	Canon       map[string]struct{}
+	// LoserHosts maps a plugin key to the source hosts whose own copy lost the
+	// dedup or the same-key source conflict: those hosts read their native
+	// copy and must not receive the winner's presentation.
+	LoserHosts map[string]map[string]bool
 	// SkillDirs maps a plugin key to the plugin-relative directory its skills
 	// live in (a manifest can move them).
 	SkillDirs map[string]string
+}
+
+// loserHost reports whether one host's own copy of a plugin lost the dedup or
+// the same-key source conflict: the host reads its native copy, so the
+// winner's presentation must not reach it too.
+func (p farmPlan) loserHost(agentID, key string) bool {
+	return p.LoserHosts[key][agentID]
 }
 
 func (e *Engine) syncPluginSurfaces(ctx context.Context, report *Report, active []*agent.Agent, opts SyncOptions) {
@@ -207,7 +218,7 @@ func (e *Engine) buildFarmPlan(ledger pluginLedger) (farmPlan, []string) {
 		SkillDirs:   map[string]string{},
 	}
 
-	warns := e.scanLedgerPlan(plan, ledger)
+	warns := e.scanLedgerPlan(&plan, ledger)
 
 	for _, key := range slices.Sorted(maps.Keys(plan.Parked)) {
 		for _, skillName := range plan.Parked[key] {
@@ -241,13 +252,21 @@ func (e *Engine) buildFarmPlan(ledger pluginLedger) (farmPlan, []string) {
 	return plan, warns
 }
 
-func (e *Engine) scanLedgerPlan(plan farmPlan, ledger pluginLedger) []string {
+func (e *Engine) scanLedgerPlan(plan *farmPlan, ledger pluginLedger) []string {
 	var warns []string
 
 	dedup := e.pluginDedup(ledger)
 
+	plan.LoserHosts = dedup.LoserHosts
+
 	for _, key := range slices.Sorted(maps.Keys(ledger.Plugins)) {
 		rec := ledger.Plugins[key]
+
+		// A retired record outranks a leftover quarantine flag: the plugin is
+		// gone from the registry, so nothing is presented any more.
+		if !rec.RetiredAt.IsZero() {
+			continue
+		}
 
 		if !rec.QuarantinedAt.IsZero() {
 			marketplace, name, ok := strings.Cut(key, "/")
@@ -255,10 +274,6 @@ func (e *Engine) scanLedgerPlan(plan farmPlan, ledger pluginLedger) []string {
 				plan.Quarantined[key] = rec
 			}
 
-			continue
-		}
-
-		if !rec.RetiredAt.IsZero() {
 			continue
 		}
 
@@ -488,7 +503,7 @@ func (e *Engine) farmAgentSkills(agentID, dir string, plan farmPlan) ([]FarmResu
 		}
 	}
 
-	stubbed, stubPruned, stubWarns := e.farmStubs(dir, plan)
+	stubbed, stubPruned, stubWarns := e.farmStubs(agentID, dir, plan)
 
 	warns = append(warns, stubWarns...)
 
@@ -497,20 +512,15 @@ func (e *Engine) farmAgentSkills(agentID, dir string, plan farmPlan) ([]FarmResu
 	warned := map[string]bool{}
 
 	for _, skillName := range slices.Sorted(maps.Keys(plan.Desired)) {
-		plugin := plan.Owner[skillName]
+		target, ok, targetWarns := e.desiredSkillTarget(agentID, plan, skillName, warned)
 
-		target, ok := e.agentSkillTargetIn(agentID, plugin, plan.SkillDirs[plugin], skillName)
+		warns = append(warns, targetWarns...)
+
 		if !ok {
-			warns = e.notePinnedMiss(warns, warned, agentID, plugin)
-
 			continue
 		}
 
-		if _, pinned := e.config.PluginPin(agentID, plugin); pinned && !isDir(target) {
-			warns = e.notePinnedSkillMiss(warns, warned, agentID, plugin, skillName)
-
-			continue
-		}
+		plugin := plan.Owner[skillName]
 
 		action, err := e.farmLink(filepath.Join(dir, skillName), target)
 		switch {
@@ -544,6 +554,28 @@ func (e *Engine) farmAgentSkills(agentID, dir string, plan farmPlan) ([]FarmResu
 	return results, warns
 }
 
+// desiredSkillTarget resolves the farm target of one desired skill for one
+// host. A host whose own copy lost the dedup presents nothing; a pinned plugin
+// whose pivot for this host is gone reports its own miss.
+func (e *Engine) desiredSkillTarget(agentID string, plan farmPlan, skillName string, warned map[string]bool) (string, bool, []string) {
+	plugin := plan.Owner[skillName]
+
+	if plan.loserHost(agentID, plugin) {
+		return "", false, nil
+	}
+
+	target, ok := e.agentSkillTargetIn(agentID, plugin, plan.SkillDirs[plugin], skillName)
+	if !ok {
+		return "", false, e.notePinnedMiss(nil, warned, agentID, plugin)
+	}
+
+	if _, pinned := e.config.PluginPin(agentID, plugin); pinned && !isDir(target) {
+		return "", false, e.notePinnedSkillMiss(nil, warned, agentID, plugin, skillName)
+	}
+
+	return target, true, nil
+}
+
 func mergeFarmPruned(pruned, stubPruned map[string]int) map[string]int {
 	if len(stubPruned) == 0 {
 		return pruned
@@ -574,7 +606,7 @@ func farmResults(agentID string, k kind.ID, action FarmAction, counts map[string
 	return results
 }
 
-func (e *Engine) farmStubs(dir string, plan farmPlan) (map[string]int, map[string]int, []string) {
+func (e *Engine) farmStubs(agentID, dir string, plan farmPlan) (map[string]int, map[string]int, []string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -595,7 +627,7 @@ func (e *Engine) farmStubs(dir string, plan farmPlan) (map[string]int, map[strin
 
 		switch {
 		case entry.Type()&fs.ModeSymlink != 0:
-			key, stubWarns := e.stubQuarantinedLink(path, name, plan)
+			key, stubWarns := e.stubQuarantinedLink(agentID, path, name, plan)
 
 			warns = append(warns, stubWarns...)
 
@@ -604,7 +636,7 @@ func (e *Engine) farmStubs(dir string, plan farmPlan) (map[string]int, map[strin
 			}
 		case entry.IsDir():
 			key, ok := skill.IsStubDir(path)
-			if !ok || stubStillNeeded(plan, key, name) {
+			if !ok || stubStillNeeded(plan, agentID, key, name) {
 				continue
 			}
 
@@ -621,7 +653,7 @@ func (e *Engine) farmStubs(dir string, plan farmPlan) (map[string]int, map[strin
 	return stubbed, pruned, warns
 }
 
-func (e *Engine) stubQuarantinedLink(path, name string, plan farmPlan) (string, []string) {
+func (e *Engine) stubQuarantinedLink(agentID, path, name string, plan farmPlan) (string, []string) {
 	link, err := os.Readlink(path)
 	if err != nil || fsutil.Exists(link) {
 		return "", nil
@@ -629,6 +661,12 @@ func (e *Engine) stubQuarantinedLink(path, name string, plan farmPlan) (string, 
 
 	key, skillName, ok := e.farmLinkOwner(link)
 	if !ok || skillName != name {
+		return "", nil
+	}
+
+	// A host whose own copy lost the dedup keeps reading its native plugin:
+	// the winner's quarantined link is pruned, not stubbed.
+	if plan.loserHost(agentID, key) {
 		return "", nil
 	}
 
@@ -660,7 +698,11 @@ func (e *Engine) stubQuarantinedLink(path, name string, plan farmPlan) (string, 
 	return key, nil
 }
 
-func stubStillNeeded(plan farmPlan, key, name string) bool {
+func stubStillNeeded(plan farmPlan, agentID, key, name string) bool {
+	if plan.loserHost(agentID, key) {
+		return false
+	}
+
 	if _, parked := plan.Parked[key]; parked {
 		return false
 	}
@@ -757,6 +799,10 @@ func (e *Engine) pruneFarmLinks(agentID, dir string, plan farmPlan) (map[string]
 }
 
 func (e *Engine) farmPrunable(agentID string, plan farmPlan, plugin, skillName string) bool {
+	if plan.loserHost(agentID, plugin) {
+		return true
+	}
+
 	if _, ok := e.pluginPivotFor(agentID, plugin); !ok {
 		return true
 	}

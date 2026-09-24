@@ -79,8 +79,10 @@ func TestA47CodexPluginFarmsToEveryHost(t *testing.T) {
 				So(farmLink(t, filepath.Join(f.home, ".config", "opencode", "agents"), "tool--helper.md"), ShouldEqual, agentLink)
 				So(farmLink(t, filepath.Join(f.home, ".gemini", "agents"), "tool--helper.md"), ShouldEqual, agentLink)
 				So(farmLink(t, filepath.Join(f.home, ".cursor", "agents"), "tool--helper.md"), ShouldEqual, agentLink)
+				So(farmLink(t, filepath.Join(f.home, ".claude", "agents"), "tool--helper.md"), ShouldEqual, agentLink)
 
 				So(farmLink(t, openCodeCommandsDir(f.home), "tool--deploy.md"), ShouldEqual, pluginFarmLink(f, "acme", "tool", "commands", "deploy.md"))
+				So(farmLink(t, filepath.Join(f.home, ".claude", "commands"), "tool--deploy.md"), ShouldEqual, pluginFarmLink(f, "acme", "tool", "commands", "deploy.md"))
 
 				geminiCommand := filepath.Join(f.home, ".gemini", "commands", "tool--deploy.toml")
 
@@ -88,9 +90,6 @@ func TestA47CodexPluginFarmsToEveryHost(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(link, ShouldContainSubstring, filepath.Join("farm", "acme", "tool", "commands"))
 				So(read(t, geminiCommand), ShouldContainSubstring, "prompt = ")
-
-				_, claudeAgentErr := os.Stat(filepath.Join(f.home, ".claude", "agents", "tool--helper.md"))
-				So(errors.Is(claudeAgentErr, fs.ErrNotExist), ShouldBeTrue)
 			})
 
 			Convey("Then the plugin MCP server reaches every host", func() {
@@ -111,6 +110,161 @@ func TestA47CodexPluginFarmsToEveryHost(t *testing.T) {
 				issues, err := f.engine.Doctor(t.Context())
 				So(err, ShouldBeNil)
 				So(hasIssue(issues, engine.SeverityInfo, "approve with `beadle hooks approve --plugin acme/tool`"), ShouldBeTrue)
+			})
+		})
+	})
+}
+
+func TestA47ClaudeSourceStaysNativeForAgentsAndCommands(t *testing.T) {
+	Convey("Given a Claude plugin with agents and commands", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		dir := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeSkill(t, dir, "alpha", "# alpha\n")
+		writingAgent(t, dir, "helper", "---\nname: helper\ndescription: helps\n---\n\nHelp.\n")
+		writeCommand(t, dir, "deploy", farmCommandDoc)
+
+		report := f.sync(t)
+
+		Convey("When the farm runs", func() {
+			Convey("Then Claude reads its own plugin natively and the other hosts still get the files", func() {
+				agentLink := pluginFarmLink(f, "acme", "tool", "agents", "helper.md")
+				So(farmLink(t, a47OpenCodeAgentsDir(f.home), "tool--helper.md"), ShouldEqual, agentLink)
+				So(farmLink(t, openCodeCommandsDir(f.home), "tool--deploy.md"), ShouldEqual, pluginFarmLink(f, "acme", "tool", "commands", "deploy.md"))
+
+				for _, path := range []string{
+					filepath.Join(f.home, ".claude", "agents", "tool--helper.md"),
+					filepath.Join(f.home, ".claude", "commands", "tool--deploy.md"),
+				} {
+					_, err := os.Lstat(path)
+					So(errors.Is(err, fs.ErrNotExist), ShouldBeTrue)
+				}
+
+				// Claude still receives the plugin's skills next to its native copy.
+				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, pluginFarmLink(f, "acme", "tool", "skills", "alpha"))
+
+				So(report.Errors(), ShouldBeEmpty)
+			})
+		})
+	})
+}
+
+// TestA47DedupWinnerSkipsLoserHost pins the cross-host equality rule for a
+// deduplicated plugin: the host whose own copy lost the dedup reads its native
+// copy and receives nothing from the winner, while every other host does.
+func TestA47DedupWinnerSkipsLoserHost(t *testing.T) {
+	Convey("Given the same plugin installed in Gemini and Codex", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		geminiHome(t, f)
+		enableAgents(t, f, agent.GeminiCLIID, agent.CodexID)
+
+		gemini := geminiExtensionTree(t, f.home, "tool")
+		write(t, filepath.Join(gemini, "gemini-extension.json"),
+			`{"name":"tool","version":"1.0.0","mcpServers":{"srv":{"command":"cmd"}}}`)
+		writeSkill(t, gemini, "alpha", "# alpha\n")
+		writingAgent(t, gemini, "helper", "---\nname: helper\ndescription: helps\n---\n\nHelp.\n")
+
+		codex := codexPluginTree(t, f.home, "acme", "tool", "1.0.0")
+		write(t, filepath.Join(f.home, ".codex", "config.toml"), "")
+		write(t, filepath.Join(codex, "mcp.json"), `{"mcpServers":{"srv":{"command":"cmd"}}}`)
+		writeSkill(t, codex, "alpha", "# alpha\n")
+		writingAgent(t, codex, "helper", "---\nname: helper\ndescription: helps\n---\n\nHelp.\n")
+
+		report := f.sync(t)
+
+		Convey("When the sync runs", func() {
+			Convey("Then the winner reaches every host but the losing one", func() {
+				So(report.Errors(), ShouldBeEmpty)
+
+				// Gemini wins: its copy is presented to the other hosts.
+				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, pluginFarmLink(f, "gemini-cli", "tool", "skills", "alpha"))
+				So(farmLink(t, filepath.Join(f.home, ".claude", "agents"), "tool--helper.md"),
+					ShouldEqual, pluginFarmLink(f, "gemini-cli", "tool", "agents", "helper.md"))
+				So(hostMCPServers(t, f.claudeConfig(), "mcpServers"), ShouldContainKey, "srv")
+
+				// The winner host reads its own extension natively.
+				So(farmLink(t, filepath.Join(f.home, ".gemini", "skills"), "alpha"),
+					ShouldEqual, pluginFarmLink(f, "gemini-cli", "tool", "skills", "alpha"))
+				So(read(t, filepath.Join(f.home, ".gemini", "settings.json")), ShouldNotContainSubstring, "srv")
+
+				// Codex lost the dedup: it keeps its native cache and receives
+				// no farm link, no rendered agent and no MCP server.
+				_, err := os.Stat(codex)
+				So(err, ShouldBeNil)
+
+				_, err = os.Lstat(filepath.Join(f.home, ".codex", "skills", "alpha"))
+				So(errors.Is(err, fs.ErrNotExist), ShouldBeTrue)
+
+				_, err = os.Lstat(filepath.Join(f.home, ".codex", "agents", "tool--helper.toml"))
+				So(errors.Is(err, fs.ErrNotExist), ShouldBeTrue)
+
+				So(read(t, filepath.Join(f.home, ".codex", "config.toml")), ShouldNotContainSubstring, "srv")
+
+				for _, result := range report.Farm {
+					if result.Agent == agent.CodexID {
+						So(result.Plugin, ShouldNotEqual, "gemini-cli/tool")
+					}
+				}
+			})
+		})
+	})
+}
+
+// TestA47SameKeyMergeSkipsOverriddenHost pins the same rule for a key installed
+// in several hosts: the source conflict drops the losing records, and the host
+// they came from must not receive the winner's presentation.
+func TestA47SameKeyMergeSkipsOverriddenHost(t *testing.T) {
+	Convey("Given the same plugin key installed in Claude and Codex", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		enableAgents(t, f, agent.CodexID)
+
+		write(t, filepath.Join(f.home, ".codex", "config.toml"), "")
+
+		claude := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeSkill(t, claude, "alpha", "# alpha\n")
+		writingAgent(t, claude, "helper", "---\nname: helper\ndescription: helps\n---\n\nHelp.\n")
+		writeMCPServers(t, claude, `{"mcpServers":{"srv":{"command":"claude-cmd"}}}`)
+
+		codex := codexPluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeSkill(t, codex, "alpha", "# alpha\n")
+		writingAgent(t, codex, "helper", "---\nname: helper\ndescription: helps\n---\n\nHelp.\n")
+		write(t, filepath.Join(codex, "mcp.json"), `{"mcpServers":{"srv":{"command":"codex-cmd"}}}`)
+
+		report := f.sync(t)
+
+		Convey("When the sync runs", func() {
+			Convey("Then Codex keeps its own copy and receives nothing from the winner", func() {
+				rec := ledgerRecord(t, f, "acme/tool")
+				So(rec.Source, ShouldEqual, plugin.SourceClaudeCode)
+				So(rec.Overridden, ShouldResemble, []string{plugin.SourceCodex})
+
+				_, err := os.Stat(codex)
+				So(err, ShouldBeNil)
+
+				_, err = os.Lstat(filepath.Join(f.home, ".codex", "skills", "alpha"))
+				So(errors.Is(err, fs.ErrNotExist), ShouldBeTrue)
+
+				_, err = os.Lstat(filepath.Join(f.home, ".codex", "agents", "tool--helper.toml"))
+				So(errors.Is(err, fs.ErrNotExist), ShouldBeTrue)
+
+				So(read(t, filepath.Join(f.home, ".codex", "config.toml")), ShouldNotContainSubstring, "srv")
+
+				// The other hosts still receive the winner, and the winner host
+				// reads its own plugin natively.
+				So(farmLink(t, openCodeSkillsDir(f.home), "alpha"), ShouldEqual, pluginFarmLink(f, "acme", "tool", "skills", "alpha"))
+				So(hostMCPServers(t, f.openCodeConfig(), "mcp"), ShouldContainKey, "srv")
+				So(hostMCPServers(t, f.claudeConfig(), "mcpServers"), ShouldNotContainKey, "srv")
+
+				So(report.Errors(), ShouldBeEmpty)
 			})
 		})
 	})
@@ -220,7 +374,14 @@ func TestA47DuplicatePluginPresentedOnce(t *testing.T) {
 
 				want := pluginFarmLink(f, "caveman", "caveman", "skills", "alpha")
 				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, want)
-				So(farmLink(t, filepath.Join(f.home, ".gemini", "skills"), "alpha"), ShouldEqual, want)
+
+				// Gemini lost the dedup: it keeps reading its own extension and
+				// receives nothing from the winner.
+				_, err := os.Lstat(filepath.Join(f.home, ".gemini", "skills", "alpha"))
+				So(errors.Is(err, fs.ErrNotExist), ShouldBeTrue)
+
+				_, err = os.Lstat(filepath.Join(f.home, ".gemini", "agents", "caveman--helper.md"))
+				So(errors.Is(err, fs.ErrNotExist), ShouldBeTrue)
 
 				So(containsWarning(report.Warnings, "different content"), ShouldBeFalse)
 				So(containsWarning(report.Warnings, "already provided"), ShouldBeFalse)
@@ -519,9 +680,9 @@ func TestA47RemovedForeignPluginIsPruned(t *testing.T) {
 		report := f.sync(t)
 
 		Convey("When the sync runs", func() {
-			Convey("Then the plugin is quarantined and its presentation goes", func() {
+			Convey("Then the plugin is retired and its presentation goes", func() {
 				result := pluginResult(t, report, "acme/tool")
-				So(result.Action, ShouldEqual, engine.PluginQuarantined)
+				So(result.Action, ShouldEqual, engine.PluginRetired)
 
 				entries, err := os.ReadDir(claudeSkillsDir(f.home))
 				So(err, ShouldBeNil)

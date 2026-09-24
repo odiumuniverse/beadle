@@ -227,6 +227,51 @@ func TestRenderPackage(t *testing.T) {
 	})
 }
 
+// TestRenderSecretRefsArePortable pins the export contract of a canon secret:
+// the whole-value {secret:NAME} reference becomes the portable ${NAME} form,
+// it is announced once, and the client-managed warning for the same value is
+// suppressed — the placeholder is not a plaintext reference the client fails
+// to expand.
+//
+//nolint:gosec // G101: the fixture values are synthetic ${NAME} references, not credentials
+func TestRenderSecretRefsArePortable(t *testing.T) {
+	Convey("Given two canon servers carrying the same {secret:NAME} reference", t, func() {
+		servers := mcp.Servers{
+			"api": {
+				Transport: mcp.TransportStdio,
+				Command:   []string{"npx", "-y", "mcp-api"},
+				Env:       map[string]string{"TOKEN": "{secret:GH_TOKEN}", "PLAIN": "${API_KEY}"},
+			},
+			"api2": {
+				Transport: mcp.TransportStdio,
+				Command:   []string{"npx", "-y", "mcp-api2"},
+				Env:       map[string]string{"TOKEN": "{secret:GH_TOKEN}"},
+			},
+		}
+
+		pkg, err := agentplugins.Render(nil, servers, agentplugins.Options{Name: "beadle-canon", Version: "1.0.0"})
+		So(err, ShouldBeNil)
+
+		Convey("When the package is rendered", func() {
+			Convey("Then the reference is portable and warned once", func() {
+				var document struct {
+					MCPServers map[string]map[string]any `json:"mcpServers"`
+				}
+
+				So(json.Unmarshal(pkg.Files[agentplugins.MCPFile], &document), ShouldBeNil)
+				So(document.MCPServers["api"]["env"], ShouldResemble, map[string]any{"TOKEN": "${GH_TOKEN}", "PLAIN": "${API_KEY}"})
+				So(document.MCPServers["api2"]["env"], ShouldResemble, map[string]any{"TOKEN": "${GH_TOKEN}"})
+
+				warnings := strings.Join(pkg.Warnings, "\n")
+
+				So(strings.Count(warnings, "secret GH_TOKEN is exported as ${GH_TOKEN}; the installing host supplies the value"), ShouldEqual, 1)
+				So(warnings, ShouldNotContainSubstring, "TOKEN references ${GH_TOKEN}")
+				So(warnings, ShouldContainSubstring, "mcp api: env PLAIN references ${API_KEY}; clients do not expand it")
+			})
+		})
+	})
+}
+
 func TestRenderDeterministicAndIdempotent(t *testing.T) {
 	Convey("Given a rendered package", t, func() {
 		first := renderFull(t)

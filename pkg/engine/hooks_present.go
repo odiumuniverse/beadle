@@ -67,6 +67,7 @@ func (e *Engine) presentHooks(st *state.State, report *Report, active []*agent.A
 	}
 
 	approved := hooks.Approved(e.config)
+	sources, retired := e.pluginHookSources()
 
 	for _, target := range hookFileTargets(e.home) {
 		host := agent.ByID(active, target.agentID)
@@ -78,8 +79,29 @@ func (e *Engine) presentHooks(st *state.State, report *Report, active []*agent.A
 			continue
 		}
 
-		e.presentHookFile(target, st, report, canon, approved, opts)
+		e.presentHookFile(target, st, report, hostFileHooks(canon, sources, retired, target.agentID), approved, opts)
 	}
+}
+
+// hostFileHooks drops the plugin hooks the file's own host already runs (a
+// plugin's hooks belong to the host that installed it, so writing them into
+// that host's file would run them twice) and the hooks of retired plugins:
+// their commands point into a plugin that no longer exists. Canon-authored
+// hooks and the other sources' plugin hooks stay; the owned set removes any
+// copy rendered before these rules existed.
+func hostFileHooks(canon map[string]hooks.Hook, sources map[string]map[string]bool, retired map[string]bool, agentID string) map[string]hooks.Hook {
+	out := make(map[string]hooks.Hook, len(canon))
+
+	for name, hook := range canon {
+		key, fromPlugin := hook.PluginKey()
+		if fromPlugin && (retired[key] || sources[key][agentID]) {
+			continue
+		}
+
+		out[name] = hook
+	}
+
+	return out
 }
 
 // presentHookFile patches one host hooks file with the approved canon hooks.

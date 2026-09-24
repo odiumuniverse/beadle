@@ -31,9 +31,11 @@ const (
 
 	noteInvalidPluginKey   = "invalid plugin key"
 	noteMissingInstall     = "install path is missing"
-	noteNotInstalled       = "plugin is no longer installed"
 	noteQuarantined        = "install path is missing; pivot quarantined; run beadle heal"
 	noteQuarantinedAlready = "quarantined already"
+
+	noteRemovedRetired = "removed from the plugin registry; pivot and farm artifacts retired"
+	noteRetiredMissing = "retired; the host registry still points at a missing install path"
 
 	noteUnstableRegistry = "the plugin registry kept changing while being read; using the last consistent view"
 )
@@ -80,6 +82,7 @@ type pluginLedgerRec struct {
 	Target        string    `json:"target"`
 	Source        string    `json:"source,omitempty"`
 	Servers       []string  `json:"servers,omitempty"`
+	Overridden    []string  `json:"overridden,omitempty"`
 	QuarantinedAt time.Time `json:"quarantined_at,omitzero"`
 	RetiredAt     time.Time `json:"retired_at,omitzero"`
 	UpdatedAt     time.Time `json:"updated_at"`
@@ -89,6 +92,10 @@ type pluginGroup struct {
 	Origin  string
 	Name    string
 	Plugins []plugin.Plugin
+	// Overridden lists the source hosts whose own same-key copy lost the
+	// source conflict: those hosts read their native copy and must not
+	// receive the winner's presentation too.
+	Overridden []string
 }
 
 // reconcilePlugins parks installed plugins and reports whether orphan
@@ -160,7 +167,7 @@ func (e *Engine) reconcilePlugins(_ context.Context) ([]PluginResult, []string, 
 		results = append(results, result)
 	}
 
-	removed, removedDirty := e.quarantineRemoved(installed, &ledger)
+	removed, removedDirty := e.retireRemoved(installed, &ledger)
 
 	results = append(results, removed...)
 
@@ -202,7 +209,14 @@ func (e *Engine) reconcileOrphanEdges(ledger *pluginLedger, ledgerBroken, dirty 
 	return retired, warns
 }
 
-func (e *Engine) quarantineRemoved(installed map[string]struct{}, ledger *pluginLedger) ([]PluginResult, bool) {
+// retireRemoved retires the plugins that disappeared from every registry: the
+// pivot, the quarantine entry and the farm artifacts are beadle's, so they are
+// removed — no talking stub, because the plugin is not merely broken, it is
+// gone. The ledger keeps the record (and the server-name ownership), so a
+// stray host copy can never be adopted into the canon; the install path
+// belongs to the host cache and is left alone. A plugin whose install path is
+// gone while its registry record survives is quarantined elsewhere instead.
+func (e *Engine) retireRemoved(installed map[string]struct{}, ledger *pluginLedger) ([]PluginResult, bool) {
 	var (
 		results []PluginResult
 		dirty   bool
@@ -218,12 +232,7 @@ func (e *Engine) quarantineRemoved(installed map[string]struct{}, ledger *plugin
 			continue
 		}
 
-		result, rec, wrote := e.quarantinePlugin(key, prev, PluginResult{
-			Key:     key,
-			Version: prev.Version,
-			Action:  PluginSkipped,
-			Note:    noteNotInstalled,
-		})
+		result, rec, wrote := e.retirePlugin(key, prev)
 		if wrote {
 			ledger.Plugins[key] = rec
 			dirty = true
@@ -233,6 +242,89 @@ func (e *Engine) quarantineRemoved(installed map[string]struct{}, ledger *plugin
 	}
 
 	return results, dirty
+}
+
+// retirePlugin removes the vault-side artifacts of a plugin that is gone from
+// every registry: the pivot directory (safe: symlinks only) and the quarantine
+// entry. A pivot holding regular files is never deleted — the retire still
+// lands, so nothing is presented any more, and the note says why.
+func (e *Engine) retirePlugin(key string, prev pluginLedgerRec) (PluginResult, pluginLedgerRec, bool) {
+	result := PluginResult{
+		Key: key, Version: prev.Version, Target: prev.Target,
+		Action: PluginRetired, Note: noteRemovedRetired,
+	}
+
+	marketplace, name, ok := strings.Cut(key, "/")
+	if !ok || !validPluginKey(marketplace, name) {
+		result.Action = PluginSkipped
+		result.Note = noteInvalidPluginKey
+
+		return result, prev, false
+	}
+
+	base := filepath.Join(e.vault.PluginsDir(), marketplace, name)
+
+	info, err := os.Lstat(base)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
+		result.Note = noteRemovedRetired + "; cannot inspect the pivot: " + err.Error()
+	case !info.IsDir():
+		if err := os.RemoveAll(base); err != nil {
+			result.Note = noteRemovedRetired + "; cannot remove the pivot: " + err.Error()
+		}
+	default:
+		if note, safe := orphanPivotSafe(base); !safe {
+			result.Note = noteRemovedRetired + "; " + note
+		} else if err := os.RemoveAll(base); err != nil {
+			result.Note = noteRemovedRetired + "; cannot remove the pivot: " + err.Error()
+		}
+	}
+
+	if err := removePluginQuarantine(e.vault.PluginsDir(), marketplace, name); err != nil {
+		result.Note = noteRemovedRetired + "; " + err.Error()
+	}
+
+	pruneEmptyDir(filepath.Dir(base))
+
+	rec := prev
+	rec.RetiredAt = e.now()
+	rec.QuarantinedAt = time.Time{}
+
+	return result, rec, true
+}
+
+// removePluginQuarantine drops the quarantine entry of a retired plugin and
+// prunes the directories it leaves empty.
+func removePluginQuarantine(pluginsDir, marketplace, name string) error {
+	dir := filepath.Join(pluginsDir, quarantineDirName, marketplace, name)
+
+	if _, err := os.Lstat(dir); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+
+		return err
+	}
+
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+
+	pruneEmptyDir(filepath.Dir(dir))
+	pruneEmptyDir(filepath.Dir(filepath.Dir(dir)))
+
+	return nil
+}
+
+// pruneEmptyDir removes a directory only when it is empty.
+func pruneEmptyDir(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) > 0 {
+		return
+	}
+
+	_ = os.Remove(dir)
 }
 
 // convergeLegacyOrphans retires vault pivots whose plugin key is missing
@@ -460,6 +552,14 @@ func pinQuarantined(ledger pluginLedger, key string) bool {
 	return parked && !rec.QuarantinedAt.IsZero()
 }
 
+// pinInactive reports a quarantined or retired plugin: a pinned version of a
+// plugin that presents nothing must not recreate its pivot directory.
+func pinInactive(ledger pluginLedger, key string) bool {
+	rec, parked := ledger.Plugins[key]
+
+	return parked && (!rec.QuarantinedAt.IsZero() || !rec.RetiredAt.IsZero())
+}
+
 func (e *Engine) reconcilePinPivots(ledger pluginLedger) []string {
 	pinned := e.pinnedVersions()
 
@@ -467,7 +567,7 @@ func (e *Engine) reconcilePinPivots(ledger pluginLedger) []string {
 
 	for _, key := range slices.Sorted(maps.Keys(pinned)) {
 		marketplace, name, ok := strings.Cut(key, "/")
-		if !ok || !validPluginKey(marketplace, name) || pinQuarantined(ledger, key) {
+		if !ok || !validPluginKey(marketplace, name) || pinInactive(ledger, key) {
 			continue
 		}
 
@@ -567,16 +667,13 @@ func (e *Engine) pivotPlugin(key string, group pluginGroup, prev pluginLedgerRec
 	result := PluginResult{Key: key, Version: record.Version, Target: target}
 
 	if target == "" || !isDir(target) {
-		result.Note = noteMissingInstall
-
-		return e.quarantinePlugin(key, prev, result)
+		return e.missingPivotTarget(key, prev, result)
 	}
 
 	pivot := filepath.Join(e.vault.PluginsDir(), group.Origin, group.Name, farmPivotName)
 
 	link, linkErr := os.Readlink(pivot)
-	if link == target && prev.Version == record.Version && prev.Sha == record.GitCommitSha && prev.Target == target &&
-		prev.Source == record.Source && prev.QuarantinedAt.IsZero() && prev.RetiredAt.IsZero() {
+	if pivotUnchanged(link, target, prev, record, group.Overridden) {
 		result.Action = PluginNoop
 
 		return result, prev, false
@@ -602,15 +699,40 @@ func (e *Engine) pivotPlugin(key string, group pluginGroup, prev pluginLedgerRec
 	}
 
 	rec := pluginLedgerRec{
-		Version:   record.Version,
-		Sha:       record.GitCommitSha,
-		Target:    target,
-		Source:    record.Source,
-		Servers:   prev.Servers,
-		UpdatedAt: e.now(),
+		Version:    record.Version,
+		Sha:        record.GitCommitSha,
+		Target:     target,
+		Source:     record.Source,
+		Servers:    prev.Servers,
+		Overridden: group.Overridden,
+		UpdatedAt:  e.now(),
 	}
 
 	return result, rec, true
+}
+
+// pivotUnchanged reports whether the pivot link and the ledger record already
+// match the resolved group: the plugin is a noop this run.
+func pivotUnchanged(link, target string, prev pluginLedgerRec, record plugin.Plugin, overridden []string) bool {
+	return link == target && prev.Version == record.Version && prev.Sha == record.GitCommitSha && prev.Target == target &&
+		prev.Source == record.Source && slices.Equal(prev.Overridden, overridden) &&
+		prev.QuarantinedAt.IsZero() && prev.RetiredAt.IsZero()
+}
+
+// missingPivotTarget handles a registry record whose install path is gone: a
+// record that is already retired stays retired (a restored install path
+// revives it through the normal pivot), an installed one is quarantined.
+func (e *Engine) missingPivotTarget(key string, prev pluginLedgerRec, result PluginResult) (PluginResult, pluginLedgerRec, bool) {
+	if !prev.RetiredAt.IsZero() {
+		result.Action = PluginSkipped
+		result.Note = noteRetiredMissing
+
+		return result, prev, false
+	}
+
+	result.Note = noteMissingInstall
+
+	return e.quarantinePlugin(key, prev, result)
 }
 
 func (e *Engine) quarantinePlugin(key string, prev pluginLedgerRec, result PluginResult) (PluginResult, pluginLedgerRec, bool) {
@@ -796,9 +918,10 @@ func groupPlugins(plugins []plugin.Plugin) ([]pluginGroup, []string, []string) {
 	var notes, warns []string
 
 	for i := range groups {
-		resolved, groupNotes, groupWarns := resolveSourceConflict(groups[i])
+		resolved, overridden, groupNotes, groupWarns := resolveSourceConflict(groups[i])
 
 		groups[i].Plugins = resolved
+		groups[i].Overridden = overridden
 
 		notes = append(notes, groupNotes...)
 		warns = append(warns, groupWarns...)
@@ -817,8 +940,10 @@ func groupPlugins(plugins []plugin.Plugin) ([]pluginGroup, []string, []string) {
 // choosing one would hide the other. A source whose install cannot be read
 // does not win while a readable source exists — presenting a broken copy
 // would hide the working one; when every copy is unreadable the source order
-// decides and the reader warnings stay.
-func resolveSourceConflict(group pluginGroup) ([]plugin.Plugin, []string, []string) {
+// decides and the reader warnings stay. The losing sources come back too: a
+// host that keeps its own native copy must not receive the winner's
+// presentation.
+func resolveSourceConflict(group pluginGroup) ([]plugin.Plugin, []string, []string, []string) {
 	bySource := map[string][]plugin.Plugin{}
 
 	for _, p := range group.Plugins {
@@ -826,7 +951,7 @@ func resolveSourceConflict(group pluginGroup) ([]plugin.Plugin, []string, []stri
 	}
 
 	if len(bySource) < 2 {
-		return group.Plugins, nil, nil
+		return group.Plugins, nil, nil, nil
 	}
 
 	ordered := orderedSources(bySource)
@@ -848,7 +973,11 @@ func resolveSourceConflict(group pluginGroup) ([]plugin.Plugin, []string, []stri
 		winner = ordered[0]
 	}
 
-	var notes, warns []string
+	var (
+		overridden []string
+		notes      []string
+		warns      []string
+	)
 
 	for _, source := range ordered {
 		if source == winner {
@@ -856,7 +985,15 @@ func resolveSourceConflict(group pluginGroup) ([]plugin.Plugin, []string, []stri
 		}
 
 		digest, err := plugin.ArtifactDigest(source, bySource[source][0].InstallPath)
-		if winnerDigest == "" || err != nil {
+		if err != nil {
+			// The copy is gone or unreadable: the host has nothing native to
+			// keep reading, so it may still receive the winner's presentation.
+			continue
+		}
+
+		overridden = append(overridden, source)
+
+		if winnerDigest == "" {
 			continue
 		}
 
@@ -869,7 +1006,7 @@ func resolveSourceConflict(group pluginGroup) ([]plugin.Plugin, []string, []stri
 		warns = append(warns, duplicateWarn(group.Name, source, winner))
 	}
 
-	return bySource[winner], notes, warns
+	return bySource[winner], overridden, notes, warns
 }
 
 // orderedSources lists the sources of a key in host-registration order;

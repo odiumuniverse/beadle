@@ -96,6 +96,13 @@ lifecycle hooks, read in the dialect of each host: nested matcher groups
 (Claude, Codex, Gemini), Antigravity's owner-keyed file, and Cursor's flat
 `{command, timeout?, matcher?}` entries.
 
+A host keeps reading its **own** plugins natively: its agents, commands and
+MCP servers are not presented back to it (only the skills farm keeps linking
+next to the native copy), while every other host receives them. The same holds
+when the plugin is installed in several hosts: the host whose copy lost the
+dedup or the same-key source conflict keeps its native copy and receives
+nothing from the winner — the ledger records those hosts in `overridden`.
+
 The same plugin found in several hosts is presented once: equal artifact
 digests (skill trees, agent and command bytes, hook commands, the MCP
 document) make the copies one plugin, the first host in registration order

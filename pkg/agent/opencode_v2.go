@@ -113,6 +113,13 @@ func openCodePermissionTarget(data []byte) (permPlacement, error) {
 		return permPlacement{primary: openCodePermissionPointer}, nil
 	}
 
+	// Neither permission key exists: follow the file's MCP dialect, so a V1
+	// config does not grow the V2 array next to its V1 servers. A file beadle
+	// cannot classify (or an unreadable /mcp) keeps the V2 default.
+	if placement, err := openCodeMCPTarget(data); err == nil && placement.primary == openCodeMCPPointer {
+		return permPlacement{primary: openCodePermissionPointer}, nil
+	}
+
 	return permPlacement{v2: true, primary: openCodePermissionsPointer, shadow: openCodePermissionPointer}, nil
 }
 

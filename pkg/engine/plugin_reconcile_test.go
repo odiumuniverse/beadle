@@ -32,6 +32,7 @@ type ledgerTestRecord struct {
 	Target        string    `json:"target"`
 	Source        string    `json:"source,omitempty"`
 	Servers       []string  `json:"servers,omitempty"`
+	Overridden    []string  `json:"overridden,omitempty"`
 	QuarantinedAt time.Time `json:"quarantined_at"`
 	RetiredAt     time.Time `json:"retired_at"`
 }
@@ -538,8 +539,8 @@ func TestPluginReconcileQuarantinesMissingTarget(t *testing.T) {
 	})
 }
 
-func TestPluginReconcileQuarantinesRemovedRegistry(t *testing.T) {
-	Convey("Given a removed registry entry and target", t, func() {
+func TestPluginReconcileRetiresRemovedRegistry(t *testing.T) {
+	Convey("Given a removed registry entry and a removed target", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := newFixture(t)
@@ -553,15 +554,23 @@ func TestPluginReconcileQuarantinesRemovedRegistry(t *testing.T) {
 		report := f.sync(t)
 		result := pluginResult(t, report, "acme/tool")
 
-		link, err := os.Readlink(filepath.Join(quarantineDir(f, "acme", "tool"), "current"))
+		issues, err := f.engine.Doctor(t.Context())
 		So(err, ShouldBeNil)
 
-		Convey("When it quarantines", func() {
-			Convey("Then the quarantine link points at the removed target", func() {
-				So(result.Action, ShouldEqual, engine.PluginQuarantined)
-				So(result.Note, ShouldNotEqual, "plugin is no longer installed")
-				So(ledgerRecord(t, f, "acme/tool").QuarantinedAt.IsZero(), ShouldBeFalse)
-				So(link, ShouldEqual, target)
+		Convey("When it retires", func() {
+			_, pivotErr := os.Stat(filepath.Join(f.vault.PluginsDir(), "acme", "tool"))
+			_, quarantineErr := os.Stat(quarantineDir(f, "acme", "tool"))
+
+			Convey("Then nothing is quarantined and doctor explains the retire", func() {
+				So(result.Action, ShouldEqual, engine.PluginRetired)
+				So(result.Note, ShouldContainSubstring, "removed from the plugin registry")
+				So(errors.Is(pivotErr, fs.ErrNotExist), ShouldBeTrue)
+				So(errors.Is(quarantineErr, fs.ErrNotExist), ShouldBeTrue)
+				So(ledgerRecord(t, f, "acme/tool").RetiredAt.IsZero(), ShouldBeFalse)
+				So(ledgerRecord(t, f, "acme/tool").QuarantinedAt.IsZero(), ShouldBeTrue)
+				So(hasIssue(issues, engine.SeverityInfo, "plugin acme/tool was removed from its host registry"), ShouldBeTrue)
+				So(hasIssue(issues, engine.SeverityError, "acme/tool"), ShouldBeFalse)
+				So(hasIssue(issues, engine.SeverityWarn, "run beadle heal"), ShouldBeFalse)
 			})
 		})
 	})
@@ -795,7 +804,7 @@ func TestPluginReconcileMalformedLedger(t *testing.T) {
 	})
 }
 
-func TestPluginReconcileKeepsLedgerForMissingPlugin(t *testing.T) {
+func TestPluginReconcileRetiresMissingPlugin(t *testing.T) {
 	Convey("Given a parked plugin whose registry entry is removed", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
@@ -809,11 +818,17 @@ func TestPluginReconcileKeepsLedgerForMissingPlugin(t *testing.T) {
 		result := pluginResult(t, report, "acme/tool")
 
 		Convey("When sync runs", func() {
-			Convey("Then the ledger and pivot are kept", func() {
-				So(result.Action, ShouldEqual, engine.PluginSkipped)
-				So(result.Note, ShouldEqual, "plugin is no longer installed")
+			_, pivotErr := os.Stat(filepath.Join(f.vault.PluginsDir(), "acme", "tool"))
+			info, targetErr := os.Stat(target)
+
+			Convey("Then the record is retired, the pivot is gone and the host cache is kept", func() {
+				So(result.Action, ShouldEqual, engine.PluginRetired)
+				So(result.Note, ShouldContainSubstring, "pivot and farm artifacts retired")
 				So(ledgerRecord(t, f, "acme/tool").Version, ShouldEqual, "1.0.0")
-				So(pivotLink(t, f, "acme", "tool"), ShouldEqual, target)
+				So(ledgerRecord(t, f, "acme/tool").RetiredAt.IsZero(), ShouldBeFalse)
+				So(errors.Is(pivotErr, fs.ErrNotExist), ShouldBeTrue)
+				So(targetErr, ShouldBeNil)
+				So(info.IsDir(), ShouldBeTrue)
 			})
 		})
 	})

@@ -9,7 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/hooks"
+	"github.com/odiumuniverse/beadle/pkg/vault"
 )
 
 func (a *app) newHooksCmd() *cobra.Command {
@@ -263,14 +265,28 @@ func (a *app) approvePluginHooks(cmd *cobra.Command, key string) error {
 }
 
 func (a *app) newHooksRevokeCmd() *cobra.Command {
-	return &cobra.Command{
+	var pluginKey string
+
+	cmd := &cobra.Command{
 		Use:   "revoke <name>",
-		Short: "Revoke a hook approval",
-		Args:  cobra.ExactArgs(1),
+		Short: "Revoke a hook approval (or every hook of a plugin)",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			v, cfg, err := a.loadConfig()
 			if err != nil {
 				return err
+			}
+
+			if pluginKey != "" {
+				if len(args) != 0 {
+					return errors.New("choose either a hook name or --plugin")
+				}
+
+				return a.revokePluginHooks(cmd, v, cfg, pluginKey)
+			}
+
+			if len(args) != 1 {
+				return errors.New("a hook name is required (or use --plugin <key>)")
 			}
 
 			cfg.RevokeHook(args[0])
@@ -284,4 +300,50 @@ func (a *app) newHooksRevokeCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	cmd.Flags().StringVar(&pluginKey, "plugin", "", "revoke every hook a plugin contributed, dropping its canon entries and approvals (<marketplace>/<name>)")
+
+	return cmd
+}
+
+// revokePluginHooks drops the approvals and the canon entries of one plugin's
+// hooks: the plugin is gone, so they can never render again, and the doctor
+// stops flagging them as missing. Only an explicit revoke removes them.
+func (a *app) revokePluginHooks(cmd *cobra.Command, v *vault.Vault, cfg *config.Config, key string) error {
+	canon, err := hooks.Load(v.HooksPath())
+	if err != nil {
+		return err
+	}
+
+	revoked := 0
+
+	for _, name := range slices.Sorted(maps.Keys(canon)) {
+		hookKey, fromPlugin := canon[name].PluginKey()
+		if !fromPlugin || hookKey != key {
+			continue
+		}
+
+		cfg.RevokeHook(name)
+		delete(canon, name)
+
+		revoked++
+	}
+
+	if revoked == 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "no hooks of plugin %s\n", key)
+
+		return nil
+	}
+
+	if err := hooks.Save(v.HooksPath(), canon); err != nil {
+		return err
+	}
+
+	if err := cfg.Save(v.ConfigPath()); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(), "revoked %d hook(s) of plugin %s\n", revoked, key)
+
+	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/bundle"
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/hooks"
@@ -38,8 +39,11 @@ var pluginHookEvents = map[string]string{
 }
 
 var (
-	pluginNameClean   = regexp.MustCompile(`[^a-z0-9]+`)
-	unbracedClaudeVar = regexp.MustCompile(`\$CLAUDE_[A-Z0-9_]*`)
+	pluginNameClean = regexp.MustCompile(`[^a-z0-9]+`)
+	// unbracedPluginVar matches every known plugin variable without braces: the
+	// canon stores shell-ready commands, so a bare $NAME would expand to an
+	// empty string in the receiving host.
+	unbracedPluginVar = regexp.MustCompile(`\$(PLUGIN_ROOT|PLUGIN_DATA|CLAUDE_[A-Z0-9_]*|CURSOR_PLUGIN_ROOT|extensionPath|workspacePath)`)
 )
 
 // pluginHookEntry is one canon hook projected from a plugin.
@@ -269,32 +273,59 @@ func expandPluginHookCommand(command, pivot, source string) (string, string) {
 
 	expanded := out.String()
 
-	if match := unbracedClaudeVar.FindString(expanded); match != "" {
+	if match := unbracedPluginVar.FindString(expanded); match != "" {
 		return "", match
 	}
 
 	return expanded, ""
 }
 
-// pluginHookPlaceholders returns the plugin root placeholders of one host and
-// the host-specific ones the canon cannot resolve.
+// pluginHookKnownVars lists every plugin variable beadle knows. A hook may
+// only carry the roots of its own source: everything else — the data and
+// workspace directories, and the roots of other hosts — cannot be resolved for
+// the receiving host and is refused instead of shipping a command that would
+// expand to an empty string.
+var pluginHookKnownVars = []string{
+	"PLUGIN_ROOT",
+	"PLUGIN_DATA",
+	claudePluginRootVar,
+	claudePluginDataVar,
+	claudeProjectDirVar,
+	"CURSOR_PLUGIN_ROOT",
+	"extensionPath",
+	"workspacePath",
+}
+
+// pluginHookPlaceholders returns the plugin root placeholders of one source,
+// which expand to the plugin pivot, and every other known variable, which the
+// canon refuses.
 func pluginHookPlaceholders(source string) (map[string]bool, map[string]bool) {
+	roots := pluginHookRoots(source)
+	refuse := make(map[string]bool, len(pluginHookKnownVars))
+
+	for _, name := range pluginHookKnownVars {
+		if !roots[name] {
+			refuse[name] = true
+		}
+	}
+
+	return roots, refuse
+}
+
+// pluginHookRoots lists the root placeholders of one plugin source that expand
+// to the plugin pivot; the Claude compatibility name works in every host.
+func pluginHookRoots(source string) map[string]bool {
 	switch source {
 	case plugin.SourceCodex:
-		return map[string]bool{"PLUGIN_ROOT": true, claudePluginRootVar: true},
-			map[string]bool{"PLUGIN_DATA": true, claudePluginDataVar: true, claudeProjectDirVar: true}
+		return map[string]bool{"PLUGIN_ROOT": true, claudePluginRootVar: true}
 	case plugin.SourceGeminiCLI:
-		return map[string]bool{"extensionPath": true},
-			map[string]bool{"workspacePath": true}
+		return map[string]bool{"extensionPath": true}
 	case plugin.SourceCursor:
-		return map[string]bool{"CURSOR_PLUGIN_ROOT": true, claudePluginRootVar: true},
-			map[string]bool{claudePluginDataVar: true, claudeProjectDirVar: true}
+		return map[string]bool{"CURSOR_PLUGIN_ROOT": true, claudePluginRootVar: true}
 	case plugin.SourceAntigravityCLI:
-		return map[string]bool{"PLUGIN_ROOT": true, claudePluginRootVar: true},
-			map[string]bool{"PLUGIN_DATA": true, claudePluginDataVar: true}
+		return map[string]bool{"PLUGIN_ROOT": true, claudePluginRootVar: true}
 	default:
-		return map[string]bool{claudePluginRootVar: true},
-			map[string]bool{claudePluginDataVar: true, claudeProjectDirVar: true}
+		return map[string]bool{claudePluginRootVar: true}
 	}
 }
 
@@ -576,8 +607,9 @@ func (e *Engine) pluginHookIssueFor(key, source, installPath string, canon map[s
 	return issues
 }
 
-// missingPluginHookIssues warns about approved plugin hooks whose plugin is
-// gone; nothing is removed automatically.
+// missingPluginHookIssues flags the approved plugin hooks whose plugin is gone
+// from every registry: their renders are dropped on the next sync, and the
+// canon entries wait for an explicit revoke — nothing is erased automatically.
 func missingPluginHookIssues(canon map[string]hooks.Hook, installed map[string]plugin.Plugin) []Issue {
 	missing := map[string][]string{}
 
@@ -597,9 +629,9 @@ func missingPluginHookIssues(canon map[string]hooks.Hook, installed map[string]p
 	var issues []Issue
 
 	for _, key := range slices.Sorted(maps.Keys(missing)) {
-		issues = append(issues, Issue{Severity: SeverityWarn, Message: fmt.Sprintf(
-			"%s%d approved hook(s) come from plugin %s, which is not installed: %s; they may not run; revoke with `beadle hooks revoke <name>`",
-			pluginHookPrefix, len(missing[key]), key, strings.Join(missing[key], ", "))})
+		issues = append(issues, Issue{Severity: SeverityError, Message: fmt.Sprintf(
+			"%s%d approved hook(s) come from plugin %s, which is not installed: %s; their renders are removed on the next sync; revoke with `beadle hooks revoke --plugin %s`",
+			pluginHookPrefix, len(missing[key]), key, strings.Join(missing[key], ", "), key)})
 	}
 
 	return issues
@@ -671,23 +703,73 @@ func (e *Engine) hookSecretIssues() []Issue {
 	return issues
 }
 
-// renderableHooks drops plugin-sourced hooks from the Claude bundle: the
-// source plugin already runs them natively there, so a beadle copy would run
-// them twice. Every other channel gets the full canon.
+// renderableHooks keeps the hooks one host should receive: a plugin's hooks
+// belong to the host that installed it, which already runs them natively, so
+// only the other hosts get a beadle copy. Canon-authored hooks go everywhere.
+// A retired plugin (gone from every registry) renders nowhere: its hook
+// commands point into a plugin that no longer exists. The Claude bundle no
+// longer drops every plugin hook — a Codex plugin's hook must work in Claude
+// too — and a stale plugin entry the ledger no longer knows keeps the pre-A-47
+// Claude behavior (dropped from the Claude bundle).
 func (e *Engine) renderableHooks(host bundle.Host, canon map[string]hooks.Hook) map[string]hooks.Hook {
-	if host != bundle.Claude {
-		return canon
-	}
+	sources, retired := e.pluginHookSources()
 
-	out := map[string]hooks.Hook{}
+	out := make(map[string]hooks.Hook, len(canon))
 
 	for name, hook := range canon {
-		if _, fromPlugin := hook.PluginKey(); fromPlugin {
+		if key, fromPlugin := hook.PluginKey(); fromPlugin && retired[key] {
 			continue
 		}
 
-		out[name] = hook
+		if !hostRunsHookNatively(host.AgentID(), hook, sources) {
+			out[name] = hook
+		}
 	}
 
 	return out
+}
+
+// hostRunsHookNatively reports that the host already runs this hook without
+// beadle: the hook comes from a plugin installed in that host — the ledger
+// winner or a source whose own copy lost the source conflict — or the ledger
+// no longer knows the plugin and the host is Claude Code, the pre-A-47 default
+// for entries without a source.
+func hostRunsHookNatively(agentID string, hook hooks.Hook, sources map[string]map[string]bool) bool {
+	key, fromPlugin := hook.PluginKey()
+	if !fromPlugin {
+		return false
+	}
+
+	hosts, known := sources[key]
+
+	return (known && hosts[agentID]) || (!known && agentID == agent.ClaudeCodeID)
+}
+
+// pluginHookSources maps every ledger plugin key to the source hosts that
+// installed it — the winner plus the sources whose own copy lost the source
+// conflict (`overridden`), because each of those hosts runs its own plugin's
+// hooks natively. Retired keys are reported separately: a retired plugin
+// renders its hooks nowhere.
+func (e *Engine) pluginHookSources() (sources map[string]map[string]bool, retired map[string]bool) {
+	ledger, _, _ := loadPluginLedger(e.vault.PluginsLedgerPath())
+
+	sources = make(map[string]map[string]bool, len(ledger.Plugins))
+	retired = map[string]bool{}
+
+	for key, rec := range ledger.Plugins {
+		if !rec.RetiredAt.IsZero() {
+			retired[key] = true
+
+			continue
+		}
+
+		set := map[string]bool{recSource(rec): true}
+		for _, source := range rec.Overridden {
+			set[source] = true
+		}
+
+		sources[key] = set
+	}
+
+	return sources, retired
 }

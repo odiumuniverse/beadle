@@ -344,6 +344,7 @@ func TestKiloSkillsWriteTarget(t *testing.T) {
 				So(ok, ShouldBeTrue)
 				So(result.Action, ShouldEqual, engine.ActionSkipped)
 				So(result.Note, ShouldContainSubstring, "no config file to write into")
+				So(result.Changes, ShouldBeEmpty)
 				So(fsutil.Exists(kiloCanonSkillsDir(f)), ShouldBeFalse)
 			})
 		})

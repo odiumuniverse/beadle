@@ -764,6 +764,16 @@ func (e *Engine) pushView(
 		return v.snap.Items, single
 	}
 
+	// A surface that cannot be created (a missing config file the host never
+	// initializes) takes no writes: report the skip instead of listing pending
+	// changes a sync will drop.
+	if !v.snap.Present && !v.surface.Traits().Creatable {
+		single.Action = ActionSkipped
+		single.Note = "no config file to write into; create " + v.surface.Path() + " first"
+
+		return v.snap.Items, single
+	}
+
 	single.Changes = diffItems(v.snap.Items, desired)
 
 	if len(single.Changes) == 0 && resolved != nil {
@@ -772,13 +782,6 @@ func (e *Engine) pushView(
 		for _, key := range changedKeys(v.raw, resolved) {
 			single.Changes = append(single.Changes, ItemChange{Key: key, Op: OpModified, Before: v.snap.Items[key], After: desired[key]})
 		}
-	}
-
-	if !v.snap.Present && !v.surface.Traits().Creatable {
-		single.Action = ActionSkipped
-		single.Note = "no config file to write into; create " + v.surface.Path() + " first"
-
-		return v.snap.Items, single
 	}
 
 	if opts.DryRun {

@@ -31,11 +31,39 @@ const exportServers = `{
     "url": "https://example.com/mcp",
     "headers": {"Authorization": "Bearer ${API_KEY}"}
   },
+  "secrets": {
+    "transport": "stdio",
+    "command": ["npx", "-y", "mcp-secrets"],
+    "env": {"TOKEN": "{secret:GH_TOKEN}"}
+  },
   "escape": {
     "transport": "stdio",
     "command": ["run", "${PLUGIN_ROOT}/../outside"]
   }
 }`
+
+// assertExportedMCP checks the exported mcp.json: the closed schema, the
+// servers, and the portable ${NAME} form of a secret reference.
+func assertExportedMCP(t *testing.T, out string) {
+	t.Helper()
+
+	var document struct {
+		Schema     string                    `json:"$schema"`
+		MCPServers map[string]map[string]any `json:"mcpServers"`
+	}
+
+	So(json.Unmarshal([]byte(readFile(t, filepath.Join(out, "mcp.json"))), &document), ShouldBeNil)
+	So(document.Schema, ShouldEqual, agentplugins.MCPSchemaURL)
+	So(slices.Sorted(maps.Keys(document.MCPServers)), ShouldResemble, []string{"fs", "remote", "secrets"})
+	So(document.MCPServers["fs"]["command"], ShouldEqual, "npx")
+	So(document.MCPServers["fs"]["env"], ShouldResemble, map[string]any{"CACHE_DIR": "${PLUGIN_ROOT}/cache"})
+	So(document.MCPServers["remote"]["type"], ShouldEqual, "streamable-http")
+	So(document.MCPServers["remote"]["headers"], ShouldResemble, map[string]any{"Authorization": "Bearer ${API_KEY}"})
+
+	//nolint:gosec // ${GH_TOKEN} is a portable reference the installing host expands, not a credential
+	So(document.MCPServers["secrets"]["env"], ShouldResemble, map[string]any{"TOKEN": "${GH_TOKEN}"})
+	So(readFile(t, filepath.Join(out, "mcp.json")), ShouldNotContainSubstring, "{secret:")
+}
 
 func readFile(t *testing.T, path string) string {
 	t.Helper()
@@ -137,9 +165,14 @@ func TestExportAgentPluginsEndToEnd(t *testing.T) {
 		Convey("When the export runs", func() {
 			Convey("Then the package is conformant and the report names what was skipped", func() {
 				So(err, ShouldBeNil)
-				So(stdout, ShouldContainSubstring, "skills: 3 rendered, 0 skipped; mcp: 2 rendered, 1 skipped")
+				So(stdout, ShouldContainSubstring, "skills: 3 rendered, 0 skipped; mcp: 3 rendered, 1 skipped")
 				So(stderr, ShouldContainSubstring, "mcp escape is skipped: a ${PLUGIN_ROOT} or relative reference escapes the package root")
 				So(stderr, ShouldContainSubstring, "mcp remote: headers Authorization references ${API_KEY}; clients do not expand it")
+				So(stderr, ShouldContainSubstring, "secret GH_TOKEN is exported as ${GH_TOKEN}; the installing host supplies the value")
+				So(stderr, ShouldNotContainSubstring, "TOKEN references ${GH_TOKEN}")
+
+				// The canon keeps the reference; the export never copies a value.
+				So(readFile(t, filepath.Join(vaultDir, "mcp", "servers.json")), ShouldContainSubstring, "{secret:GH_TOKEN}")
 
 				So(agentplugins.Validate(out), ShouldBeNil)
 
@@ -158,18 +191,7 @@ func TestExportAgentPluginsEndToEnd(t *testing.T) {
 					"$schema", "description", "keywords", "license", "name", "version",
 				})
 
-				var document struct {
-					Schema     string                    `json:"$schema"`
-					MCPServers map[string]map[string]any `json:"mcpServers"`
-				}
-
-				So(json.Unmarshal([]byte(readFile(t, filepath.Join(out, "mcp.json"))), &document), ShouldBeNil)
-				So(document.Schema, ShouldEqual, agentplugins.MCPSchemaURL)
-				So(slices.Sorted(maps.Keys(document.MCPServers)), ShouldResemble, []string{"fs", "remote"})
-				So(document.MCPServers["fs"]["command"], ShouldEqual, "npx")
-				So(document.MCPServers["fs"]["env"], ShouldResemble, map[string]any{"CACHE_DIR": "${PLUGIN_ROOT}/cache"})
-				So(document.MCPServers["remote"]["type"], ShouldEqual, "streamable-http")
-				So(document.MCPServers["remote"]["headers"], ShouldResemble, map[string]any{"Authorization": "Bearer ${API_KEY}"})
+				assertExportedMCP(t, out)
 
 				Convey("And the foreign file in the output directory is untouched", func() {
 					So(readFile(t, foreign), ShouldEqual, "mine\n")

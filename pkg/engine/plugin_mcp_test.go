@@ -90,7 +90,7 @@ func TestPluginMCPRendersIntoHosts(t *testing.T) {
 		f := newFixture(t)
 		f.emptyConfigs(t)
 
-		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		plugin := codexPluginTree(t, f.home, "acme", "tool", "1.0.0")
 		writeMCPServers(t, plugin, `{"mcpServers": {
 			"plug": {
 				"command": "${CLAUDE_PLUGIN_ROOT}/bin/plug",
@@ -157,14 +157,14 @@ func TestPluginMCPSurvivesUpgrade(t *testing.T) {
 		f := newFixture(t)
 		f.emptyConfigs(t)
 
-		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		plugin := codexPluginTree(t, f.home, "acme", "tool", "1.0.0")
 		writeMCPServers(t, plugin, `{"mcpServers": {"plug": {"command": "${CLAUDE_PLUGIN_ROOT}/bin/plug", "args": ["v1"]}}}`)
 
 		f.sync(t)
 
 		pivot := pluginPivot(f, "acme", "tool")
 
-		upgraded := pluginTree(t, f.home, "acme", "tool", "2.0.0")
+		upgraded := codexPluginTree(t, f.home, "acme", "tool", "2.0.0")
 		writeMCPServers(t, upgraded, `{"mcpServers": {"plug": {"command": "${CLAUDE_PLUGIN_ROOT}/bin/plug", "args": ["v2"]}}}`)
 
 		f.sync(t)
@@ -194,7 +194,7 @@ func TestPluginMCPRefusesUnknownVariable(t *testing.T) {
 		f := newFixture(t)
 		f.emptyConfigs(t)
 
-		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		plugin := codexPluginTree(t, f.home, "acme", "tool", "1.0.0")
 		writeMCPServers(t, plugin, `{"mcpServers": {
 			"good": {"command": "${CLAUDE_PLUGIN_ROOT}/bin/good"},
 			"bad": {"command": "${MY_VAR}"}
@@ -215,7 +215,7 @@ func TestPluginMCPRefusesUnknownVariable(t *testing.T) {
 		})
 
 		Convey("When an upgrade loses the variable too", func() {
-			upgraded := pluginTree(t, f.home, "acme", "tool", "2.0.0")
+			upgraded := codexPluginTree(t, f.home, "acme", "tool", "2.0.0")
 			writeMCPServers(t, upgraded, `{"mcpServers": {"good": {"command": "${MY_VAR}"}}}`)
 
 			f.sync(t)
@@ -243,7 +243,7 @@ func TestPluginMCPCanonWins(t *testing.T) {
 		canonDoc := `{"alpha": ` + string(canon) + `}`
 		write(t, f.vault.ServersPath(), canonDoc)
 
-		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		plugin := codexPluginTree(t, f.home, "acme", "tool", "1.0.0")
 		writeMCPServers(t, plugin, `{"mcpServers": {"alpha": {"command": "${CLAUDE_PLUGIN_ROOT}/plugin-cmd"}}}`)
 
 		report := f.sync(t)
@@ -267,10 +267,10 @@ func TestPluginMCPPluginCollision(t *testing.T) {
 		f := newFixture(t)
 		f.emptyConfigs(t)
 
-		first := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		first := codexPluginTree(t, f.home, "acme", "tool", "1.0.0")
 		writeMCPServers(t, first, `{"mcpServers": {"shared": {"command": "first-cmd"}}}`)
 
-		second := pluginTree(t, f.home, "beta", "other", "1.0.0")
+		second := codexPluginTree(t, f.home, "beta", "other", "1.0.0")
 		writeMCPServers(t, second, `{"mcpServers": {"shared": {"command": "second-cmd"}}}`)
 
 		report := f.sync(t)
@@ -293,7 +293,7 @@ func TestPluginMCPUserEditNotAdopted(t *testing.T) {
 		f := newFixture(t)
 		f.emptyConfigs(t)
 
-		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		plugin := codexPluginTree(t, f.home, "acme", "tool", "1.0.0")
 		writeMCPServers(t, plugin, `{"mcpServers": {"plug": {"command": "${CLAUDE_PLUGIN_ROOT}/bin/plug"}}}`)
 
 		f.sync(t)
@@ -322,13 +322,13 @@ func TestPluginMCPOwnershipMonotonicOnUpgrade(t *testing.T) {
 		f := newFixture(t)
 		f.emptyConfigs(t)
 
-		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		plugin := codexPluginTree(t, f.home, "acme", "tool", "1.0.0")
 		writeMCPServers(t, plugin, `{"mcpServers": {"plug": {"command": "${CLAUDE_PLUGIN_ROOT}/bin/plug"}}}`)
 
 		f.sync(t)
 		So(ledgerServers(t, f, "acme/tool"), ShouldResemble, []string{"plug"})
 
-		upgraded := pluginTree(t, f.home, "acme", "tool", "2.0.0")
+		upgraded := codexPluginTree(t, f.home, "acme", "tool", "2.0.0")
 		writeMCPServers(t, upgraded, `{"mcpServers": {"plug2": {"command": "${CLAUDE_PLUGIN_ROOT}/bin/plug2"}}}`)
 
 		f.sync(t)
@@ -357,12 +357,11 @@ func TestPluginMCPRemovedWithPlugin(t *testing.T) {
 		f := newFixture(t)
 		f.emptyConfigs(t)
 
-		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		plugin := codexPluginTree(t, f.home, "acme", "tool", "1.0.0")
 		writeMCPServers(t, plugin, `{"mcpServers": {"plug": {"command": "${CLAUDE_PLUGIN_ROOT}/bin/plug"}}}`)
 
 		f.sync(t)
 
-		removeFromRegistry(t, f.home, "acme", "tool")
 		So(os.RemoveAll(plugin), ShouldBeNil)
 
 		Convey("When sync runs", func() {
@@ -387,7 +386,7 @@ func TestPluginMCPFailSafeOnBrokenLedger(t *testing.T) {
 		f := newFixture(t)
 		f.emptyConfigs(t)
 
-		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		plugin := codexPluginTree(t, f.home, "acme", "tool", "1.0.0")
 		writeMCPServers(t, plugin, `{"mcpServers": {"plug": {"command": "${CLAUDE_PLUGIN_ROOT}/bin/plug"}}}`)
 
 		f.sync(t)
@@ -425,7 +424,7 @@ func TestPluginMCPDryRunAndPull(t *testing.T) {
 		f := newFixture(t)
 		f.emptyConfigs(t)
 
-		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		plugin := codexPluginTree(t, f.home, "acme", "tool", "1.0.0")
 		writeMCPServers(t, plugin, `{"mcpServers": {"plug": {"command": "${CLAUDE_PLUGIN_ROOT}/bin/plug"}}}`)
 
 		f.sync(t)
@@ -498,7 +497,7 @@ func TestPluginMCPWarningsVisible(t *testing.T) {
 		f := newFixture(t)
 		f.emptyConfigs(t)
 
-		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
+		plugin := codexPluginTree(t, f.home, "acme", "tool", "1.0.0")
 		writeMCPServers(t, plugin, `{"mcpServers": {"bad": {"command": "${MY_VAR}"}}}`)
 
 		report := f.sync(t)
@@ -513,6 +512,58 @@ func TestPluginMCPWarningsVisible(t *testing.T) {
 				So(kindReport.Warnings, ShouldNotBeEmpty)
 				So(warnedAbout(report, "MY_VAR"), ShouldBeTrue)
 				So(hasIssue(issues, engine.SeverityInfo, "MY_VAR"), ShouldBeTrue)
+			})
+		})
+	})
+}
+
+func TestPluginMCPNotRenderedIntoSourceHost(t *testing.T) {
+	Convey("Given plugins from four hosts carrying MCP servers", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		geminiHome(t, f)
+		enableAgents(t, f, agent.GeminiCLIID, agent.AntigravityCLIID, agent.CodexID)
+
+		write(t, filepath.Join(f.home, ".codex", "config.toml"), "")
+		write(t, filepath.Join(f.home, ".gemini", "config", "mcp_config.json"), `{"mcpServers":{}}`)
+
+		claude := pluginTree(t, f.home, "acme", "claudeplug", "1.0.0")
+		writeMCPServers(t, claude, `{"mcpServers": {"from-claude": {"command": "claude-cmd"}}}`)
+
+		codex := codexPluginTree(t, f.home, "beta", "codexplug", "1.0.0")
+		write(t, filepath.Join(codex, "mcp.json"), `{"mcpServers": {"from-codex": {"command": "codex-cmd"}}}`)
+
+		gemini := geminiExtensionTree(t, f.home, "gemplug")
+		write(t, filepath.Join(gemini, "gemini-extension.json"),
+			`{"name":"gemplug","version":"1.0.0","mcpServers":{"from-gemini":{"command":"gemini-cmd"}}}`)
+
+		agy := filepath.Join(f.home, ".gemini", "config", "plugins", "agyplug")
+		write(t, filepath.Join(agy, "plugin.json"), `{"name":"agyplug","version":"1.0.0"}`)
+		write(t, filepath.Join(agy, "mcp_config.json"), `{"mcpServers":{"from-agy":{"command":"agy-cmd"}}}`)
+
+		f.sync(t)
+
+		Convey("When sync runs", func() {
+			Convey("Then each source host reads its own plugin and the others receive the servers", func() {
+				claudeServers := hostMCPServers(t, f.claudeConfig(), "mcpServers")
+				So(claudeServers, ShouldNotContainKey, "from-claude")
+				So(claudeServers, ShouldContainKey, "from-codex")
+				So(claudeServers, ShouldContainKey, "from-gemini")
+				So(claudeServers, ShouldContainKey, "from-agy")
+
+				codexConfig := read(t, filepath.Join(f.home, ".codex", "config.toml"))
+				So(codexConfig, ShouldNotContainSubstring, "from-codex")
+				So(codexConfig, ShouldContainSubstring, "from-claude")
+
+				geminiServers := hostMCPServers(t, filepath.Join(f.home, ".gemini", "settings.json"), "mcpServers")
+				So(geminiServers, ShouldNotContainKey, "from-gemini")
+				So(geminiServers, ShouldContainKey, "from-codex")
+
+				agyServers := hostMCPServers(t, filepath.Join(f.home, ".gemini", "config", "mcp_config.json"), "mcpServers")
+				So(agyServers, ShouldNotContainKey, "from-agy")
+				So(agyServers, ShouldContainKey, "from-claude")
 			})
 		})
 	})
