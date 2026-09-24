@@ -137,6 +137,14 @@ func (b BundleState) Verified() bool {
 	return b.Registered && (b.VerifyTier == VerifyExecuted || b.VerifyTier == VerifyUnverifiable)
 }
 
+// Serves reports whether the host reads the bundle at all: a registered
+// bundle keeps serving its last installed copy even when a later probe
+// failed. Verified gates what beadle writes; Serves answers what the host
+// sees, so diagnostics use it and the write path never does.
+func (b BundleState) Serves() bool {
+	return b.Registered
+}
+
 // Refusal records one conflict resolution the engine declined to apply.
 type Refusal struct {
 	At      time.Time `json:"at"`

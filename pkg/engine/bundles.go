@@ -1143,7 +1143,7 @@ func (e *Engine) bundleHostStateIssues(ctx context.Context, st *state.State, hos
 }
 
 func (e *Engine) bundleZeroDeliveryIssues(host bundle.Host, hostName string, entry state.BundleState, exists bool) []Issue {
-	if exists && entry.Registered {
+	if exists && entry.Serves() {
 		// A registered bundle may still serve its last installed copy even
 		// when the fresh probe failed: the presentation issues warn about it.
 		return nil

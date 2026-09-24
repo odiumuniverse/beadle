@@ -10,6 +10,7 @@ import (
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
 // skillIssueFor finds one dangling-reference issue for an agent; it is local
@@ -30,6 +31,19 @@ func countWarnings(report *engine.Report, substr string) int {
 
 	for _, warning := range report.Warnings {
 		if strings.Contains(warning, substr) {
+			count++
+		}
+	}
+
+	return count
+}
+
+// countIssues counts the doctor issues whose message contains substr.
+func countIssues(issues []engine.Issue, substr string) int {
+	count := 0
+
+	for _, issue := range issues {
+		if strings.Contains(issue.Message, substr) {
 			count++
 		}
 	}
@@ -92,13 +106,14 @@ func TestSkillReferencesDangling(t *testing.T) {
 			issues, err := f.engine.Doctor(t.Context())
 			So(err, ShouldBeNil)
 
-			Convey("Then every host that gets the skill warns, and the missing name collapses to one line", func() {
+			Convey("Then the missing name is one canon finding, not one line per host", func() {
 				So(countWarnings(report, "not in the canon"), ShouldEqual, 1)
 				So(strings.Join(report.Warnings, "\n"), ShouldContainSubstring, "add the skill or fix the reference")
 
-				So(skillIssueFor(issues, engine.SeverityWarn, agent.ClaudeCodeID, "not in the canon"), ShouldBeTrue)
-				So(skillIssueFor(issues, engine.SeverityWarn, agent.OpenCodeID, "not in the canon"), ShouldBeTrue)
-				So(skillIssueFor(issues, engine.SeverityWarn, agent.ClaudeCodeID, "references skill grilling"), ShouldBeTrue)
+				So(countIssues(issues, "not in the canon"), ShouldEqual, 1)
+				So(skillIssueFor(issues, engine.SeverityWarn, "", "references skill grilling which is not in the canon"), ShouldBeTrue)
+				So(skillIssueFor(issues, engine.SeverityWarn, agent.ClaudeCodeID, "references skill grilling"), ShouldBeFalse)
+				So(skillIssueFor(issues, engine.SeverityWarn, agent.OpenCodeID, "references skill grilling"), ShouldBeFalse)
 			})
 		})
 	})
@@ -176,7 +191,7 @@ func TestSkillReferencesKeptOwnCopy(t *testing.T) {
 			So(err, ShouldBeNil)
 
 			Convey("Then the kept copy keeps the name delivered and other references still warn", func() {
-				So(skillIssueFor(issues, engine.SeverityWarn, agent.ClaudeCodeID, "references skill missing-one"), ShouldBeTrue)
+				So(skillIssueFor(issues, engine.SeverityWarn, "", "references skill missing-one"), ShouldBeTrue)
 				So(skillIssueFor(issues, engine.SeverityWarn, agent.ClaudeCodeID, "references skill golang-x"), ShouldBeFalse)
 			})
 		})
@@ -210,9 +225,43 @@ func TestSkillReferencesSharedCoverage(t *testing.T) {
 			So(err, ShouldBeNil)
 
 			Convey("Then the shared channel keeps the name delivered for gemini and other references warn", func() {
-				So(skillIssueFor(issues, engine.SeverityWarn, agent.GeminiCLIID, "references skill missing-one"), ShouldBeTrue)
+				So(skillIssueFor(issues, engine.SeverityWarn, "", "references skill missing-one"), ShouldBeTrue)
 				So(skillIssueFor(issues, engine.SeverityWarn, agent.GeminiCLIID, "references skill alpha"), ShouldBeFalse)
 				So(skillIssueFor(issues, engine.SeverityWarn, agent.ClaudeCodeID, "references skill alpha"), ShouldBeFalse)
+			})
+		})
+	})
+}
+
+func TestSkillReferencesServedUnverifiedBundle(t *testing.T) {
+	Convey("Given a registered claude bundle whose last probe failed while its file modes are off", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		enableClaude(t, f)
+
+		st := loadState(t, f)
+		entry := st.Bundles["claude"]
+		entry.VerifyTier = state.VerifyFailed
+		st.Bundles["claude"] = entry
+		So(st.Save(f.vault.StatePath()), ShouldBeNil)
+
+		write(t, filepath.Join(f.vault.SkillsDir(), "grill-me", "SKILL.md"),
+			"---\nname: grill-me\ndescription: d\n---\n"+
+				"Call the Skill tool with \"grilling\". Run /foo:bar. Use Skill(beadle-canon:alpha).\n")
+
+		Convey("When the doctor runs", func() {
+			issues, err := f.engine.Doctor(t.Context())
+			So(err, ShouldBeNil)
+
+			Convey("Then the name missing from the canon is one host-independent finding", func() {
+				So(countIssues(issues, "not in the canon"), ShouldEqual, 1)
+				So(skillIssueFor(issues, engine.SeverityWarn, "", "references skill grilling which is not in the canon"), ShouldBeTrue)
+			})
+
+			Convey("Then claude keeps its host findings, because the host still serves the registered bundle", func() {
+				So(skillIssueFor(issues, engine.SeverityWarn, agent.ClaudeCodeID, "but plugin foo is not installed"), ShouldBeTrue)
+				So(skillIssueFor(issues, engine.SeverityWarn, agent.ClaudeCodeID, "plugin beadle-canon is not installed"), ShouldBeFalse)
 			})
 		})
 	})
@@ -278,7 +327,7 @@ func TestSkillReferencesExplicitForm(t *testing.T) {
 			So(err, ShouldBeNil)
 
 			Convey("Then the hyphen-less explicit reference is reported", func() {
-				So(skillIssueFor(issues, engine.SeverityWarn, agent.ClaudeCodeID, "references skill grilling"), ShouldBeTrue)
+				So(skillIssueFor(issues, engine.SeverityWarn, "", "references skill grilling"), ShouldBeTrue)
 				So(strings.Join(report.Warnings, "\n"), ShouldContainSubstring, "references skill grilling")
 			})
 		})
