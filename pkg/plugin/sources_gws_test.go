@@ -418,7 +418,10 @@ func TestReadHooksForSources(t *testing.T) {
 
 		cursor := filepath.Join(home, ".cursor", "plugins", "local", "cursor-hooks")
 		writeFile(t, filepath.Join(cursor, ".cursor-plugin", "plugin.json"), `{"name":"cursor-hooks"}`)
-		writeFile(t, filepath.Join(cursor, "hooks", "hooks.json"), `{"version":1,"hooks":{"preToolUse":[{"command":"cursor-cmd"}]}}`)
+		writeFile(t, filepath.Join(cursor, "hooks", "hooks.json"), `{"version":1,"hooks":{
+			"preToolUse":[{"command":"cursor-cmd","timeout":5},{"command":"matched.sh","matcher":"Bash"},{"command":"nummatcher.sh","matcher":5}],
+			"stop":[{"command":"guarded.sh","failClosed":true}]
+		}}`)
 
 		agy := filepath.Join(home, ".gemini", "config", "plugins", "agy-hooks")
 		validPluginDir(t, agy, `{"name":"agy-hooks"}`)
@@ -431,9 +434,21 @@ func TestReadHooksForSources(t *testing.T) {
 			So(codexWarns, ShouldBeEmpty)
 			So(slices.Sorted(maps.Keys(codexHooks)), ShouldResemble, []string{"PreToolUse"})
 
-			cursorHooks, _, err := plugin.ReadHooksFor(plugin.SourceCursor, cursor)
+			cursorHooks, cursorWarns, err := plugin.ReadHooksFor(plugin.SourceCursor, cursor)
 			So(err, ShouldBeNil)
-			So(slices.Sorted(maps.Keys(cursorHooks)), ShouldResemble, []string{"preToolUse"})
+			So(cursorWarns, ShouldResemble, []string{"hook matcher is not a string; ignored"})
+			So(slices.Sorted(maps.Keys(cursorHooks)), ShouldResemble, []string{"preToolUse", "stop"})
+			So(cursorHooks["preToolUse"], ShouldHaveLength, 3)
+			So(cursorHooks["preToolUse"][0].Matcher, ShouldEqual, "")
+			So(cursorHooks["preToolUse"][0].Hooks[0].Type, ShouldEqual, "command")
+			So(cursorHooks["preToolUse"][0].Hooks[0].Command, ShouldEqual, "cursor-cmd")
+			So(cursorHooks["preToolUse"][0].Hooks[0].Timeout, ShouldEqual, 5)
+			So(cursorHooks["preToolUse"][1].Matcher, ShouldEqual, "Bash")
+			So(cursorHooks["preToolUse"][1].Hooks[0].Command, ShouldEqual, "matched.sh")
+			So(cursorHooks["preToolUse"][2].Matcher, ShouldEqual, "")
+			So(cursorHooks["preToolUse"][2].Hooks[0].Command, ShouldEqual, "nummatcher.sh")
+			So(cursorHooks["stop"][0].Hooks[0].Command, ShouldEqual, "guarded.sh")
+			So(cursorHooks["stop"][0].Hooks[0].Unsupported, ShouldResemble, []string{"failClosed"})
 
 			agyHooks, agyWarns, err := plugin.ReadHooksFor(plugin.SourceAntigravityCLI, agy)
 			So(err, ShouldBeNil)

@@ -707,13 +707,13 @@ func withdrawalDelivered(k kind.ID, req bundle.Request, cov coverage) map[string
 // bundleRenderRequest is the render-time request: skills another copy already
 // delivers stay with that copy. The disable path keeps the unfiltered canon,
 // so a covered name can still be materialized back.
-func (e *Engine) bundleRenderRequest(host bundle.Host) (bundle.Request, coverage, []string, error) {
-	req, warns, err := e.bundleRequest(host)
+func (e *Engine) bundleRenderRequest(host bundle.Host) (bundle.Request, coverage, []string, []string, error) {
+	req, notes, warns, err := e.bundleRequest(host)
 	if err != nil {
-		return req, coverage{}, warns, err
+		return req, coverage{}, notes, warns, err
 	}
 
 	cov := e.visibilityForHost(host).bundleCoverage()
 
-	return filterCovered(req, cov), cov, warns, nil
+	return filterCovered(req, cov), cov, notes, warns, nil
 }

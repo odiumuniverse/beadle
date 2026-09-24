@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -401,6 +402,56 @@ func (s *fileSurface[T]) locate() (map[string]string, error) {
 	}
 
 	return paths, nil
+}
+
+// HiddenCopy reports the host file the surface keeps for a canonical item it
+// cannot express: the located path, whether the file exists, and whether its
+// content still differs from the canon — both sides are compared through the
+// canonical renderer, so formatting never reads as a difference. A file this
+// surface cannot decode is left to the read-side warning (not comparable).
+func (s *fileSurface[T]) HiddenCopy(key string, value []byte) (HostCopy, error) {
+	name := itemName(key)
+
+	canon, err := s.model.parse(name, value)
+	if err != nil {
+		return HostCopy{}, fmt.Errorf("%s: %w", key, err)
+	}
+
+	paths, err := s.locate()
+	if err != nil {
+		return HostCopy{}, err
+	}
+
+	path, ok := paths[name]
+	if !ok {
+		return HostCopy{}, nil
+	}
+
+	data, err := os.ReadFile(path) //nolint:gosec // host directories are resolved by the adapter
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return HostCopy{}, nil
+		}
+
+		return HostCopy{}, fmt.Errorf("read %s: %w", path, err)
+	}
+
+	doc, ok, err := s.codec.parse(path, data)
+	if err != nil {
+		// A host file this surface cannot decode is not comparable here; the
+		// read side reports it already.
+		return HostCopy{Path: path, Present: true}, nil //nolint:nilerr // the read path reports the file
+	}
+
+	if !ok {
+		return HostCopy{Path: path, Present: true}, nil
+	}
+
+	return HostCopy{
+		Path:    path,
+		Present: true,
+		Differs: !bytes.Equal(s.model.render(doc), s.model.render(canon)),
+	}, nil
 }
 
 func (s *fileSurface[T]) writeOne(key string, value []byte, paths map[string]string) error {

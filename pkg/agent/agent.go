@@ -78,6 +78,25 @@ type Projector interface {
 	Project(key string, value []byte) (pkey string, pvalue []byte, ok bool)
 }
 
+// HostCopy describes the host file a surface keeps for a canonical item it
+// cannot express: the file path, whether the file exists, and whether its
+// content still differs from the canon. The doctor warns about a stale copy —
+// the host keeps loading the old content — while hiding never deletes it
+// (A-29).
+type HostCopy struct {
+	Path    string
+	Present bool
+	Differs bool
+}
+
+// HiddenHostCopies is implemented by surfaces that can leave a host file
+// behind for a canonical item they cannot express (a command with a
+// placeholder the host has no syntax for): the doctor compares the kept file
+// with the canon.
+type HiddenHostCopies interface {
+	HiddenCopy(key string, value []byte) (HostCopy, error)
+}
+
 type ProjectFile interface {
 	ProjectRel() string
 }

@@ -523,7 +523,7 @@ func TestBundlesEnableWithdrawsManagedElements(t *testing.T) {
 	})
 }
 
-func TestBundlesEnableWithdrawsSecretServer(t *testing.T) {
+func TestBundlesEnableSkipsSecretServerAndKeepsHost(t *testing.T) {
 	Convey("Given a canon server holding a literal secret", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
@@ -537,19 +537,23 @@ func TestBundlesEnableWithdrawsSecretServer(t *testing.T) {
 
 		f.sync(t)
 
+		So(read(t, f.vault.ServersPath()), ShouldContainSubstring, "{secret:")
 		So(read(t, f.claudeConfig()), ShouldContainSubstring, "Bearer tok-1")
 
 		_, _, report := enableClaude(t, f)
 
 		Convey("When the verified bundle is enabled", func() {
-			Convey("Then the server leaves the host file even though its base holds a reference", func() {
-				So(report.Bundles[0].Withdrawn, ShouldContain, "mcp api")
+			Convey("Then the secret server keeps its host copy instead of entering the bundle", func() {
+				So(report.Bundles[0].Withdrawn, ShouldNotContain, "mcp api")
+				So(containsWarning(report.Notes, "mcp api carries secrets; delivered via the host config, not the bundle"), ShouldBeTrue)
+				So(containsWarning(report.Warnings, "unresolved secrets"), ShouldBeFalse)
 
-				for _, kept := range report.Bundles[0].Kept {
-					So(kept, ShouldNotContainSubstring, "mcp")
-				}
+				cfg := read(t, f.claudeConfig())
+				So(cfg, ShouldContainSubstring, "Bearer tok-1")
+				So(cfg, ShouldNotContainSubstring, secretRefMarkerForTest)
 
-				So(read(t, f.claudeConfig()), ShouldNotContainSubstring, "api")
+				bundleMCP := read(t, filepath.Join(f.vault.BundlesDir(), "claude", "plugins", "beadle-canon", ".mcp.json"))
+				So(bundleMCP, ShouldNotContainSubstring, "api")
 			})
 		})
 	})
@@ -561,13 +565,17 @@ func TestBundlesDisableKeepsStateWhenCanonUnresolved(t *testing.T) {
 
 		f := bundleFixture(t)
 
+		// The header is not secret-like, so the canon keeps the literal value
+		// and the server is withdrawn into the bundle like any other.
 		write(t, f.vault.ServersPath(), `{"api": {
 			"transport": "http",
 			"url": "https://example.com/mcp",
-			"headers": {"Authorization": "Bearer tok-1"}
+			"headers": {"X-Context": "ctx-1"}
 		}}`)
 
 		f.sync(t)
+
+		So(read(t, f.vault.ServersPath()), ShouldNotContainSubstring, "{secret:")
 
 		_, _, report := enableClaude(t, f)
 		So(report.Bundles[0].Withdrawn, ShouldContain, "mcp api")
@@ -603,6 +611,96 @@ func TestBundlesDisableKeepsStateWhenCanonUnresolved(t *testing.T) {
 		})
 	})
 }
+
+func TestBundlesSkipSecretBearingServers(t *testing.T) {
+	Convey("Given a canon with a plain and a secret-bearing MCP server", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+
+		f.engine.Secrets().Set("API_TOKEN", "tok-live-123")
+		So(f.engine.Secrets().Save(), ShouldBeNil)
+
+		write(t, f.vault.ServersPath(), `{
+			"plain": {"transport": "stdio", "command": ["node", "plain.js"]},
+			"secret": {
+				"transport": "http",
+				"url": "https://example.com/mcp",
+				"headers": {"Authorization": "{secret:API_TOKEN}"}
+			}
+		}`)
+
+		f.sync(t)
+
+		host := hostMCPServers(t, f.claudeConfig(), "mcpServers")
+		So(host, ShouldContainKey, "plain")
+		So(host, ShouldContainKey, "secret")
+
+		_, _, report := enableClaude(t, f)
+
+		bundleMCP := read(t, filepath.Join(f.vault.BundlesDir(), "claude", "plugins", "beadle-canon", ".mcp.json"))
+
+		Convey("When the bundle is enabled", func() {
+			Convey("Then the secret-bearing server stays out of the bundle", func() {
+				So(bundleMCP, ShouldContainSubstring, "plain")
+				So(bundleMCP, ShouldNotContainSubstring, "secret")
+				So(bundleMCP, ShouldNotContainSubstring, "tok-live-123")
+
+				So(containsWarning(report.Notes, "mcp secret carries secrets; delivered via the host config, not the bundle"), ShouldBeTrue)
+			})
+
+			Convey("And the host config keeps it with the resolved value", func() {
+				host := hostMCPServers(t, f.claudeConfig(), "mcpServers")
+				So(host, ShouldContainKey, "secret")
+				So(host["secret"]["headers"], ShouldResemble, map[string]any{"Authorization": "tok-live-123"})
+
+				// The plain server is delivered by the bundle now, as before.
+				So(host, ShouldNotContainKey, "plain")
+			})
+
+			Convey("And doctor reports an Info instead of a validate error", func() {
+				issues, err := f.engine.Doctor(t.Context())
+				So(err, ShouldBeNil)
+				So(hasIssue(issues, engine.SeverityError, "claude plugin validate failed"), ShouldBeFalse)
+				So(hasIssue(issues, engine.SeverityInfo, "mcp secret carries secrets; delivered via the host config, not the bundle"), ShouldBeTrue)
+
+				infos := 0
+
+				for _, issue := range issues {
+					if strings.Contains(issue.Message, "mcp secret carries secrets; delivered via the host config, not the bundle") {
+						infos++
+					}
+				}
+
+				So(infos, ShouldEqual, 1)
+			})
+
+			Convey("When an older bundle had withdrawn the secret server", func() {
+				st := loadState(t, f)
+				entry := st.Bundles["claude"]
+				entry.Withdrawn = append(entry.Withdrawn, state.WithdrawnItem{Kind: kind.MCP, Name: "secret"})
+				st.Bundles["claude"] = entry
+
+				So(st.Save(f.vault.StatePath()), ShouldBeNil)
+
+				disable, err := f.engine.BundlesDisable(t.Context(), "claude")
+				So(err, ShouldBeNil)
+				So(disable.Bundles[0].Action, ShouldEqual, "disabled")
+
+				Convey("Then disabling restores both servers to the host config", func() {
+					host := hostMCPServers(t, f.claudeConfig(), "mcpServers")
+					So(host, ShouldContainKey, "plain")
+					So(host, ShouldContainKey, "secret")
+					So(host["secret"]["headers"], ShouldResemble, map[string]any{"Authorization": "tok-live-123"})
+					So(read(t, f.claudeConfig()), ShouldNotContainSubstring, secretRefMarkerForTest)
+				})
+			})
+		})
+	})
+}
+
+// secretRefMarkerForTest mirrors the engine's secret reference syntax.
+const secretRefMarkerForTest = "{secret:"
 
 func TestBundlesEnableKeepsModifiedSkill(t *testing.T) {
 	Convey("Given a hand-edited canon skill copy", t, func() {
@@ -1441,6 +1539,58 @@ func TestBundlesEnableGeminiOnlyDedupsMCP(t *testing.T) {
 
 				So(extErr, ShouldBeNil)
 				So(errors.Is(skillErr, os.ErrNotExist), ShouldBeTrue)
+			})
+		})
+	})
+}
+
+func TestBundlesGeminiSkipsSecretServer(t *testing.T) {
+	Convey("Given a gemini bundle and a secret-bearing server", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		f.config.Enable(agent.GeminiCLIID)
+		So(f.config.Save(f.vault.ConfigPath()), ShouldBeNil)
+		geminiHome(t, f)
+
+		f.engine.Secrets().Set("API_TOKEN", "tok-live-123")
+		So(f.engine.Secrets().Save(), ShouldBeNil)
+
+		write(t, f.vault.ServersPath(), `{
+			"plain": {"transport": "stdio", "command": ["node", "plain.js"]},
+			"secret": {
+				"transport": "http",
+				"url": "https://example.com/mcp",
+				"headers": {"Authorization": "{secret:API_TOKEN}"}
+			}
+		}`)
+
+		f.sync(t)
+
+		foundCLI(t)
+		fakeRunner(t, &fakeCLI{respond: geminiExtensionsResponder(`[{"name": "beadle-canon"}]`)})
+
+		report, err := f.engine.BundlesEnable(t.Context(), "gemini")
+		So(err, ShouldBeNil)
+
+		Convey("When the bundle is enabled", func() {
+			Convey("Then the secret server stays out of the gemini extension", func() {
+				var doc struct {
+					MCPServers map[string]json.RawMessage `json:"mcpServers"`
+				}
+
+				So(json.Unmarshal([]byte(read(t, filepath.Join(f.vault.BundlesDir(), "gemini", "gemini-extension.json"))), &doc), ShouldBeNil)
+				So(doc.MCPServers, ShouldHaveLength, 1)
+				So(doc.MCPServers, ShouldContainKey, "plain")
+
+				So(containsWarning(report.Notes, "mcp secret carries secrets; delivered via the host config, not the bundle"), ShouldBeTrue)
+
+				Convey("And the host MCP surface keeps the resolved value", func() {
+					settings := hostMCPServers(t, filepath.Join(f.home, ".gemini", "settings.json"), "mcpServers")
+					So(settings, ShouldContainKey, "secret")
+					So(settings["secret"]["headers"], ShouldResemble, map[string]any{"Authorization": "tok-live-123"})
+					So(settings, ShouldNotContainKey, "plain")
+				})
 			})
 		})
 	})

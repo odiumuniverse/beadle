@@ -53,7 +53,7 @@ func BundleRequestHooksForTest(e *Engine, host string) (map[string]hooks.Hook, e
 		return nil, err
 	}
 
-	request, _, err := e.bundleRequest(parsed)
+	request, _, _, err := e.bundleRequest(parsed)
 
 	return request.Hooks, err
 }

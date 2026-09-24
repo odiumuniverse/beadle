@@ -26,6 +26,47 @@ func noticesForKind(t *testing.T, a *agent.Agent, k kind.ID, key string, value [
 	return out
 }
 
+func TestFileSurfaceHiddenCopy(t *testing.T) {
+	Convey("Given a Gemini command file and a canon item it cannot express", t, func() {
+		home := t.TempDir()
+		dir := filepath.Join(home, ".gemini", "commands")
+		file := filepath.Join(dir, "greet.toml")
+
+		writeFile(t, file, "prompt = \"\"\"\nSay hello.\n\"\"\"\ndescription = \"greet\"\n")
+
+		gemini := agent.GeminiCLI(home, home)
+		reporter, ok := surfaceOf(t, gemini, kind.Commands).(agent.HiddenHostCopies)
+		So(ok, ShouldBeTrue)
+
+		Convey("When the canon became inexpressible, the kept file reports a stale copy", func() {
+			hidden := command.Render(command.Document{Name: "greet", Description: "greet", Body: "Use $1 now.\n"})
+
+			kept, err := reporter.HiddenCopy("greet.md", hidden)
+			So(err, ShouldBeNil)
+			So(kept.Present, ShouldBeTrue)
+			So(kept.Differs, ShouldBeTrue)
+			So(kept.Path, ShouldEqual, file)
+		})
+
+		Convey("When the kept file still matches the canon, the copy is not stale", func() {
+			same := command.Render(command.Document{Name: "greet", Description: "greet", Body: "Say hello.\n"})
+
+			kept, err := reporter.HiddenCopy("greet.md", same)
+			So(err, ShouldBeNil)
+			So(kept.Present, ShouldBeTrue)
+			So(kept.Differs, ShouldBeFalse)
+		})
+
+		Convey("When the host holds no file, the copy is absent", func() {
+			hidden := command.Render(command.Document{Name: "other", Description: "other", Body: "Use $1 now.\n"})
+
+			kept, err := reporter.HiddenCopy("other.md", hidden)
+			So(err, ShouldBeNil)
+			So(kept.Present, ShouldBeFalse)
+		})
+	})
+}
+
 func TestClaudeCommandsShift(t *testing.T) {
 	Convey("Given a Claude command with 0-based arguments", t, func() {
 		home := t.TempDir()

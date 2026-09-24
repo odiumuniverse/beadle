@@ -86,6 +86,68 @@ func TestCommandsEngineSkipsInexpressible(t *testing.T) {
 	})
 }
 
+func TestCommandsEngineHiddenStaleCopy(t *testing.T) {
+	Convey("Given a command delivered to Gemini and then made inexpressible", t, func() {
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		f.enableAgent(t, agent.GeminiCLIID)
+
+		So(os.MkdirAll(filepath.Join(f.home, ".gemini"), 0o750), ShouldBeNil)
+
+		geminiFile := filepath.Join(f.home, ".gemini", "commands", "greet.toml")
+		canonFile := filepath.Join(f.vault.CommandsDir(), "greet.md")
+
+		write(t, canonFile, string(command.Render(command.Document{
+			Name: "greet", Description: "greet", Body: "Say hello.\n",
+		})))
+
+		f.sync(t)
+		So(read(t, geminiFile), ShouldContainSubstring, "Say hello")
+
+		// The canon becomes inexpressible for Gemini: the delivered file stays.
+		write(t, canonFile, string(command.Render(command.Document{
+			Name: "greet", Description: "greet", Body: "Use $1 now.\n",
+		})))
+
+		f.sync(t)
+		before := read(t, geminiFile)
+
+		Convey("Then sync stays silent and the doctor warns about the stale copy", func() {
+			So(before, ShouldContainSubstring, "Say hello")
+			So(before, ShouldNotContainSubstring, "$1")
+
+			issues, err := f.engine.Doctor(t.Context())
+			So(err, ShouldBeNil)
+
+			stale := dshIssue(issues, engine.SeverityWarn, "is stale")
+			So(stale, ShouldNotBeNil)
+			So(stale.Kind, ShouldEqual, kind.Commands)
+			So(stale.Agent, ShouldEqual, agent.GeminiCLIID)
+			So(stale.Message, ShouldEqual,
+				"host copy ~/.gemini/commands/greet.toml is stale: the canon item greet.md cannot be expressed by Gemini CLI; the host still loads the old content (remove the file or change the mode)")
+
+			So(hasIssue(issues, engine.SeverityInfo, "placeholder gemini cannot express"), ShouldBeTrue)
+		})
+
+		Convey("When the kept file already matches the canon, no stale warning appears", func() {
+			write(t, geminiFile, "prompt = \"\"\"\nUse $1 now.\n\"\"\"\ndescription = \"greet\"\n")
+
+			issues, err := f.engine.Doctor(t.Context())
+			So(err, ShouldBeNil)
+			So(hasIssue(issues, engine.SeverityWarn, "is stale"), ShouldBeFalse)
+			So(hasIssue(issues, engine.SeverityInfo, "placeholder gemini cannot express"), ShouldBeTrue)
+		})
+
+		Convey("When the host holds no file, there is nothing to warn about", func() {
+			So(os.Remove(geminiFile), ShouldBeNil)
+
+			issues, err := f.engine.Doctor(t.Context())
+			So(err, ShouldBeNil)
+			So(hasIssue(issues, engine.SeverityWarn, "is stale"), ShouldBeFalse)
+		})
+	})
+}
+
 func TestCommandsEngineCodexPullOnly(t *testing.T) {
 	Convey("Given a deprecated Codex prompt", t, func() {
 		f := newFixture(t)

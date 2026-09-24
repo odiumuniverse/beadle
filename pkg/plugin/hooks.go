@@ -505,12 +505,27 @@ func parseHookDocument(data []byte) (Hooks, []string, error) {
 			continue
 		}
 
-		var groups []HookGroup
+		var entries []json.RawMessage
 
-		if err := json.Unmarshal(events[event], &groups); err != nil {
+		if err := json.Unmarshal(events[event], &entries); err != nil {
 			warns = append(warns, fmt.Sprintf("hook event %s is not a list of matcher groups; ignored", event))
 
 			continue
+		}
+
+		var groups []HookGroup
+
+		for _, entry := range entries {
+			group, entryWarns, ok := parseHookEntry(entry)
+			if !ok {
+				warns = append(warns, entryWarns...)
+
+				continue
+			}
+
+			warns = append(warns, entryWarns...)
+
+			groups = append(groups, group)
 		}
 
 		if len(groups) > 0 {
@@ -521,8 +536,65 @@ func parseHookDocument(data []byte) (Hooks, []string, error) {
 	return out, warns, nil
 }
 
+// parseHookEntry decodes one entry of an event list: the nested matcher group
+// every host documents, or a flat handler (Cursor's hooks.json) normalized
+// into a single-handler group carrying the entry's matcher. A flat handler
+// without a type is a command hook, like the Cursor renderer writes it.
+func parseHookEntry(data json.RawMessage) (HookGroup, []string, bool) {
+	var raw map[string]json.RawMessage
+
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return HookGroup{}, []string{"hook entry is not an object; ignored"}, false
+	}
+
+	if _, grouped := raw["hooks"]; grouped {
+		var group HookGroup
+
+		if err := json.Unmarshal(data, &group); err != nil {
+			return HookGroup{}, []string{"hook entry is not a matcher group; ignored"}, false
+		}
+
+		return group, nil, true
+	}
+
+	if _, flat := raw["command"]; !flat {
+		return HookGroup{}, []string{"hook entry is neither a matcher group nor a handler; ignored"}, false
+	}
+
+	var warns []string
+
+	matcher := ""
+
+	if value, ok := raw["matcher"]; ok {
+		if err := json.Unmarshal(value, &matcher); err != nil {
+			matcher = ""
+
+			warns = append(warns, "hook matcher is not a string; ignored")
+		}
+
+		delete(raw, "matcher")
+	}
+
+	if _, ok := raw["type"]; !ok {
+		raw["type"] = json.RawMessage(`"command"`)
+	}
+
+	handlerData, err := json.Marshal(raw)
+	if err != nil {
+		return HookGroup{}, []string{"hook handler cannot be decoded; ignored"}, false
+	}
+
+	var handler HookHandler
+
+	if err := json.Unmarshal(handlerData, &handler); err != nil {
+		return HookGroup{}, []string{"hook handler cannot be decoded; ignored"}, false
+	}
+
+	return HookGroup{Matcher: matcher, Hooks: []HookHandler{handler}}, warns, true
+}
+
 // metaHookKeys are document keys that carry metadata rather than an event.
-var metaHookKeys = map[string]bool{"$schema": true, "description": true}
+var metaHookKeys = map[string]bool{"$schema": true, "description": true, "version": true}
 
 // handlerKeys are the handler fields the reader understands. `shell` and
 // `statusMessage` are cosmetic for a canon command: the host shell runs the

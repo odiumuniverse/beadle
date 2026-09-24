@@ -250,7 +250,8 @@ func (e *Engine) autoEnableBundlesInto(ctx context.Context, active []*agent.Agen
 // register → probe → flip. auto marks an unattended attempt, recorded in the
 // state so it is not retried on every sync.
 func (e *Engine) bundleEnable(ctx context.Context, host bundle.Host, st *state.State, report *Report, auto bool) error {
-	req, cov, reqWarns, err := e.bundleRenderRequest(host)
+	req, cov, notes, reqWarns, err := e.bundleRenderRequest(host)
+	report.Notes = append(report.Notes, notes...)
 	report.Warnings = append(report.Warnings, reqWarns...)
 	report.Warnings = append(report.Warnings, cov.Warnings...)
 
@@ -481,7 +482,8 @@ func (e *Engine) BundlesDisable(ctx context.Context, hostName string) (Report, e
 
 	dir := filepath.Join(e.vault.BundlesDir(), string(host))
 
-	restored, restoreWarns, err := e.rematerializeBundle(ctx, host, entry)
+	restored, restoreNotes, restoreWarns, err := e.rematerializeBundle(ctx, host, entry)
+	report.Notes = append(report.Notes, restoreNotes...)
 	report.Warnings = append(report.Warnings, restoreWarns...)
 
 	if err != nil {
@@ -659,7 +661,13 @@ func joinBundleNotes(notes ...string) string {
 	return strings.Join(kept, "; ")
 }
 
-func (e *Engine) bundleRequest(host bundle.Host) (bundle.Request, []string, error) {
+// secretRefMarker is the canon syntax of a secret reference. A server whose
+// configuration carries one never enters a native bundle: the bundle is a
+// distributable package, while the host MCP surface delivers the same server
+// with resolved values.
+const secretRefMarker = "{secret:"
+
+func (e *Engine) bundleRequest(host bundle.Host) (bundle.Request, []string, []string, error) {
 	req := bundle.Request{
 		Host:     host,
 		Skills:   map[string]map[string][]byte{},
@@ -668,11 +676,14 @@ func (e *Engine) bundleRequest(host bundle.Host) (bundle.Request, []string, erro
 		Approved: hooks.Approved(e.config),
 	}
 
-	var warns []string
+	var (
+		notes []string
+		warns []string
+	)
 
 	canon, err := hooks.Load(e.vault.HooksPath())
 	if err != nil {
-		return req, warns, err
+		return req, notes, warns, err
 	}
 
 	req.Hooks = e.renderableHooks(host, canon)
@@ -680,7 +691,7 @@ func (e *Engine) bundleRequest(host bundle.Host) (bundle.Request, []string, erro
 	if slices.Contains(host.ContentKinds(), kind.Skills) {
 		items, _, err := e.loadVault(kind.Skills)
 		if err != nil {
-			return req, warns, err
+			return req, notes, warns, err
 		}
 
 		skills, skillWarns := bundleSkills(items)
@@ -691,26 +702,49 @@ func (e *Engine) bundleRequest(host bundle.Host) (bundle.Request, []string, erro
 	if slices.Contains(host.ContentKinds(), kind.MCP) {
 		items, _, err := e.loadVault(kind.MCP)
 		if err != nil {
-			return req, warns, err
+			return req, notes, warns, err
+		}
+
+		items, skipped := splitSecretBearingServers(items)
+		for _, name := range skipped {
+			notes = append(notes, fmt.Sprintf("mcp %s carries secrets; delivered via the host config, not the bundle", name))
 		}
 
 		resolved, _, err := e.outbound(kind.MCP, items)
 		if err != nil {
-			return req, warns, err
+			return req, notes, warns, err
 		}
 
 		for _, name := range slices.Sorted(maps.Keys(resolved)) {
-			if bytes.Contains(resolved[name], []byte("{secret:")) {
-				warns = append(warns, fmt.Sprintf("bundles: server %s has unresolved secrets; not rendered", name))
-
-				continue
-			}
-
 			req.Servers[name] = resolved[name]
 		}
 	}
 
-	return req, warns, nil
+	return req, notes, warns, nil
+}
+
+// splitSecretBearingServers keeps the canon servers a native bundle may carry.
+// A server whose configuration references a secret is skipped: everything
+// shipped in a plugin is readable by everyone who installs it, so the value
+// stays out of the bundle and reaches the hosts through their MCP surfaces.
+func splitSecretBearingServers(items kind.Items) (kind.Items, []string) {
+	kept := kind.Items{}
+
+	var skipped []string
+
+	for name, data := range items {
+		if bytes.Contains(data, []byte(secretRefMarker)) {
+			skipped = append(skipped, name)
+
+			continue
+		}
+
+		kept[name] = data
+	}
+
+	slices.Sort(skipped)
+
+	return kept, skipped
 }
 
 func bundleSkills(items kind.Items) (map[string]map[string][]byte, []string) {
@@ -779,7 +813,8 @@ func (e *Engine) refreshBundle(st *state.State, report *Report, hostName string)
 		return
 	}
 
-	req, cov, warns, err := e.bundleRenderRequest(host)
+	req, cov, notes, warns, err := e.bundleRenderRequest(host)
+	report.Notes = append(report.Notes, notes...)
 	report.Warnings = append(report.Warnings, warns...)
 	report.Warnings = append(report.Warnings, cov.Warnings...)
 
@@ -1058,7 +1093,29 @@ func (e *Engine) bundleIssues(ctx context.Context) []Issue {
 
 	issues = append(issues, e.validateActiveClaudeBundle(st)...)
 
-	return issues
+	return dedupSecretNotes(issues)
+}
+
+// dedupSecretNotes keeps one Info per secret-bearing server: every bundle host
+// reports the same canon server.
+func dedupSecretNotes(issues []Issue) []Issue {
+	seen := map[string]bool{}
+
+	out := make([]Issue, 0, len(issues))
+
+	for _, issue := range issues {
+		if strings.Contains(issue.Message, "carries secrets; delivered via the host config, not the bundle") {
+			if seen[issue.Message] {
+				continue
+			}
+
+			seen[issue.Message] = true
+		}
+
+		out = append(out, issue)
+	}
+
+	return out
 }
 
 func (e *Engine) bundleHostStateIssues(ctx context.Context, st *state.State, host bundle.Host, hostName string, entry state.BundleState, exists bool) []Issue {
@@ -1082,9 +1139,13 @@ func (e *Engine) bundleHostStateIssues(ctx context.Context, st *state.State, hos
 
 	issues = append(issues, e.bundleRegistrationIssues(hostName, host, entry)...)
 
-	req, cov, _, err := e.bundleRenderRequest(host)
+	req, cov, notes, _, err := e.bundleRenderRequest(host)
 	if err != nil {
 		return append(issues, Issue{Severity: SeverityWarn, Message: "bundles: " + err.Error()})
+	}
+
+	for _, note := range notes {
+		issues = append(issues, Issue{Severity: SeverityInfo, Message: note})
 	}
 
 	issues = append(issues, coverageIssues(host, cov)...)

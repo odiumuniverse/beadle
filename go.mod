@@ -13,7 +13,7 @@ require (
 	github.com/tailscale/hujson v0.0.0-20260727124030-b80ff77dac4f
 	github.com/vmkteam/embedlog v0.1.3
 	go.yaml.in/yaml/v3 v3.0.5
-	golang.org/x/text v0.25.0
+	golang.org/x/text v0.40.0
 )
 
 require (

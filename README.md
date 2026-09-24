@@ -310,6 +310,9 @@ back. Beadle writes hook files but never runs them. Cursor and Codex have no
 bundle host: their approved hooks render into the user-level
 `~/.cursor/hooks.json` and `~/.codex/hooks.json` instead, foreign hooks are
 kept, and Codex asks you to review new hooks in `/hooks` before they run.
+MCP servers that carry secrets stay out of the bundle — a plugin package is
+readable by everyone who installs it — and keep arriving through the host MCP
+config.
 *Why:* native plugins survive upgrades and keep hooks in one audited place.
 
 </details>

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"maps"
@@ -446,17 +447,29 @@ func (e *Engine) sharedSkillCopies(ctx context.Context, names map[string]struct{
 	return out
 }
 
-func (e *Engine) rematerializeBundle(ctx context.Context, host bundle.Host, entry state.BundleState) ([]string, []string, error) {
+func (e *Engine) rematerializeBundle(ctx context.Context, host bundle.Host, entry state.BundleState) ([]string, []string, []string, error) {
 	if len(entry.Withdrawn) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	// The restore path keeps the unfiltered canon: a covered name may need to
 	// come back when its foreign copy is gone.
-	req, warns, err := e.bundleRequest(host)
+	req, notes, warns, err := e.bundleRequest(host)
 	if err != nil {
-		return nil, warns, err
+		return nil, notes, warns, err
 	}
+
+	// A secret-bearing server stays out of the bundle, but an older bundle may
+	// have withdrawn it: resolve the canon for the host-surface write, so the
+	// disable restores it. Names whose values do not resolve stay out, and the
+	// unfinished-withdrawal error reports them instead of writing a dangling
+	// reference into the host config.
+	hostServers, err := e.hostMaterializationServers()
+	if err != nil {
+		return nil, notes, warns, err
+	}
+
+	maps.Copy(req.Servers, hostServers)
 
 	byKind := map[kind.ID]map[string]state.WithdrawnItem{}
 
@@ -478,7 +491,7 @@ func (e *Engine) rematerializeBundle(ctx context.Context, host bundle.Host, entr
 
 		canonItems, _, err := e.loadVault(k)
 		if err != nil {
-			return restored, warns, err
+			return restored, notes, warns, err
 		}
 
 		names, kindWarns, err := e.rematerializeKind(ctx, host, k, req, itemGroups(canonItems, k), pending)
@@ -486,11 +499,33 @@ func (e *Engine) rematerializeBundle(ctx context.Context, host bundle.Host, entr
 		restored = append(restored, names...)
 
 		if err != nil {
-			return restored, warns, err
+			return restored, notes, warns, err
 		}
 	}
 
-	return restored, warns, nil
+	return restored, notes, warns, nil
+}
+
+// hostMaterializationServers resolves the canon MCP servers for a host surface
+// write; a server whose secret values do not resolve is left out.
+func (e *Engine) hostMaterializationServers() (kind.Items, error) {
+	items, _, err := e.loadVault(kind.MCP)
+	if err != nil {
+		return nil, err
+	}
+
+	resolved, _, err := e.outbound(kind.MCP, items)
+	if err != nil {
+		return nil, err
+	}
+
+	for name, data := range resolved {
+		if bytes.Contains(data, []byte(secretRefMarker)) {
+			delete(resolved, name)
+		}
+	}
+
+	return resolved, nil
 }
 
 func (e *Engine) rematerializeKind(

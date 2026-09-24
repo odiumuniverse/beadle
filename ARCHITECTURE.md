@@ -76,6 +76,10 @@ resolving disagreements is exactly where an agent should not improvise.
 own format and keeps everything it does not own. JSONC stays JSONC: comments
 and formatting of untouched parts survive edits.
 
+A host file whose canon item became inexpressible is kept; when its content
+differs from the canon, `doctor` warns that the host still loads the stale copy
+(remove the file or change the mode).
+
 ## Plugins are read from every host
 
 A plugin installed in any supported agent — Claude Code, Codex, Gemini CLI
@@ -88,7 +92,9 @@ move them). Everything the plugin ships is presented to the other hosts:
 skills and MCP servers, agents and commands (markdown links, Codex TOML
 renders, Gemini TOML for the extension host and lifted markdown for the
 others), and — only after an explicit `beadle hooks approve --plugin <key>` —
-lifecycle hooks.
+lifecycle hooks, read in the dialect of each host: nested matcher groups
+(Claude, Codex, Gemini), Antigravity's owner-keyed file, and Cursor's flat
+`{command, timeout?, matcher?}` entries.
 
 The same plugin found in several hosts is presented once: equal artifact
 digests (skill trees, agent and command bytes, hook commands, the MCP
@@ -97,6 +103,20 @@ wins with a sync note, and divergent copies are warned about instead of being
 silently hidden. The vault canon always outranks plugins: a canon skill with
 the same name shadows the plugin one. Plugin payloads never enter the canon by
 themselves.
+
+## Bundles carry no secrets
+
+A native bundle is a distributable package: everything inside is readable by
+everyone who installs it. An MCP server whose configuration references a secret
+(`{secret:…}`) therefore stays out of the rendered Claude, Gemini and
+Antigravity bundles — a sync note and a doctor Info explain where it went —
+and keeps arriving through the host MCP surface with resolved values. That
+copy is refreshed by every sync while the MCP kind stays on; after a bundle
+flip the kind is off, so the host copy is not updated until the bundle is
+disabled (or the server leaves the filter). When a bundle that had withdrawn
+such a server earlier is disabled, the server is resolved back into the host
+config; a value that cannot resolve keeps the bundle enabled instead of
+writing a dangling reference.
 
 ## State is a cache, not a source
 

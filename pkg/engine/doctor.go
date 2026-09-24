@@ -1526,6 +1526,49 @@ func boolWord(value bool) string {
 	return "no"
 }
 
+// hiddenStaleIssues warns about host files kept for canon items the surface
+// cannot express when the kept file still holds different content: hiding
+// never deletes the file (A-29), so the host keeps loading the stale copy.
+// Identical content stays with the expressiveness Info, a missing file is
+// silence, and a pull-mode surface is not managed here at all.
+func (e *Engine) hiddenStaleIssues(id kind.ID, active []*agent.Agent, items kind.Items) []Issue {
+	var issues []Issue
+
+	for _, a := range active {
+		surface := a.Surface(id)
+		if surface == nil {
+			continue
+		}
+
+		reporter, ok := surface.(agent.HiddenHostCopies)
+		if !ok {
+			continue
+		}
+
+		if !e.config.ModeFor(a.ID, id, surface.Traits().DefaultMode).Pushes() {
+			continue
+		}
+
+		proj := project(items, surface)
+
+		for _, key := range slices.Sorted(maps.Keys(proj.hidden)) {
+			kept, err := reporter.HiddenCopy(key, items[key])
+			if err != nil || !kept.Present || !kept.Differs {
+				continue
+			}
+
+			issues = append(issues, Issue{
+				Severity: SeverityWarn, Kind: id, Agent: a.ID,
+				Message: fmt.Sprintf(
+					"host copy %s is stale: the canon item %s cannot be expressed by %s; the host still loads the old content (remove the file or change the mode)",
+					displayHomePath(kept.Path, e.home), key, a.Name),
+			})
+		}
+	}
+
+	return issues
+}
+
 // subagentIssues reports the canonical subagent diagnostics:
 // host-expressiveness notes and secret-like canon lines.
 func (e *Engine) subagentIssues(active []*agent.Agent) []Issue {
@@ -1543,6 +1586,8 @@ func (e *Engine) subagentIssues(active []*agent.Agent) []Issue {
 			}
 		}
 	}
+
+	issues = append(issues, e.hiddenStaleIssues(kind.Subagents, active, items)...)
 
 	for _, key := range slices.Sorted(maps.Keys(items)) {
 		if hits := secret.ScanText(items[key]); len(hits) > 0 {
@@ -1603,6 +1648,8 @@ func (e *Engine) commandIssues(active []*agent.Agent) []Issue {
 			}
 		}
 	}
+
+	issues = append(issues, e.hiddenStaleIssues(kind.Commands, active, items)...)
 
 	issues = append(issues, e.claudeCommandSkillIssues(items)...)
 	issues = append(issues, e.codexPromptIssues(active)...)

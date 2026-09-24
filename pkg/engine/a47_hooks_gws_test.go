@@ -71,6 +71,47 @@ func TestA47HooksApproveFromCodexSource(t *testing.T) {
 	})
 }
 
+func TestA47HooksApproveFromCursorFlatSource(t *testing.T) {
+	Convey("Given a Cursor plugin whose hooks use the flat document", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		a47CursorHome(t, f)
+
+		dir := filepath.Join(f.home, ".cursor", "plugins", "local", "tool")
+		write(t, filepath.Join(dir, ".cursor-plugin", "plugin.json"), `{"name":"tool"}`)
+		write(t, filepath.Join(dir, "hooks", "hooks.json"), `{"version":1,"hooks":{
+			"preToolUse":[{"command":"cursor-hook.sh","timeout":5},{"command":"matched.sh","matcher":"Bash"}],
+			"stop":[{"command":"guarded.sh","failClosed":true}]
+		}}`)
+
+		f.sync(t)
+
+		Convey("When the plugin hooks are approved", func() {
+			report, err := f.engine.ApprovePluginHooks("cursor/tool")
+			So(err, ShouldBeNil)
+
+			canon, err := hooks.Load(f.vault.HooksPath())
+			So(err, ShouldBeNil)
+			So(canon, ShouldHaveLength, 2)
+
+			pre, ok := canon["tool--pre-tool-1"]
+			So(ok, ShouldBeTrue)
+			So(pre.Event, ShouldEqual, "pre-tool")
+			So(pre.Command, ShouldEqual, "cursor-hook.sh")
+			So(pre.Timeout, ShouldEqual, 5)
+			So(pre.Source, ShouldEqual, "plugin:cursor/tool")
+
+			So(canon["tool--pre-tool-2"].Matcher, ShouldEqual, "Bash")
+			So(canon["tool--pre-tool-2"].Command, ShouldEqual, "matched.sh")
+
+			So(a36HasText(report.Warnings, "unsupported field(s) failClosed"), ShouldBeTrue)
+			So(a36HasText(report.Notes, "2 approved, 0 refreshed, 0 removed, 1 skipped"), ShouldBeTrue)
+		})
+	})
+}
+
 func TestA47HookDriftInForeignSource(t *testing.T) {
 	Convey("Given an approved Codex plugin whose hooks changed", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")
