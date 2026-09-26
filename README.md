@@ -15,6 +15,7 @@
     <a href="https://github.com/odiumuniverse/beadle/actions/workflows/ci.yml"><img alt="ci" src="https://img.shields.io/github/actions/workflow/status/odiumuniverse/beadle/ci.yml?branch=master&style=flat-square&label=ci&color=3E6E5C&labelColor=1F2328"></a>
     <img alt="go" src="https://img.shields.io/badge/go-1.27-3E6E5C?style=flat-square&labelColor=1F2328">
     <img alt="license" src="https://img.shields.io/badge/license-MIT-3E6E5C?style=flat-square&labelColor=1F2328">
+    <a href="https://www.skillsdirectory.com/skills/odiumuniverse-plug-24"><img alt="Security: A — Skills Directory" src="https://www.skillsdirectory.com/api/skills/odiumuniverse-plug-24/badge"></a>
   </p>
 
 </div>
