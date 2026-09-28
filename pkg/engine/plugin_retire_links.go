@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/kind"
@@ -33,6 +34,11 @@ func (e *Engine) repairPluginLinks(active []*agent.Agent) (int, []string) {
 		return 0, nil
 	}
 
+	// Only a plugin the ledger retired (or one it never knew: an orphan pivot
+	// heal already removed) leaves links to clean. A live parked plugin keeps
+	// its links even when the pivot is not on disk at this instant.
+	live := e.livePluginKeys()
+
 	var (
 		removed int
 		warns   []string
@@ -53,7 +59,7 @@ func (e *Engine) repairPluginLinks(active []*agent.Agent) (int, []string) {
 
 				seen[dir] = true
 
-				count, dirWarns := removeDanglingPluginLinks(dir, root)
+				count, dirWarns := removeDanglingPluginLinks(dir, root, live)
 				removed += count
 
 				warns = append(warns, dirWarns...)
@@ -80,7 +86,7 @@ func linkScanDirs(surface agent.Surface) []string {
 // removeDanglingPluginLinks drops the symlinks under dir whose target is
 // missing and lies inside pivotRoot. It returns how many it removed; a
 // missing dir is not an error.
-func removeDanglingPluginLinks(dir, pivotRoot string) (int, []string) {
+func removeDanglingPluginLinks(dir, pivotRoot string, live map[string]bool) (int, []string) {
 	var (
 		removed int
 		warns   []string
@@ -101,7 +107,7 @@ func removeDanglingPluginLinks(dir, pivotRoot string) (int, []string) {
 			return nil
 		}
 
-		drop, warn := danglingPivotLink(path, pivotRoot)
+		drop, warn := danglingPivotLink(path, pivotRoot, live)
 		if warn != "" {
 			warns = append(warns, warn)
 		}
@@ -128,10 +134,46 @@ func removeDanglingPluginLinks(dir, pivotRoot string) (int, []string) {
 	return removed, warns
 }
 
+// livePluginKeys lists the ledger keys beadle still presents. A link into a
+// plugin that is missing from the set was retired (or never recorded at all,
+// which is what an orphan pivot heal already removed looks like).
+func (e *Engine) livePluginKeys() map[string]bool {
+	live := map[string]bool{}
+
+	ledger, _, err := loadPluginLedger(e.vault.PluginsLedgerPath())
+	if err != nil {
+		return live
+	}
+
+	for key, rec := range ledger.Plugins {
+		if rec.RetiredAt.IsZero() {
+			live[key] = true
+		}
+	}
+
+	return live
+}
+
+// pluginKeyAt splits the plugin key a link target under pivotRoot belongs to:
+// <pivotRoot>/<marketplace>/<name>/...
+func pluginKeyAt(target, pivotRoot string) (string, bool) {
+	rel, err := filepath.Rel(pivotRoot, target)
+	if err != nil {
+		return "", false
+	}
+
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return "", false
+	}
+
+	return parts[0] + "/" + parts[1], true
+}
+
 // danglingPivotLink reports whether the symlink at path points into pivotRoot
 // at a target that is gone, and returns the diagnostic when the entry cannot
 // be read at all.
-func danglingPivotLink(path, pivotRoot string) (bool, string) {
+func danglingPivotLink(path, pivotRoot string, live map[string]bool) (bool, string) {
 	target, err := os.Readlink(path)
 	if err != nil {
 		return false, fmt.Sprintf("plugins: cannot read the link %s: %v", path, err)
@@ -143,6 +185,10 @@ func danglingPivotLink(path, pivotRoot string) (bool, string) {
 
 	target = filepath.Clean(target)
 	if !underDir(target, pivotRoot) {
+		return false, ""
+	}
+
+	if key, ok := pluginKeyAt(target, pivotRoot); ok && live[key] {
 		return false, ""
 	}
 

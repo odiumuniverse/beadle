@@ -217,6 +217,13 @@ type State struct {
 	// BundleOptOut lists hosts the user disabled explicitly: the unattended
 	// attempt leaves them alone until `beadle bundles enable <host>`.
 	BundleOptOut []string `json:"bundle_opt_out,omitempty"`
+	// Home records the home directory the vault was last synced from. The
+	// plugin readers walk the CURRENT home, so a run from a foreign home (a
+	// container, CI, a temp HOME) sees no plugins at all: without this record
+	// the retirement pass would delete the pivots of a vault that belongs to
+	// another machine. The record is written on the first sync and only
+	// compared afterwards.
+	Home string `json:"home,omitempty"`
 }
 
 // BundleOptedOut reports that the user disabled this host's bundle by hand.

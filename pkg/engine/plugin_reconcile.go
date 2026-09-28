@@ -101,6 +101,24 @@ type pluginGroup struct {
 // reconcilePlugins parks installed plugins and reports whether orphan
 // cleanup is safe this run (a malformed ledger knows nothing about
 // ownership).
+// retireableRemoved runs the retirement pass unless the vault belongs to
+// another home: the guard records this home on a first sync and reports the
+// refusal otherwise.
+func (e *Engine) retireableRemoved(installed map[string]struct{}, ledger *pluginLedger) ([]PluginResult, bool, []string) {
+	guard := e.pluginHomeGuard()
+
+	switch {
+	case !guard.Retireable():
+		return nil, false, []string{guard.Warning()}
+	case guard.Recorded == "":
+		e.rememberVaultHome()
+	}
+
+	removed, dirty := e.retireRemoved(installed, ledger)
+
+	return removed, dirty, nil
+}
+
 func (e *Engine) reconcilePlugins(_ context.Context) ([]PluginResult, []string, []string, bool, error) {
 	var warns []string
 
@@ -167,7 +185,11 @@ func (e *Engine) reconcilePlugins(_ context.Context) ([]PluginResult, []string, 
 		results = append(results, result)
 	}
 
-	removed, removedDirty := e.retireRemoved(installed, &ledger)
+	// Retirement deletes vault pivots for plugins the readers no longer
+	// report; the readers walk the CURRENT home, so a foreign home would
+	// empty the canon of a vault that belongs to another machine.
+	removed, removedDirty, guardWarn := e.retireableRemoved(installed, &ledger)
+	warns = append(warns, guardWarn...)
 
 	results = append(results, removed...)
 

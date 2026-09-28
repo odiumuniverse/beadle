@@ -91,6 +91,14 @@ func (e *Engine) Heal(ctx context.Context, dryRun bool) ([]HealResult, error) {
 }
 
 func (e *Engine) healLegacyOrphans(ledger pluginLedger, dryRun bool) []HealResult {
+	// The same guard as the sync path: a foreign home sees no plugins, and
+	// removing the pivots of another machine's vault is not a repair. The
+	// refusal is reported as its own result and the destructive pass is not
+	// run at all.
+	if guard := e.pluginHomeGuard(); !guard.Retireable() {
+		return []HealResult{{Key: "plugins", Note: guard.Warning()}}
+	}
+
 	pivots, links, _ := e.convergeLegacyOrphans(ledger, dryRun)
 
 	merged := map[string]*HealResult{}

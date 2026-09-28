@@ -97,18 +97,6 @@ func (e *Engine) syncPluginSurfaces(ctx context.Context, report *Report, active 
 
 	report.Plugins = results
 
-	// Retiring a plugin removes its pivot, so the links that pointed into it
-	// must go in the same pass; the sweep is state-based and also repairs
-	// what an earlier retire left behind. It runs before the farm so the farm
-	// plan never sees a dangling link it would call its own.
-	if removed, linkWarns := e.repairPluginLinks(active); removed > 0 || len(linkWarns) > 0 {
-		report.Warnings = append(report.Warnings, linkWarns...)
-
-		if removed > 0 {
-			report.Notes = append(report.Notes, fmt.Sprintf("plugins: removed %d dangling link(s) into retired plugin pivots", removed))
-		}
-	}
-
 	if opts.Direction == config.ModePull {
 		return
 	}
@@ -161,6 +149,19 @@ func (e *Engine) syncPluginSurfaces(ctx context.Context, report *Report, active 
 
 	report.Farm = farm
 	report.Warnings = append(report.Warnings, farmWarnings...)
+
+	// Retiring a plugin removes its pivot, so the links that pointed into it
+	// must go in the same pass. The sweep runs after the farm (which accounts
+	// for the links its own plan owns) and covers what the plan never visits:
+	// a pull-mode host's skills dir and the shared agents home. It is
+	// state-based, so it also repairs what an earlier retire left behind.
+	if removed, linkWarns := e.repairPluginLinks(active); removed > 0 || len(linkWarns) > 0 {
+		report.Warnings = append(report.Warnings, linkWarns...)
+
+		if removed > 0 {
+			report.Notes = append(report.Notes, fmt.Sprintf("plugins: removed %d dangling link(s) into retired plugin pivots", removed))
+		}
+	}
 }
 
 // pruneLegacyOrphanLinks runs the orphan farm-link cleanup on every sync
