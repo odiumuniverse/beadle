@@ -583,11 +583,26 @@ func ompBundleCommands(dir string, registered ompRegistry) [][]string {
 	return append(commands, []string{cliPlugin, cliInstall, "--force", ompBundleKey()})
 }
 
-// registerOmpBundle registers the omp bundle from omp's own state instead of
-// replaying a blind command list, and confirms the result by re-reading that
-// state: omp's installer is not transactional, so the recorded version is the
-// only proof of what the host will serve.
+// registerOmpBundle registers the omp bundle under the shared omp plugin lock
+// (lockOmpPlugin): a writer that cannot take the lock keeps the file copies
+// and the printed commands instead of mutating omp's state under another
+// writer.
 func (e *Engine) registerOmpBundle(host bundle.Host, dir string, entry *state.BundleState, version string, report *Report) (string, string) {
+	release, locked := e.lockOmpPlugin(report)
+	if !locked {
+		return bundleGenerated, bundleInstructions(host, dir, e.home)
+	}
+	defer release()
+
+	return e.registerOmpBundleLocked(host, dir, entry, version, report)
+}
+
+// registerOmpBundleLocked registers the omp bundle from omp's own state
+// instead of replaying a blind command list, and confirms the result by
+// re-reading that state: omp's installer is not transactional, so the
+// recorded version is the only proof of what the host will serve. The caller
+// holds the shared plugin lock.
+func (e *Engine) registerOmpBundleLocked(host bundle.Host, dir string, entry *state.BundleState, version string, report *Report) (string, string) {
 	registered, err := e.ompBundleRegistry()
 	if err != nil {
 		report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: cannot read the omp plugin registry: %v", err))
@@ -631,10 +646,22 @@ func (e *Engine) registerOmpBundle(host bundle.Host, dir string, entry *state.Bu
 	return bundleEnabled, ""
 }
 
-// unregisterOmpBundle removes the omp bundle, skipping the steps omp's state
-// shows as already done: the CLI errors on an uninstall or a marketplace
-// removal that has nothing to act on.
+// unregisterOmpBundle removes the omp bundle under the shared omp plugin lock
+// (lockOmpPlugin); without the lock the caller keeps the printed commands.
 func (e *Engine) unregisterOmpBundle(dir string, report *Report) (bool, string) {
+	release, locked := e.lockOmpPlugin(report)
+	if !locked {
+		return false, bundleUnregisterInstructions(bundle.Omp, dir, e.home)
+	}
+	defer release()
+
+	return e.unregisterOmpBundleLocked(dir, report)
+}
+
+// unregisterOmpBundleLocked removes the omp bundle, skipping the steps omp's
+// state shows as already done: the CLI errors on an uninstall or a marketplace
+// removal that has nothing to act on. The caller holds the shared plugin lock.
+func (e *Engine) unregisterOmpBundleLocked(dir string, report *Report) (bool, string) {
 	registered, err := e.ompBundleRegistry()
 	if err != nil {
 		report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: cannot read the omp plugin registry: %v", err))

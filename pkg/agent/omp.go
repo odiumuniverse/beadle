@@ -120,6 +120,21 @@ func OmpConfigured(home string) bool {
 	return fsutil.Exists(filepath.Join(OmpAgentDir(home), ompConfigFile))
 }
 
+// OmpStateRoot returns the directory that holds the profile-visible omp state
+// next to the agent directory (plugins/, marketplaces.json): the profile
+// directory when a named profile is active, the user root otherwise. It is
+// the one resolver every package must use — a second copy of this rule drifts
+// as soon as a profile is active.
+func OmpStateRoot(home string) string {
+	root, _ := OmpHome(home)
+
+	if profile, ok := OmpProfile(); ok {
+		return filepath.Join(root, ompProfilesDirName, profile)
+	}
+
+	return root
+}
+
 // OmpPluginsDir returns the directory holding omp's plugin state
 // (installed_plugins.json, marketplaces.json, node_modules, caches): a named
 // profile relocates it next to the profile's agent dir, exactly like
@@ -128,13 +143,7 @@ func OmpConfigured(home string) bool {
 // reads). PI_CODING_AGENT_DIR does not move it — the plugin state is a
 // sibling of agent/, not a child.
 func OmpPluginsDir(home string) string {
-	root, _ := OmpHome(home)
-
-	if profile, ok := OmpProfile(); ok {
-		return filepath.Join(root, ompProfilesDirName, profile, "plugins")
-	}
-
-	return filepath.Join(root, "plugins")
+	return filepath.Join(OmpStateRoot(home), "plugins")
 }
 
 // OmpProfiles lists the profile directories under <home>/profiles; it feeds

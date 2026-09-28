@@ -2,16 +2,14 @@ package plugin
 
 import (
 	"maps"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/odiumuniverse/beadle/pkg/agent"
 )
 
 const (
-	// ompDirName is omp's default user root. PI_CONFIG_DIR names another
-	// directory under $HOME; agent.OmpHome resolves the same way.
-	ompDirName = ".omp"
 	// ompPluginMetaDir is omp's own plugin manifest directory. omp reads it,
 	// but it reads the version from .claude-plugin/plugin.json only: a plugin
 	// that ships the .omp-plugin manifest alone installs as 0.0.0, so this
@@ -26,18 +24,17 @@ const (
 	ompNodeModulesDir = "node_modules"
 )
 
-// OmpRoot returns omp's user root, the directory that holds the plugin state
-// (marketplaces.json and plugins/). PI_CONFIG_DIR relocates the whole root
-// under $HOME — live-verified: PI_CONFIG_DIR=relocated moves both the agent
-// directory and plugins/ to <home>/relocated — and an empty value keeps the
-// ~/.omp default. It mirrors agent.OmpHome for this package, which sits below
-// pkg/agent; a pkg/engine test keeps the two resolutions in step.
+// OmpRoot returns omp's state root, the directory that holds the plugin state
+// (marketplaces.json and plugins/): ~/.omp by default, <home>/<PI_CONFIG_DIR>
+// when PI_CONFIG_DIR names another root, and the profile directory when a
+// named profile is active (live-verified on 18.4.1: with OMP_PROFILE=work omp
+// reads ~/.omp/profiles/work/plugins/installed_plugins.json).
+//
+// The resolution lives in pkg/agent (agent.OmpStateRoot), which already
+// resolves the same root for the agent surfaces: a second copy of the rule
+// here is what let the two drift as soon as a profile was active.
 func OmpRoot(home string) string {
-	if dir := os.Getenv("PI_CONFIG_DIR"); dir != "" {
-		return filepath.Join(home, dir)
-	}
-
-	return filepath.Join(home, ompDirName)
+	return agent.OmpStateRoot(home)
 }
 
 // ompInstalled is omp's installed_plugins.json (version 2): the marketplace
