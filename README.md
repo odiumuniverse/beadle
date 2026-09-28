@@ -140,7 +140,7 @@ A few things worth knowing:
 
 ## Install
 
-**macOS** — Homebrew:
+**macOS or Linux** — Homebrew:
 
 ```bash
 brew tap odiumuniverse/tap
@@ -148,7 +148,10 @@ brew trust odiumuniverse/tap
 brew install beadle
 ```
 
-**macOS or Linux** — from source:
+The formula serves the macOS build on macOS, and on Linux the native `arm64`
+or `amd64` one, so the same three commands work with Linuxbrew.
+
+**macOS or Linux** — build from source (needs the Go toolchain):
 
 ```bash
 git clone https://github.com/odiumuniverse/beadle.git
