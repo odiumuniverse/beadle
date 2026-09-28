@@ -1012,6 +1012,19 @@ func (e *Engine) write(ctx context.Context, spec kind.Spec, v *view, desired kin
 		return v.snap.Items, ActionSkipped, "missing secrets: " + strings.Join(missing, ", ")
 	}
 
+	// The omp MCP file is written by verger too: take the shared lock so the
+	// re-read inside the write and the mutation cannot interleave with the
+	// other writer. A lock another writer holds skips the file this pass
+	// instead of racing it.
+	release, lockNote := e.lockOmpMCPWrite(spec, v)
+	if lockNote != "" {
+		return v.snap.Items, ActionSkipped, lockNote
+	}
+
+	if release != nil {
+		defer release()
+	}
+
 	if err := v.surface.Write(ctx, out); err != nil {
 		if errors.Is(err, agent.ErrNotConfigured) {
 			return v.snap.Items, ActionSkipped, "no config file to write into; create " + v.surface.Path() + " first"

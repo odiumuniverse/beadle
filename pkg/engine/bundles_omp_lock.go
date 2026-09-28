@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/odiumuniverse/beadle/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/lock"
 	"github.com/odiumuniverse/beadle/pkg/plugin"
 )
@@ -41,6 +43,24 @@ var ompPluginLockWait = 30 * time.Second
 // locks the base root: beadle locks the profile state root it writes, and
 // verger should adopt the same base (see agent.OmpStateRoot).
 func (e *Engine) lockOmpPlugin(report *Report) (func(), bool) {
+	release, err := e.lockOmpSharedFile()
+	if err != nil {
+		report.Warnings = append(report.Warnings,
+			fmt.Sprintf("bundles: %v; the omp bundle stays on the manual path", err))
+
+		return func() {}, false
+	}
+
+	return release, true
+}
+
+// lockOmpSharedFile takes the writer lock beadle shares with every other
+// writer of omp's state (another beadle run or verger): the same file, the
+// same order (lock, then re-read the file, then mutate). It is used for the
+// plugin mutations and for the omp MCP file, which both tools write. The wait
+// is bounded; flock is released by the kernel when a holder dies, so a
+// crashed writer cannot leave the lock behind.
+func (e *Engine) lockOmpSharedFile() (func(), error) {
 	ctx, cancel := context.WithTimeout(context.Background(), ompPluginLockWait)
 
 	lockPath := filepath.Join(plugin.OmpRoot(e.home), ompPluginLockFile)
@@ -49,23 +69,35 @@ func (e *Engine) lockOmpPlugin(report *Report) (func(), bool) {
 	if err != nil {
 		cancel()
 
-		reason := err.Error()
 		if errors.Is(err, lock.ErrBusy) {
-			// The lock is shared with every other writer of omp's plugin
-			// state (another beadle run or verger); the message must not
-			// claim a specific holder.
-			reason = fmt.Sprintf("the omp plugin lock %s is held by another writer", lockPath)
+			// The lock is shared, so the message must not claim a specific
+			// holder.
+			return func() {}, fmt.Errorf("the omp lock %s is held by another writer", lockPath)
 		}
 
-		report.Warnings = append(report.Warnings,
-			fmt.Sprintf("bundles: %s; the omp bundle stays on the manual path", reason))
-
-		return func() { cancel() }, false
+		return func() {}, err
 	}
 
 	return func() {
 		_ = release()
 
 		cancel()
-	}, true
+	}, nil
+}
+
+// lockOmpMCPWrite takes the shared lock for the one MCP surface beadle and
+// verger both write. An empty note means the lock is held (or the surface is
+// not omp's MCP file, in which case the release is nil); the caller skips the
+// write instead of racing another writer inside the same window.
+func (e *Engine) lockOmpMCPWrite(spec kind.Spec, v *view) (func(), string) {
+	if spec.ID != kind.MCP || v.agent == nil || v.agent.ID != agent.OmpID {
+		return nil, ""
+	}
+
+	release, err := e.lockOmpSharedFile()
+	if err != nil {
+		return nil, err.Error() + "; the file was left to the other writer"
+	}
+
+	return release, ""
 }
