@@ -77,8 +77,6 @@ func mustJSON(t *testing.T, value any) []byte {
 
 func TestAntigravityMCPStdioRoundTrip(t *testing.T) {
 	Convey("Given an empty Antigravity mcp config", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		writeFile(t, antigravityConfig(home), `{"mcpServers": {}}`)
 
@@ -108,8 +106,6 @@ func TestAntigravityMCPStdioRoundTrip(t *testing.T) {
 
 func TestAntigravityMCPRemoteUsesServerURL(t *testing.T) {
 	Convey("Given an empty Antigravity mcp config", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		writeFile(t, antigravityConfig(home), `{"mcpServers": {}}`)
 
@@ -142,8 +138,6 @@ func TestAntigravityMCPRemoteUsesServerURL(t *testing.T) {
 
 func TestAntigravityStripsLegacyKeysKeepsAgentOnly(t *testing.T) {
 	Convey("Given an entry with legacy url keys and agent-only fields", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		writeFile(t, antigravityConfig(home), `{"mcpServers": {"alpha": {
 			"command": "legacy",
@@ -180,8 +174,6 @@ func TestAntigravityStripsLegacyKeysKeepsAgentOnly(t *testing.T) {
 
 func TestAntigravityEnvRefsFollowGemini(t *testing.T) {
 	Convey("Given an empty Antigravity mcp config", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		writeFile(t, antigravityConfig(home), `{"mcpServers": {}}`)
 
@@ -206,8 +198,6 @@ func TestAntigravityEnvRefsFollowGemini(t *testing.T) {
 
 func TestAntigravityDetect(t *testing.T) {
 	Convey("Given a pure Gemini install", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		pureGemini := t.TempDir()
 		writeFile(t, filepath.Join(pureGemini, ".gemini", "settings.json"), `{"mcpServers": {}}`)
 		writeFile(t, filepath.Join(pureGemini, ".gemini", "GEMINI.md"), "# rules\n")
@@ -227,8 +217,6 @@ func TestAntigravityDetect(t *testing.T) {
 	})
 
 	Convey("Given a home with the antigravity state directory", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		stateHome := t.TempDir()
 		So(os.MkdirAll(filepath.Join(stateHome, ".gemini", "antigravity-cli"), 0o750), ShouldBeNil)
 
@@ -243,8 +231,6 @@ func TestAntigravityDetect(t *testing.T) {
 	})
 
 	Convey("Given a home with only the shared mcp config", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		configHome := t.TempDir()
 		writeFile(t, antigravityConfig(configHome), `{"mcpServers": {}}`)
 
@@ -261,8 +247,6 @@ func TestAntigravityDetect(t *testing.T) {
 
 func TestAntigravitySurfaceShape(t *testing.T) {
 	Convey("Given an Antigravity agent", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		cwd := t.TempDir()
 		a := agent.AntigravityCLI(home, cwd)
@@ -287,8 +271,6 @@ func TestAntigravitySurfaceShape(t *testing.T) {
 
 func TestAntigravityLegacyURLIsNotCanonized(t *testing.T) {
 	Convey("Given an entry with only legacy url keys", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		writeFile(t, antigravityConfig(home), `{"mcpServers": {"dead": {"url": "https://dead.example.com/mcp", "httpUrl": "https://dead2.example.com/mcp"}}}`)
 
@@ -304,8 +286,6 @@ func TestAntigravityLegacyURLIsNotCanonized(t *testing.T) {
 
 func TestAntigravityKeepsUnmanagedEntries(t *testing.T) {
 	Convey("Given an Antigravity config with an unrelated top-level key", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		writeFile(t, antigravityConfig(home), `{"mcpServers": {}, "unrelated": {"keep": true}}`)
 

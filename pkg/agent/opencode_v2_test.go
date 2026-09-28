@@ -66,8 +66,6 @@ func openCodeSurface(t *testing.T, home string, k kind.ID) agent.Surface {
 
 func TestOpenCodeV2MCPRoundTrip(t *testing.T) {
 	Convey("Given an OpenCode config in the V2 MCP dialect", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 		writeFile(t, path, `{
@@ -115,8 +113,6 @@ func TestOpenCodeV2MCPRoundTrip(t *testing.T) {
 
 func TestOpenCodeV2MCPRemoteKeepsForeignFields(t *testing.T) {
 	Convey("Given a V2 remote server with OAuth and timeout", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 		writeFile(t, path, `{"mcp":{"servers":{"beta":{"type":"remote","url":"https://mcp.example/mcp","oauth":false,"timeout":{"catalog":30000}}}}}`)
@@ -148,8 +144,6 @@ func TestOpenCodeV2MCPRemoteKeepsForeignFields(t *testing.T) {
 
 func TestOpenCodeMixedMCPRead(t *testing.T) {
 	Convey("Given a mixed OpenCode MCP config", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 		writeFile(t, path, `{"mcp":{"servers":{"both":{"type":"local","command":["native-both"]},"dup":{"type":"local"}},"both":{"type":"local","command":["v1-both"]},"dup":{"type":"local","command":["v1-dup"]},"timeout":{"type":"local","command":["timeout-mcp"]}}}`)
@@ -167,8 +161,6 @@ func TestOpenCodeMixedMCPRead(t *testing.T) {
 
 func TestOpenCodeMixedMCPWrite(t *testing.T) {
 	Convey("Given a v1-only server next to a native container", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 		writeFile(t, path, `{"mcp":{"servers":{"b":{"type":"local","command":["b-mcp"]}},"a":{"type":"local","command":["a-mcp"]}}}`)
@@ -192,8 +184,6 @@ func TestOpenCodeMixedMCPWrite(t *testing.T) {
 
 func TestOpenCodeMixedMCPDedupeAndDelete(t *testing.T) {
 	Convey("Given the same server in both MCP layers", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 		writeFile(t, path, `{"mcp":{"servers":{"x":{"type":"local","command":["n-mcp"]}},"x":{"type":"local","command":["v-mcp"]}}}`)
@@ -261,8 +251,6 @@ func TestOpenCodeMixedMCPDedupeAndDelete(t *testing.T) {
 
 func TestOpenCodeV2PermissionsRoundTrip(t *testing.T) {
 	Convey("Given a V2 permissions array with foreign rules", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 		writeFile(t, path, `{"permissions":[{"action":"shell","resource":"git push *","effect":"deny"},{"action":"read","resource":"*.env","effect":"ask"},{"action":"*","resource":"*","effect":"allow"},{"action":"todowrite","resource":"*","effect":"deny"}]}`)
@@ -301,8 +289,6 @@ func TestOpenCodeV2PermissionsRoundTrip(t *testing.T) {
 
 func TestOpenCodeV2PermissionsLastWins(t *testing.T) {
 	Convey("Given duplicated native rules for one key", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 		writeFile(t, path, `{"permissions":[{"action":"read","resource":"*","effect":"deny"},{"action":"read","resource":"*","effect":"allow"}]}`)
@@ -360,8 +346,6 @@ func jsonRule(t *testing.T, value any) map[string]any {
 
 func TestOpenCodeV2PermissionsAliases(t *testing.T) {
 	Convey("Given V2 rules with renamed and new actions", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 		writeFile(t, path, `{"permissions":[{"action":"subagent","resource":"*","effect":"ask"},{"action":"question","resource":"*","effect":"deny"},{"action":"external_directory","resource":"~/projects/*","effect":"allow"},{"action":"external_directory","resource":"*","effect":"allow"},{"action":"execute","resource":"*","effect":"ask"}]}`)
@@ -404,8 +388,6 @@ func TestOpenCodeV2PermissionsAliases(t *testing.T) {
 
 func TestOpenCodeV2PermissionsStarIsForeign(t *testing.T) {
 	Convey("Given the V2 wildcard shell rule", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 		writeFile(t, path, `{"permissions":[{"action":"shell","resource":"*","effect":"ask"}]}`)
@@ -426,8 +408,6 @@ func TestOpenCodeV2PermissionsStarIsForeign(t *testing.T) {
 
 func TestOpenCodeMixedPermissions(t *testing.T) {
 	Convey("Given a v1-only permission rule", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 		writeFile(t, path, `{"permission":{"read":"deny"}}`)
@@ -497,8 +477,6 @@ func TestOpenCodeMixedPermissions(t *testing.T) {
 
 func TestOpenCodeV2DetectionGuards(t *testing.T) {
 	Convey("Given malformed V2 shapes", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 		writeFile(t, path, `{"mcp":{"servers":"nope"}}`)
@@ -547,8 +525,6 @@ func TestOpenCodeV2DetectionGuards(t *testing.T) {
 
 func TestOpenCodePermissionsFollowMCPDialect(t *testing.T) {
 	Convey("Given a V1 config with top-level mcp servers", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 		writeFile(t, path, `{"mcp":{"a":{"type":"local","command":["a-mcp"]}}}`)
@@ -568,8 +544,6 @@ func TestOpenCodePermissionsFollowMCPDialect(t *testing.T) {
 	})
 
 	Convey("Given an empty v1 mcp object", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 		writeFile(t, path, `{"mcp":{}}`)
@@ -586,8 +560,6 @@ func TestOpenCodePermissionsFollowMCPDialect(t *testing.T) {
 	})
 
 	Convey("Given a V2 mcp container", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 		writeFile(t, path, `{"mcp":{"servers":{}}}`)
@@ -607,8 +579,6 @@ func TestOpenCodePermissionsFollowMCPDialect(t *testing.T) {
 
 func TestOpenCodeDialectDefaultsPerKind(t *testing.T) {
 	Convey("Given an empty v1 mcp object", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 		writeFile(t, path, `{"mcp":{}}`)

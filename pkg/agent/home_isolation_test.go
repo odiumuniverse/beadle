@@ -23,10 +23,13 @@ var isolatedHome string
 // the same reason: the omp adapter resolves its root from each test's own
 // home unless a test sets PI_CONFIG_DIR/PI_CODING_AGENT_DIR/OMP_PROFILE or
 // the legacy PI_PROFILE.
-// XDG_CONFIG_HOME is deliberately left alone here: most of this package's
-// tests override HOME per test and rely on the code falling back to
-// <home>/.config, so pinning XDG would send the code into the isolation
-// directory while the test writes into its own temp home.
+// XDG_CONFIG_HOME is pinned empty for the same reason, not left alone: the
+// OpenCode adapters resolve ~/.config/opencode from it whenever it is set,
+// even when a test passes an explicit home, so an ambient value (GitHub's
+// ubuntu runners export XDG_CONFIG_HOME=$HOME/.config) would redirect the
+// suite into the developer's or the runner's real config tree. Empty keeps
+// the code on each test's own <home>/.config; tests that exercise the XDG
+// override set it themselves with t.Setenv, which wins.
 func isolateTestHome(m *testing.M) int {
 	home, err := os.MkdirTemp("", "beadle-agent-test-home") //nolint:usetesting // TestMain has no *testing.T to hang t.TempDir on
 	if err != nil {
@@ -40,6 +43,7 @@ func isolateTestHome(m *testing.M) int {
 	for name, value := range map[string]string{
 		"HOME":                home,
 		"BEADLE_HOME":         filepath.Join(home, ".beadle"),
+		"XDG_CONFIG_HOME":     "",
 		"DSH_HOME":            filepath.Join(home, ".dsh"),
 		"DSH_AGENTS_HOME":     "",
 		"PI_CONFIG_DIR":       "",
@@ -89,6 +93,12 @@ func TestSuiteHomeIsolation(t *testing.T) {
 				for _, name := range []string{"PI_CONFIG_DIR", "PI_CODING_AGENT_DIR", "OMP_PROFILE", "PI_PROFILE"} {
 					So(os.Getenv(name), ShouldBeEmpty)
 				}
+
+				// XDG_CONFIG_HOME is pinned empty: the OpenCode adapters
+				// prefer it over the home a test passes, so an ambient value
+				// (a Linux CI runner exports one) would redirect the suite
+				// into a real config tree.
+				So(os.Getenv("XDG_CONFIG_HOME"), ShouldBeEmpty)
 			})
 		})
 	})

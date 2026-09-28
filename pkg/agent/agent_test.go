@@ -231,8 +231,6 @@ const openCodeFixture = `{
 
 func TestOpenCodeMCPKeepsCommentsAndToggles(t *testing.T) {
 	Convey("Given an OpenCode config with comments and toggles", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 		writeFile(t, path, openCodeFixture)
@@ -269,8 +267,6 @@ func TestOpenCodeMCPKeepsCommentsAndToggles(t *testing.T) {
 
 func TestOpenCodeProjectsSSEAsRemote(t *testing.T) {
 	Convey("Given an SSE server encoded for OpenCode", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		sse := mcp.Encode(mcp.Server{Transport: mcp.TransportSSE, URL: "https://example.com/sse"})
 
 		key, value, ok := project(t, agent.OpenCode(t.TempDir(), t.TempDir()), kind.MCP, "legacy", sse)
@@ -361,8 +357,6 @@ func TestCursorMCPRoundTrip(t *testing.T) {
 
 func TestEnvRefTranslation(t *testing.T) {
 	Convey("Given a table of agent env-ref syntaxes", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		tests := map[string]struct {
 			file   func(home string) (string, string)
 			agent  func(home, cwd string) *agent.Agent
@@ -478,8 +472,6 @@ func TestClaudePermissions(t *testing.T) {
 
 func TestOpenCodePermissions(t *testing.T) {
 	Convey("Given an OpenCode config with permissions and comments", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 		writeFile(t, path, `{
@@ -706,8 +698,6 @@ func TestSkillsSurface(t *testing.T) {
 
 func TestDetect(t *testing.T) {
 	Convey("Given a home without agent directories", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 
 		detected, err := agent.ClaudeCode(home, t.TempDir()).Detect()
@@ -779,8 +769,6 @@ func TestClaudeProjectScope(t *testing.T) {
 
 func TestReloadHints(t *testing.T) {
 	Convey("Given a table of agents and kinds", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		cwd := t.TempDir()
 
@@ -818,8 +806,6 @@ func TestReloadHints(t *testing.T) {
 
 		for _, tt := range tests {
 			Convey("When checking the "+tt.name+" hint", func() {
-				t.Setenv("XDG_CONFIG_HOME", "")
-
 				Convey("Then it matches", func() {
 					So(surfaceOf(t, tt.a(), tt.k).Traits().ReloadHint, ShouldEqual, tt.want)
 				})
@@ -830,8 +816,6 @@ func TestReloadHints(t *testing.T) {
 
 func TestReadableSkills(t *testing.T) {
 	Convey("Given a home with per-agent skill directories", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		cwd := t.TempDir()
 
@@ -848,27 +832,22 @@ func TestReadableSkills(t *testing.T) {
 		cursorOwn := filepath.Join(home, ".cursor", "skills")
 
 		Convey("When opencode reads skills", func() {
-			t.Setenv("XDG_CONFIG_HOME", "")
 			So(readableDirs(readableRefs(t, agent.OpenCode(home, cwd))), ShouldResemble, []string{ocOwn, claudeOwn, sharedOwn})
 		})
 
 		Convey("When cursor reads skills", func() {
-			t.Setenv("XDG_CONFIG_HOME", "")
 			So(readableDirs(readableRefs(t, agent.Cursor(home, t.TempDir()))), ShouldResemble, []string{cursorOwn, claudeOwn, sharedOwn})
 		})
 
 		Convey("When gemini reads skills", func() {
-			t.Setenv("XDG_CONFIG_HOME", "")
 			So(readableDirs(readableRefs(t, agent.GeminiCLI(home, cwd))), ShouldResemble, []string{geminiOwn, sharedOwn})
 		})
 
 		Convey("When claude reads skills", func() {
-			t.Setenv("XDG_CONFIG_HOME", "")
 			So(readableDirs(readableRefs(t, agent.ClaudeCode(home, t.TempDir()))), ShouldResemble, []string{claudeOwn})
 		})
 
 		Convey("When shared reads skills", func() {
-			t.Setenv("XDG_CONFIG_HOME", "")
 			So(readableDirs(readableRefs(t, agent.SharedSkills(home))), ShouldResemble, []string{sharedOwn})
 		})
 
@@ -885,8 +864,6 @@ func TestReadableSkills(t *testing.T) {
 
 func TestReadableSkillsGates(t *testing.T) {
 	Convey("Given a skills directory with links, plugin links and a stub", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		cwd := t.TempDir()
 
@@ -939,8 +916,6 @@ func TestReadableSkillsGates(t *testing.T) {
 
 func TestNewAgentDetect(t *testing.T) {
 	Convey("Given a table of new agents and their directories", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		cwd := t.TempDir()
 
@@ -1055,7 +1030,6 @@ func TestCodexRules(t *testing.T) {
 
 func TestNewAgentSkillsAlsoReads(t *testing.T) {
 	Convey("Given skill directories for Codex, Pi, Kilo, omp and shared", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
 		t.Setenv("PI_CONFIG_DIR", "")
 		t.Setenv("PI_CODING_AGENT_DIR", "")
 		t.Setenv("OMP_PROFILE", "")

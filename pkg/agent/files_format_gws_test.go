@@ -109,8 +109,6 @@ func TestMCPWriteFormatsNewServerIndent(t *testing.T) {
 
 func TestPermissionWriteKeepsInlineObjectInline(t *testing.T) {
 	Convey("Given an OpenCode config with a single inline bash rule", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 		writeFile(t, path, "{\n  \"permission\": {\n    \"bash\": {\"*\": \"allow\"}\n  }\n}\n")

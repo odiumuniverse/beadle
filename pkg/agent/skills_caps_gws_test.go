@@ -32,8 +32,6 @@ func TestSkillsSurfaceCaps(t *testing.T) {
 	})
 
 	Convey("Given the opencode skills surface", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		surface := agent.OpenCode("/home/u", "/tmp").Surface(kind.Skills)
 
 		declared, ok := surface.(agent.SkillCapsSurface)

@@ -13,8 +13,6 @@ func TestInboxPath(t *testing.T) {
 	Convey("Given a home directory", t, func() {
 		home := t.TempDir()
 
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		Convey("When inbox paths are resolved", func() {
 			Convey("Then each agent gets its own inbox or none", func() {
 				So(agent.InboxPath(home, agent.OpenCodeID), ShouldEqual, filepath.Join(home, ".config", "opencode", "inbox.md"))

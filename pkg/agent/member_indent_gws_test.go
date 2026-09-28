@@ -13,8 +13,6 @@ import (
 //nolint:funlen // one scenario per comment shape: line, block, blank line, multi-add
 func TestWriteIndentsAddedMemberAfterTrailingComment(t *testing.T) {
 	Convey("Given a pretty MCP container whose last member has a trailing line comment", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 		writeFile(t, path, `{
@@ -45,8 +43,6 @@ func TestWriteIndentsAddedMemberAfterTrailingComment(t *testing.T) {
 	})
 
 	Convey("Given a block comment on the last member's line", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		cases := []struct {
 			name     string
 			fixture  string
@@ -103,8 +99,6 @@ func TestWriteIndentsAddedMemberAfterTrailingComment(t *testing.T) {
 	})
 
 	Convey("Given a block comment and two added members", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 		writeFile(t, path, `{
@@ -133,8 +127,6 @@ func TestWriteIndentsAddedMemberAfterTrailingComment(t *testing.T) {
 	})
 
 	Convey("Given a v1 permission map whose last rule has a trailing comment", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
 		home := t.TempDir()
 		path := filepath.Join(home, ".config", "opencode", "opencode.jsonc")
 		writeFile(t, path, `{
