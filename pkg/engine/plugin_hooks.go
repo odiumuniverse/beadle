@@ -10,6 +10,7 @@ import (
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/bundle"
+	"github.com/odiumuniverse/beadle/pkg/cas"
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/hooks"
 	"github.com/odiumuniverse/beadle/pkg/plugin"
@@ -414,15 +415,64 @@ func (e *Engine) ApprovePluginHooks(key string) (Report, error) {
 
 	approvePlanEntries(e.config, canon, plan)
 
+	moduleApproved, moduleDropped, moduleWarns := approveHookModules(e.config, key, installed.Source, installed.InstallPath)
+	report.Warnings = append(report.Warnings, moduleWarns...)
+
 	if err := e.config.Save(e.vault.ConfigPath()); err != nil {
 		return report, err
 	}
 
-	report.Notes = append(report.Notes, fmt.Sprintf(
+	note := fmt.Sprintf(
 		"%s%s: %d approved, %d refreshed, %d removed, %d skipped",
-		pluginHookPrefix, key, approved, refreshed, removed, plan.Skipped))
+		pluginHookPrefix, key, approved, refreshed, removed, plan.Skipped)
+
+	if moduleApproved > 0 || moduleDropped > 0 {
+		note += fmt.Sprintf("; %d hook module(s) approved, %d stale module approval(s) dropped", moduleApproved, moduleDropped)
+	}
+
+	report.Notes = append(report.Notes, note)
 
 	return report, nil
+}
+
+// approveHookModules approves the current hook modules of one omp plugin and
+// drops the approvals of modules whose digest changed or that vanished, so a
+// changed module asks for consent again. A module's consent key names the
+// plugin and carries its digest; approving a plugin with no modules is a no-op.
+func approveHookModules(cfg *config.Config, key, source, installPath string) (approved, dropped int, warns []string) {
+	modules, scanWarns := plugin.HookModules(source, installPath)
+	warns = append(warns, scanWarns...)
+
+	current := map[string]bool{}
+
+	for _, module := range modules {
+		data, err := os.ReadFile(module.Path) //nolint:gosec // G304: the module path is resolved from the plugin install path
+		if err != nil {
+			warns = append(warns, fmt.Sprintf("%s%s: cannot read hooks/%s/%s: %v",
+				pluginHookPrefix, key, module.Phase, module.Name, err))
+
+			continue
+		}
+
+		consent := hooks.HookModuleKey(key, module.Phase, module.Name, cas.HashOf(data))
+		current[consent] = true
+
+		if !cfg.HookApproved(consent) {
+			cfg.ApproveHook(consent)
+
+			approved++
+		}
+	}
+
+	for _, entry := range slices.Clone(cfg.ApprovedHooks) {
+		if moduleKey, ok := hooks.HookModulePlugin(entry); ok && moduleKey == key && !current[entry] {
+			cfg.RevokeHook(entry)
+
+			dropped++
+		}
+	}
+
+	return approved, dropped, warns
 }
 
 // upsertPluginHooks writes the plan into the canon: new names are approved,

@@ -329,7 +329,17 @@ func (a *app) revokePluginHooks(cmd *cobra.Command, v *vault.Vault, cfg *config.
 		revoked++
 	}
 
-	if revoked == 0 {
+	modules := 0
+
+	for _, entry := range slices.Clone(cfg.ApprovedHooks) {
+		if moduleKey, ok := hooks.HookModulePlugin(entry); ok && moduleKey == key {
+			cfg.RevokeHook(entry)
+
+			modules++
+		}
+	}
+
+	if revoked == 0 && modules == 0 {
 		fmt.Fprintf(cmd.OutOrStdout(), "no hooks of plugin %s\n", key)
 
 		return nil
@@ -343,7 +353,7 @@ func (a *app) revokePluginHooks(cmd *cobra.Command, v *vault.Vault, cfg *config.
 		return err
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "revoked %d hook(s) of plugin %s\n", revoked, key)
+	fmt.Fprintf(cmd.OutOrStdout(), "revoked %d hook(s) and %d hook module approval(s) of plugin %s\n", revoked, modules, key)
 
 	return nil
 }

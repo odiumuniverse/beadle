@@ -6,7 +6,45 @@ import (
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
+
+	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/hooks"
 )
+
+func TestA52RevokePluginHookModules(t *testing.T) {
+	Convey("Given a vault with an approved omp hook module", t, func() {
+		home := t.TempDir()
+
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
+
+		_, err := runCLI(t, "init")
+		So(err, ShouldBeNil)
+
+		configPath := filepath.Join(home, ".beadle", "config.json")
+
+		cfg, err := config.Load(configPath)
+		So(err, ShouldBeNil)
+
+		moduleKey := hooks.HookModuleKey("acme/tool", "pre", "a.ts", "digest")
+		cfg.ApproveHook(moduleKey)
+		So(cfg.Save(configPath), ShouldBeNil)
+
+		Convey("When the plugin's modules are revoked", func() {
+			out, err := runCLI(t, "hooks", "revoke", "--plugin", "acme/tool")
+			So(err, ShouldBeNil)
+			So(out, ShouldContainSubstring, "revoked 0 hook(s) and 1 hook module approval(s) of plugin acme/tool")
+
+			Convey("Then the approval is gone", func() {
+				reloaded, err := config.Load(configPath)
+				So(err, ShouldBeNil)
+				So(reloaded.HookApproved(moduleKey), ShouldBeFalse)
+				So(reloaded.ApprovedHooks, ShouldBeEmpty)
+			})
+		})
+	})
+}
 
 func TestA52RevokePluginHooks(t *testing.T) {
 	Convey("Given a vault with an approved plugin hook", t, func() {
@@ -32,7 +70,7 @@ func TestA52RevokePluginHooks(t *testing.T) {
 		Convey("When the plugin's hooks are revoked", func() {
 			out, err := runCLI(t, "hooks", "revoke", "--plugin", "acme/tool")
 			So(err, ShouldBeNil)
-			So(out, ShouldContainSubstring, "revoked 1 hook(s) of plugin acme/tool")
+			So(out, ShouldContainSubstring, "revoked 1 hook(s) and 0 hook module approval(s) of plugin acme/tool")
 
 			Convey("Then the canon entry and the approval are gone, and a repeat revoke is quiet", func() {
 				out, err := runCLI(t, "hooks", "list")
