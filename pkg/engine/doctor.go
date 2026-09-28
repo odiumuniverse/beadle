@@ -113,6 +113,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.kiloLegacySkillIssues(st, active)...)
 	issues = append(issues, e.hookFileIssues(active)...)
 	issues = append(issues, e.pluginHookIssues()...)
+	issues = append(issues, e.hookModuleIssues()...)
 	issues = append(issues, e.hookSecretIssues()...)
 	issues = append(issues, e.FlatSkillIssues(active)...)
 	issues = append(issues, e.FarmAgentIssues()...)

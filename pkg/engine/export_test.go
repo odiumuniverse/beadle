@@ -1,8 +1,11 @@
 package engine
 
 import (
+	"context"
+
 	"github.com/odiumuniverse/beadle/pkg/bundle"
 	"github.com/odiumuniverse/beadle/pkg/hooks"
+	"github.com/odiumuniverse/beadle/pkg/hostcli"
 	"github.com/odiumuniverse/beadle/pkg/secret"
 )
 
@@ -25,6 +28,14 @@ func SetDaemonStatusRunnerForTest(runner secret.Runner) func() {
 	daemonStatusRunner = runner
 
 	return func() { daemonStatusRunner = previous }
+}
+
+// SetHookModuleProbeForTest replaces the omp hook-module load probe.
+func SetHookModuleProbeForTest(probe func(ctx context.Context, bin hostcli.Binary, args []string) (output []byte, notFound bool)) func() {
+	previous := hookModuleProbe
+	hookModuleProbe = probe
+
+	return func() { hookModuleProbe = previous }
 }
 
 // SetHookPresentSeamForTest interleaves a file change between the hooks plan

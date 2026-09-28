@@ -248,6 +248,8 @@ func (e *Engine) sync(ctx context.Context, opts SyncOptions) (*Report, error) {
 
 	e.presentHooks(st, report, active, opts)
 
+	e.deliverHookModules(ctx, st, report, active, opts)
+
 	e.syncDigest(ctx, report, active, st, opts)
 
 	report.Conflicts = st.OpenConflicts()
