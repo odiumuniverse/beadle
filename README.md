@@ -167,8 +167,19 @@ manage** alone.
   `~/.omp/agent/commands`, 1-based with `$ARGUMENTS` and no shell or file
   expansion; `$@`, `$@[start:len]` and `prompt.render` are omp-only and stay
   literal. Approval policy (`tools.approval*`, `bash.patterns`) lives in the
-  host-owned `config.yml` and is not managed, and omp's hooks (JS/TS factories),
-  extensions, custom tools and memory backends are v1 non-goals. omp is also a
+  host-owned `config.yml` and is not managed, and omp's extensions, custom
+  tools and memory backends are v1 non-goals. omp hooks are JS/TS modules, not
+  a declarative file: beadle copies the modules a plugin ships
+  (`<plugin>/hooks/{pre,post}/*.{ts,js}`) byte-for-byte into the active agent's
+  `hooks/` directory, but only after an explicit
+  `beadle hooks approve --plugin <key>` — the consent key carries the module's
+  digest, so a changed module asks again. The bytes come from a plugin beadle
+  did not audit, and omp neither sandboxes a hook module nor asks for trust: a
+  module runs with your full rights, so **restart omp** after a delivery (a
+  live session keeps running the modules it loaded at start). Beadle verifies a
+  fresh delivery loads with one bounded headless `omp` run and withdraws a
+  module that fails, so a broken module never stays where omp would load it;
+  the modules stay out of the bundle because the canon has no code kind. omp is also a
   bundle host: the catalog is `.omp-plugin/marketplace.json` with the plugin
   tree beside it — the version comes from
   `plugins/beadle-canon/.claude-plugin/plugin.json`, the only manifest omp
@@ -363,9 +374,10 @@ command is printed (`unverifiable`). A failed or unverified attempt is not
 retried on every sync — the retry is explicit, `beadle bundles enable <host>`,
 and a rendered canon change reopens it once; a host you disabled by hand stays
 disabled until you enable it again. `bundles disable` materializes everything
-back. Beadle writes hook files but never runs them; omp receives no hooks,
-because its hooks are JS/TS modules with no declarative file to write (the
-bundle names the skipped hooks once instead of silently dropping them).
+back. Beadle writes hook files but never runs them; the omp bundle carries no hooks,
+because omp's hooks are JS/TS modules and the canon has no code kind — a
+plugin's own modules are delivered separately into the agent's `hooks/`
+directory, behind their own consent and a load probe (see footnote 9).
 The omp registration is driven by omp's own `marketplaces.json` and
 `installed_plugins.json`: `omp plugin marketplace add` is not idempotent (it
 exits non-zero on a repeat), so beadle adds the marketplace only when omp does
@@ -507,7 +519,7 @@ graph becomes the audit trail. File-backed kinds only. Details:
 | `plugins pins\|pin\|unpin` | per-agent plugin version pins |
 | `guide [--humans]` | print the guide for AI agents (or the human guide with `--humans`) |
 | `export agent-plugins --out DIR` | render the canon (skills + MCP) as an Agent Plugins v1.0.0 package |
-| `hooks list\|add\|rm\|approve\|revoke` | lifecycle hooks canon: rendered into native bundles and the Cursor/Codex hooks files (never executed by beadle); `approve --plugin <key>` adopts the command hooks of an installed plugin |
+| `hooks list\|add\|rm\|approve\|revoke` | lifecycle hooks canon: rendered into native bundles and the Cursor/Codex hooks files (never executed by beadle); `approve --plugin <key>` adopts the command hooks of an installed plugin and (omp) consents to its hook modules |
 | `skills seed\|adopt\|unadopt` | the built-in skills (`beadle-conflicts` + `beadle`), foreign-copy adoption and its restore |
 | `explain <skill>` | which copy of a canon skill each host can read |
 | `bundles status\|enable [host]\|disable [host]` | native host bundles and their registration |

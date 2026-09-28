@@ -97,6 +97,19 @@ lifecycle hooks, read in the dialect of each host: nested matcher groups
 (Claude, Codex, Gemini), Antigravity's owner-keyed file, and Cursor's flat
 `{command, timeout?, matcher?}` entries.
 
+oh-my-pi is the one host whose hooks are code, not a declaration: a plugin's
+`hooks/{pre,post}/*.{ts,js}` modules are copied byte-for-byte into the active
+agent's `hooks/` directory, never into the canon or a bundle (the canon has no
+code kind). They share the same consent gate (`beadle hooks approve --plugin`,
+keyed by the module identity plus the digest of its bytes, so a changed module
+asks again) and are recorded in state so only beadle's own files are rewritten
+or withdrawn. omp neither sandboxes a hook module nor asks for trust — the
+module runs with the user's full rights — and the bytes come from a plugin
+beadle did not audit, so the delivery note and the doctor say both and ask for
+a restart (a live session keeps the modules it loaded at start). After a write
+beadle proves the modules load with one bounded headless `omp` run and removes
+a module the probe reports as failed.
+
 A host keeps reading its **own** plugins natively: its agents, commands and
 MCP servers are not presented back to it (only the skills farm keeps linking
 next to the native copy), while every other host receives them. The same holds
@@ -105,12 +118,12 @@ dedup or the same-key source conflict keeps its native copy and receives
 nothing from the winner — the ledger records those hosts in `overridden`.
 
 The same plugin found in several hosts is presented once: equal artifact
-digests (skill trees, agent and command bytes, hook commands, the MCP
-document) make the copies one plugin, the first host in registration order
-wins with a sync note, and divergent copies are warned about instead of being
-silently hidden. The vault canon always outranks plugins: a canon skill with
-the same name shadows the plugin one. Plugin payloads never enter the canon by
-themselves.
+digests (skill trees, agent and command bytes, hook commands and hook module
+bytes, the MCP document) make the copies one plugin, the first host in
+registration order wins with a sync note, and divergent copies are warned
+about instead of being silently hidden. The vault canon always outranks
+plugins: a canon skill with the same name shadows the plugin one. Plugin
+payloads never enter the canon by themselves.
 
 ## Bundles carry no secrets
 
