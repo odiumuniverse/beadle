@@ -32,11 +32,18 @@ sign: build
 clean:
 	rm -rf bin/ coverage.out coverage.html
 
+# pkg/engine is the long package: it runs the plugin farm, the bundle CLI and
+# the real-config fixtures and takes ~7-9 minutes with -race on a quiet
+# machine. Go's default per-package timeout is 10 minutes, which leaves no
+# headroom on a loaded box or in CI and turns the gate into a random failure;
+# TEST_TIMEOUT carries roughly 2x the observed worst case.
+TEST_TIMEOUT?=20m
+
 test:
-	$(GO) test -race ./...
+	$(GO) test -race -timeout $(TEST_TIMEOUT) ./...
 
 test-short:
-	$(GO) test -short ./...
+	$(GO) test -short -timeout $(TEST_TIMEOUT) ./...
 
 lint:
 	golangci-lint run ./...

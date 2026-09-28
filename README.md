@@ -566,11 +566,19 @@ skips and warnings, never a plaintext fallback.
 <summary><b>Development</b> — build, test and the package layout</summary>
 
 ```bash
-make test    # go test -race ./...
+make test    # go test -race -timeout 20m ./...
 make lint    # golangci-lint
 make fmt
 make mod     # go mod tidy && go mod vendor (deps are vendored)
 ```
+
+`pkg/engine` is the long package (~6-9 minutes with `-race`): it drives the
+plugin farm, the bundle CLIs and the real-config fixtures. The explicit
+`-timeout 20m` (~2x the observed worst case) keeps a loaded machine or a CI
+runner from tripping Go's 10-minute default, which used to stop the package in
+a different test every run. Override it with `make test TEST_TIMEOUT=30m` on a
+slower box. A single package can be measured on its own with
+`go test -race -count=1 -timeout 20m ./pkg/engine/`.
 
 Layout: `cmd/beadle`,
 `pkg/{cli,vault,config,state,cas,fsutil,merge,kind,agent,engine,project,lock,watch,daemon,history,secret,mcp,skill,permission,subagent,command,frontmatter,bundle,digest,hooks,inbox,plugin,rulings,skills}`.
