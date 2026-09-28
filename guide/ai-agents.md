@@ -30,14 +30,13 @@ agent both changed the same item it records a **conflict** instead of guessing.
 </rules>
 
 <important>
-- **On by default (config v3, U-14):** the `permissions` kind and the shared
-  `~/.agents/skills` surface are enabled; `beadle init` enables the agents it
-  detects, installs the watcher daemon (unless `--no-daemon`), enables the
-  project files already present in a git checkout, and attempts the native
-  bundles (render → validate → register → probe → flip; without the host binary
-  the bundle stays `unverifiable` and modes are not flipped). Escape hatches:
-  `beadle kinds disable permissions`, `beadle agents disable shared`,
-  `beadle bundles disable <host>`, `beadle project disable <file>`.
+- **On by default:** the `permissions` kind and the shared `~/.agents/skills`
+  surface are enabled; `beadle init` enables the agents it detects, installs the
+  watcher daemon (unless `--no-daemon`), enables the project files already
+  present in a git checkout, and registers the native bundles with each host's
+  own CLI. Escape hatches: `beadle kinds disable permissions`,
+  `beadle agents disable shared`, `beadle bundles disable <host>`,
+  `beadle project disable <file>`.
 - **Hooks run only after a personal approve.** Plugin command hooks are scanned
   and reported as `doctor` Info; nothing is written until the human runs
   `beadle hooks approve --plugin <origin>/<name>`. The plugin's own host runs
@@ -50,10 +49,9 @@ agent both changed the same item it records a **conflict** instead of guessing.
   hooks itself.
 - **User-level `.claude/rules/` is not managed** (project `.claude/rules/*.md`
   is, when enabled): `doctor` reports it as Info.
-- **DeepSeek Harness:** permissions, subagents and slash commands are a
-  documented no-go (A-41) — in DSH they are runtime state and code, not files.
-  **DSH MCP is managed** (A-44): the canon servers render into the harness
-  profile patch as our `beadle:<server>` rows — Q-16 is closed.
+- **DeepSeek Harness:** permissions, subagents and slash commands are runtime
+  state and code in that host, not files, so beadle does not manage them. Its
+  MCP servers **are** managed and render into the harness profile patch.
 - **`beadle guide`** prints this document; `beadle guide --humans` prints the
   human guide.
 </important>

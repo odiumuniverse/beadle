@@ -12,19 +12,18 @@
 
   <p>
     <a href="https://github.com/odiumuniverse/beadle/releases"><img alt="release" src="https://img.shields.io/github/v/release/odiumuniverse/beadle?style=flat-square&color=3E6E5C&labelColor=1F2328"></a>
-    <a href="https://github.com/odiumuniverse/beadle/actions/workflows/ci.yml"><img alt="ci" src="https://img.shields.io/github/actions/workflow/status/odiumuniverse/beadle/ci.yml?branch=master&style=flat-square&label=ci&color=3E6E5C&labelColor=1F2328"></a>
-    <img alt="go" src="https://img.shields.io/badge/go-1.27-3E6E5C?style=flat-square&labelColor=1F2328">
-    <img alt="license" src="https://img.shields.io/badge/license-MIT-3E6E5C?style=flat-square&labelColor=1F2328">
+    <a href="https://github.com/odiumuniverse/beadle/actions/workflows/ci.yml"><img alt="ci" src="https://img.shields.io/github/actions/workflow/status/odiumuniverse/beadle/ci.yml?branch=master&style=flat-square&labelColor=1F2328"></a>
+    <img alt="go" src="https://img.shields.io/badge/go-1.27-3E6E5C?style=flat-square&color=3E6E5C&labelColor=1F2328">
+    <img alt="license" src="https://img.shields.io/badge/license-MIT-3E6E5C?style=flat-square&color=3E6E5C&labelColor=1F2328">
     <a href="https://www.skillsdirectory.com/skills/odiumuniverse-plug-24"><img alt="Security: A — Skills Directory" src="https://www.skillsdirectory.com/api/skills/odiumuniverse-plug-24/badge"></a>
   </p>
 
 </div>
 
-Every agent stores its own instructions, MCP servers, skills and permission
-rules in its own format; use two agents, or one agent on two machines, and the
-same config gets copied by hand and starts to drift. Beadle keeps that
-configuration in **a private vault of plain files you own**, syncs it both ways
-with a **git-style three-way merge**, and leaves **everything it does not
+Every agent stores its own instructions, MCP servers, skills and permission rules in its own
+format; use two agents, or one agent on two machines, and the same config gets copied by hand and
+starts to drift. Beadle keeps that configuration in **a private vault of plain files you own**,
+syncs it both ways with a **git-style three-way merge**, and leaves **everything it does not
 manage** alone.
 
 ```
@@ -33,9 +32,9 @@ manage** alone.
 ├── mcp/servers.json            MCP servers (canonical, portable form)
 ├── mcp/secrets.json            credential values (0600, never committed)
 ├── skills/<name>/              skills, whole trees
-├── subagents/<name>.md         custom subagents (all supported hosts)
+├── subagents/<name>.md         custom subagents
 ├── commands/<name>.md          custom commands / prompt templates
-├── permissions/rules.json      permission policy (default on)
+├── permissions/rules.json      permission policy (on by default)
 ├── memory/<slug>/              Claude per-project notes
 ├── projects/<repo-id>/         per-repository files and policy
 ├── objects/                    content-addressed history
@@ -47,18 +46,17 @@ manage** alone.
   + Antigravity CLI + Codex CLI + Pi + Kilo Code + oh-my-pi (omp)
 ```
 
-[Why use it](#why-use-it) · [Supported agents](#supported-agents) ·
-[Install](#install) · [Quick start](#quick-start) · [Guides](#guides) ·
-[How it works](#how-it-works) · [Reference](#reference) ·
-[Commands](#commands)
+[Why use it](#why-use-it) · [Supported agents](#supported-agents) · [Install](#install) ·
+[Quick start](#quick-start) · [Guides](#guides) · [Plugins](#plugins) ·
+[Reference](#reference) · [Commands](#commands) · [Project scope](#project-scope) ·
+[Secrets](#secrets)
 
 ## Guides
 
-- **[For AI agents](guide/ai-agents.md)** — the rules, defaults, plugin flow and
-  workflow an agent needs to work with the vault safely. `beadle guide` prints
-  the same document from the binary.
-- **[For humans](guide/humans.md)** — quick start, what syncs where, plugins,
-  conflicts, secrets and FAQ. `beadle guide --humans` prints it.
+- **[For AI agents](guide/ai-agents.md)** — the rules, defaults, plugin flow and workflow an agent
+  needs to work with the vault safely. `beadle guide` prints the same document from the binary.
+- **[For humans](guide/humans.md)** — quick start, what syncs where, plugins, conflicts, secrets
+  and FAQ. `beadle guide --humans` prints it.
 
 ![How beadle works](assets/guide-architecture.svg)
 
@@ -66,154 +64,83 @@ manage** alone.
 
 ## Why use it
 
-- **One config, several agents.** Edit rules, servers or skills in whichever
-  agent you are in — or directly in the vault — and the rest follow.
-- **Merges, not overwrites.** Three-way merges against each agent's last known
-  state; disagreement becomes an explicit conflict, not a silent loss.
-- **Multiple machines.** The vault is a directory: put it in git (or your own
-  sync) and every machine shares the same canon. Credential values stay out.
-- **Your repository is respected.** Project scope is leak-aware: `init`
-  enables the files already present in a git checkout, secret values only land
-  in gitignored files (a tracked file needs an explicit per-file opt-in),
-  generated blocks skip tracked files, and unmanaged entries are never
+- **One config, several agents.** Edit rules, servers or skills in whichever agent you are in — or
+  directly in the vault — and the rest follow.
+- **Merges, not overwrites.** Three-way merges against each agent's last known state; disagreement
+  becomes an explicit conflict, not a silent loss.
+- **Multiple machines.** The vault is a directory: put it in git (or your own sync) and every
+  machine shares the same canon. Credential values stay out.
+- **Your repository is respected.** Project scope is leak-aware: `init` enables the files already
+  present in a git checkout, secret values only land in gitignored files (a tracked file needs an
+  explicit per-file opt-in), generated blocks skip tracked files, and unmanaged entries are never
   rewritten.
 
 ## Supported agents
 
+Ten agents, named the same way everywhere: `claude`, `codex`, `gemini`, `agy`, `cursor`,
+`opencode`, `kilo`, `pi`, `dsh`, `omp`. If you have been using an older name, it still works
+wherever you type one — `claude-code` is accepted for `claude`, `gemini-cli` for `gemini`,
+`antigravity-cli` for `agy` and `deepseek-harness` for `dsh`.
+
 | Agent | Rules | MCP | Skills | Permissions | Subagents | Commands |
 |---|---|---|---|---|---|---|
-| Claude Code | ✓ `~/.claude/CLAUDE.md` (user) + project `AGENTS.md` (native, v2.1.280) ⁸ | ✓ `~/.claude.json` | ✓ writes `~/.claude/skills` | ✓ default on ³ | ✓ `~/.claude/agents/**` | ✓ `~/.claude/commands` (legacy) ⁷ |
-| OpenCode | ✓ `~/.config/opencode/AGENTS.md` ¹ | ✓ `opencode.jsonc` ¹ | pull; writes `~/.config/opencode/skills` after a mode flip; reads flat `<name>.md` ⁵ | ✓ default on ³ | ✓ `~/.config/opencode/agents`, legacy `agent/` read ⁶ | ✓ `~/.config/opencode/commands`, legacy `command/` read ⁷ |
-| Gemini CLI | ✓ `~/.gemini/GEMINI.md` | ✓ `settings.json` (`httpUrl`) | ✓ `~/.gemini/skills` | ✓ default on ³ | ✓ `~/.gemini/agents` ⁶ | ✓ `~/.gemini/commands/*.toml` ⁷ |
-| Cursor | — (user rules live in the account) | ✓ `~/.cursor/mcp.json` | reads Claude/shared dirs natively | ✓ default on ³ | ✓ `~/.cursor/agents` (`.md`/`.mdc`/`.markdown`) | — (not supported yet) |
-| Antigravity CLI | — (`~/.gemini/GEMINI.md` via the Gemini CLI adapter) | ✓ `~/.gemini/config/mcp_config.json` (`serverUrl`) | — (v1 not managed) | — ³ | ✓ `~/.gemini/config/agents` (global) | — (v1 not managed) |
-| Codex CLI | ✓ `~/.codex/AGENTS.md` | ✓ `~/.codex/config.toml` ² | reads `~/.agents/skills` natively | — ³ | ✓ `~/.codex/agents/*.toml` (span-edit) | ✓ pull-only `~/.codex/prompts` (deprecated) ⁷ |
-| Pi | ✓ `~/.pi/agent/AGENTS.md` | ✓ `~/.pi/agent/mcp.json` ⁴ | reads `~/.agents/skills` natively; flat `<name>.md` ⁵ | — (not documented) | — (no sub-agents by design) | ✓ `~/.pi/agent/prompts` ⁷ |
-| Kilo Code | ✓ `~/.config/kilo/AGENTS.md` | ✓ `kilo.jsonc` ² | reads `~/.agents/skills` natively | ✓ default on ³ | ✓ `~/.config/kilo/agents`, legacy `agent/` and `mode(s)/` read ⁶ | ✓ `~/.config/kilo/commands`, legacy `command/` read ⁷ |
-| DeepSeek Harness | ✓ `~/.dsh/AGENTS.md` (write) + project chain `AGENTS.md`/`CLAUDE.md` (pull, root → cwd) | ✓ `~/.dsh/cordis.patch.yml` (home patch layer; stdio + streamable-http) | ✓ writes `~/.dsh/skills` (rank 400 beats the shared agents-home: `$DSH_AGENTS_HOME` or `~/.agents`); flat `<name>.md` read ⁵ | — (runtime knobs, non-goal A-41) | — (code providers, non-goal A-41) | — (plugin code, non-goal A-41) |
-| oh-my-pi (`omp`) | ✓ `~/.omp/agent/AGENTS.md` (user) + project `<cwd>/.omp/AGENTS.md` ⁹ | ✓ `~/.omp/agent/mcp.json` (Claude dialect) + project `<cwd>/.omp/mcp.json` ⁹ | pull; reads `~/.agents/skills` natively, native `~/.omp/agent/skills` wins by name ⁹ | — (config.yml policy, v1 non-goal) ⁹ | ✓ `~/.omp/agent/agents` | ✓ `~/.omp/agent/commands` ⁷ ⁹ |
+| Claude Code | ✓ `~/.claude/CLAUDE.md`, plus the project `AGENTS.md` | ✓ `~/.claude.json` | ✓ writes `~/.claude/skills` | ✓ on by default | ✓ `~/.claude/agents/**` | ✓ `~/.claude/commands` |
+| OpenCode | ✓ `~/.config/opencode/AGENTS.md` | ✓ `opencode.jsonc` | reads Claude and shared dirs natively | ✓ on by default | ✓ `~/.config/opencode/agents` | ✓ `~/.config/opencode/commands` |
+| Gemini CLI | ✓ `~/.gemini/GEMINI.md` | ✓ `settings.json` | ✓ `~/.gemini/skills` | ✓ shell rules | ✓ `~/.gemini/agents` | ✓ `~/.gemini/commands/*.toml` |
+| Cursor | Cursor keeps user rules in your account; project rules are `.cursor/rules/*.mdc` | ✓ `~/.cursor/mcp.json` | reads Claude and shared dirs natively | ✓ shell and MCP | ✓ `~/.cursor/agents` | Cursor has no user-level command file |
+| Antigravity CLI (`agy`) | uses the Gemini CLI rules file | ✓ `~/.gemini/config/mcp_config.json` | — | Antigravity's own dialect is not a file | ✓ `~/.gemini/config/agents` | Antigravity has no command file |
+| Codex CLI | ✓ `~/.codex/AGENTS.md` | ✓ `~/.codex/config.toml` | reads `~/.agents/skills` natively | Codex's approval policy is set in its own config | ✓ `~/.codex/agents/*.toml` | ✓ pull-only `~/.codex/prompts` |
+| Pi | ✓ `~/.pi/agent/AGENTS.md` | ✓ `~/.pi/agent/mcp.json` | reads `~/.agents/skills` natively | Pi has no permission document | Pi has no sub-agents | ✓ `~/.pi/agent/prompts` |
+| Kilo Code | ✓ `~/.config/kilo/AGENTS.md` | ✓ `kilo.jsonc` | reads `~/.agents/skills` natively | ✓ on by default | ✓ `~/.config/kilo/agents` | ✓ `~/.config/kilo/commands` |
+| DeepSeek Harness (`dsh`) | ✓ `~/.dsh/AGENTS.md`, plus the project `AGENTS.md` / `CLAUDE.md` chain | ✓ `~/.dsh/cordis.patch.yml` | ✓ `~/.dsh/skills` | DSH keeps these in runtime state, not files | DSH subagents are code providers | DSH commands are plugin code |
+| oh-my-pi (`omp`) | ✓ `~/.omp/agent/AGENTS.md`, plus `<cwd>/.omp/AGENTS.md` | ✓ `~/.omp/agent/mcp.json`, plus `<cwd>/.omp/mcp.json` | reads `~/.agents/skills` natively | omp keeps approval policy in its own `config.yml` | ✓ `~/.omp/agent/agents` | ✓ `~/.omp/agent/commands` |
 
-¹ OpenCode: V2 reads `AGENTS.md` only; MCP is `mcp.servers` in V2 and `mcp` in
-  V1 — merged as one union, comments in `opencode.jsonc` preserved.
+A ✓ means beadle writes that surface. `reads …` means the agent reads a shared skills directory
+itself (`~/.claude/skills`, `~/.agents/skills`); those skills surfaces start in `pull` mode, so
+beadle reads them without writing the agent's own directory. Flip one with
+`beadle agents mode <agent> <kind> sync`. The shared `~/.agents/skills` hub is enabled by
+`beadle init`; opt out with `beadle agents disable shared`.
 
-² Codex keeps its servers in the `mcp_servers` table, Kilo under the `/mcp`
-  pointer. Comments and formatting are preserved when beadle edits the file.
+Beadle creates a surface only where it is safe to: the rules and skills files of Claude Code,
+Gemini CLI, DeepSeek Harness and oh-my-pi, the Codex `config.toml`, the DeepSeek Harness
+`cordis.patch.yml`, the subagent and command directories listed above, and the shared
+`~/.agents/skills` directory. Every other surface is written only when its config file already
+exists — an agent found by its directory alone is skipped with `no config file to write into;
+create <path> first` until the file appears, and an empty file is enough.
 
-³ Permission dialects beadle can apply: Claude Code, Kilo Code and OpenCode
-  (tools, shell and MCP; `permission` in V1, `permissions` in V2) — Gemini CLI
-  takes shell rules, Cursor shell and MCP. Antigravity's `action(target)`
-  dialect and Codex's scalar `approval_policy`/`sandbox_mode` are not managed.
-  The permissions kind is synchronized by default since config v3; opt out with
+A few things worth knowing:
+
+- **Flat skills.** OpenCode, Pi and DeepSeek Harness also read a `<name>.md` file in their own
+  skills directory as a skill named by the file. Beadle adopts such copies into the canon and
+  keeps delivering directories; when a same-name directory exists it wins, and `doctor` reports
+  both.
+- **Permissions.** Beadle can apply Claude Code, Kilo Code and OpenCode (tools, shell and MCP),
+  and shell rules for Gemini CLI and Cursor. The permissions kind is on by default; opt out with
   `beadle kinds disable permissions`.
-
-⁴ Pi has no built-in MCP: beadle writes `~/.pi/agent/mcp.json`, which only the
-  third-party `pi-mcp-adapter` reads; `doctor` warns when managed servers are
-  present and the adapter is not detected.
-
-⁵ Flat skills: OpenCode, Pi and DeepSeek Harness also read a `<name>.md` file
-  in their own skills directory as a skill named by the file. Beadle adopts
-  such copies into the canon and keeps delivering directories; when a
-  same-name directory exists, it wins and the file is left untouched
-  (`doctor` reports both).
-
-⁶ Subagents: the canon is `<vault>/subagents/<name>.md` (frontmatter + system
-  prompt). OpenCode and Kilo Code get a strict V2 frontmatter (`permissions`
-  instead of `tools`); nested ids and inline `agents` in `opencode.json(c)` are
-  not synced yet, `doctor` reports both. Gemini `kind: remote` agents and the
-  workspace subagent directories (`.gemini/agents`, `.agents/agents`,
-  `.cursor/agents`, `.codex/agents`) are v1 non-goals. Codex files are edited
-  surgically — comments and foreign keys stay. oh-my-pi requires `name` and
-  `description` (a file missing either is skipped); its own keys (`spawns`,
-  `autoloadSkills`, `thinking-level`, `output`, `blocking`, `thinking`) stay in
-  the file, while the canonical keys it does not define stay in the vault and
-  `doctor` reports them.
-
-⁷ Commands: the canon is `<vault>/commands/<name>.md` (frontmatter +
-  template). Beadle shifts positional arguments between Claude's 0-based `$0`
-  and the 1-based canon, translates Gemini's `{{args}}`/`!{cmd}`/`@{path}`,
-  and skips a host whose dialect cannot express a placeholder (doctor
-  explains). Codex prompts are deprecated: beadle pulls them into the vault
-  but never writes them back; Cursor file commands are not supported yet.
-  oh-my-pi takes the 1-based `$1`/`$ARGUMENTS` form and expands no shell or
-  file constructs, so `${N:-default}` and `$NAME` are skipped for it.
-
-⁸ Claude Code v2.1.280 reads the project `AGENTS.md` natively (the `agents-md`
-  banner). Beadle manages that one file and never touches a project
-  `CLAUDE.md`/`CLAUDE.local.md`: `doctor` reports a differing twin
-  (double-load) or an unmanaged legacy file with the `beadle project enable
-  AGENTS.md` hint, and
-  stays silent when the two files are identical.
-
-⁹ oh-my-pi (`omp`) is not Pi: its user root is `~/.omp` (`PI_CONFIG_DIR`
-  names the root under `$HOME` — an absolute value is joined, not resolved —
-  `PI_CODING_AGENT_DIR` the agent dir, `OMP_PROFILE` a named profile and the
-  legacy `PI_PROFILE` only when `OMP_PROFILE` is not defined at all: an empty
-  or `default` `OMP_PROFILE` selects the default profile) and it does not read
-  `~/.pi`. Rules: the user context file
-  `~/.omp/agent/AGENTS.md` — the only user-level context file omp loads, it
-  shadows `~/.claude/CLAUDE.md` and `~/.agents/AGENTS.md`. `RULES.md` and
-  `rules/*.md` are a separate omp mechanism — the frontmatter rulebook with
-  its own matching pipeline — and stay with the tool that owns that zone;
-  beadle writes only `AGENTS.md`. The project scope is `<cwd>/.omp/AGENTS.md` and
-  `<cwd>/.omp/mcp.json` (omp's native project root is the nearest non-empty
-  `.omp/`, not the checkout root — creating it also makes omp stop looking at
-  farther `.omp` directories up the tree). MCP: the `mcp.json` Claude dialect;
-  the compatibility file `~/.omp/agent/.mcp.json` is read by omp but never
-  written, and `disabledServers`/`enabledServers` are not managed. Skills: the
-  native directory `~/.omp/agent/skills` (`<name>/SKILL.md`, the frontmatter
-  `description` is required — a skill without one is dropped by omp) defaults
-  to `pull` and reads `~/.agents/skills` with the native copy winning by name
-  (provider priority 100 over 70). Commands are one level of `*.md` under
-  `~/.omp/agent/commands`, 1-based with `$ARGUMENTS` and no shell or file
-  expansion; `$@`, `$@[start:len]` and `prompt.render` are omp-only and stay
-  literal. Approval policy (`tools.approval*`, `bash.patterns`) lives in the
-  host-owned `config.yml` and is not managed, and omp's extensions, custom
-  tools and memory backends are v1 non-goals. omp hooks are JS/TS modules, not
-  a declarative file: beadle copies the modules a plugin ships
-  (`<plugin>/hooks/{pre,post}/*.{ts,js}`) byte-for-byte into the active agent's
-  `hooks/` directory, but only after an explicit
-  `beadle hooks approve --plugin <key>` — the consent key carries the module's
-  digest, so a changed module asks again. The bytes come from a plugin beadle
-  did not audit, and omp neither sandboxes a hook module nor asks for trust: a
-  module runs with your full rights, so **restart omp** after a delivery (a
-  live session keeps running the modules it loaded at start). Beadle verifies a
-  fresh delivery loads with one bounded headless `omp` run and withdraws a
-  module that fails, so a broken module never stays where omp would load it;
-  the modules stay out of the bundle because the canon has no code kind. omp is also a
-  bundle host: the catalog is `.omp-plugin/marketplace.json` with the plugin
-  tree beside it — the version comes from
-  `plugins/beadle-canon/.claude-plugin/plugin.json`, the only manifest omp
-  reads a version from (a `.omp-plugin/plugin.json`-only plugin installs as
-  `0.0.0`) — and no hooks file is written, because omp has none to write.
-  File-based plugins are adopted from `~/.omp/plugins` (the marketplace cache
-  and the `node_modules` links) read-only, and the registration is driven by
-  omp's own `marketplaces.json`/`installed_plugins.json` because
-  `omp plugin marketplace add` is not idempotent.
-
-A ✓ means beadle writes that surface; a `pull` marker means beadle reads it
-but does not write until the mode is flipped (`beadle agents mode <agent>
-<kind> sync`). `reads …` means the agent reads a shared directory itself
-(`~/.claude/skills`, `~/.agents/skills`), and those skills surfaces default to
-the `pull` mode — the agent's own skills directory is not written. The shared
-`~/.agents/skills` surface is enabled by `beadle init` and the config v3
-migration (mode `sync`): it is the delivery channel for the agents that read
-it natively. Opt out with `beadle agents disable shared`.
-
-Beadle creates only the surfaces marked creatable: the rules files of Claude
-Code, Gemini CLI, DeepSeek Harness and oh-my-pi, the skills directories of
-Claude Code, Gemini CLI, DeepSeek Harness and oh-my-pi, the Codex
-`config.toml`, the DeepSeek Harness
-`cordis.patch.yml`, the subagent directories of Claude Code, OpenCode, Kilo
-Code, Codex, Gemini CLI, Antigravity, Cursor and oh-my-pi, the command
-directories of
-Claude Code, OpenCode, Gemini CLI, Codex, Pi, Kilo Code and oh-my-pi, and the
-shared
-`~/.agents/skills` directory. Every other surface is written only when
-its config file already exists — an agent discovered by its directory alone is
-skipped with `no config file to write into; create <path> first` until the file
-appears (an empty file is enough).
+- **Pi's MCP file** is read only by the third-party `pi-mcp-adapter`. `doctor` warns when managed
+  servers are present and the adapter is not installed.
+- **Codex prompts** are deprecated by Codex itself: beadle pulls them into the vault and never
+  writes them back.
+- **Subagents** are one markdown canon, `<vault>/subagents/<name>.md`. OpenCode and Kilo Code get
+  a strict frontmatter shape; Codex files are edited surgically so comments and your own keys
+  survive. oh-my-pi requires `name` and `description`, and its own keys stay in the file.
+- **Commands** are one markdown canon too. Beadle shifts positional arguments between Claude's
+  0-based `$0` and the 1-based canon, translates Gemini's `{{args}}` syntax, and skips a host
+  whose dialect cannot express a placeholder — `doctor` explains which.
+- **oh-my-pi is not Pi.** Its user root is `~/.omp`, and `PI_CONFIG_DIR` names the root under your
+  home (an absolute value is joined below it, not resolved as-is), `PI_CODING_AGENT_DIR` the
+  agent dir, `OMP_PROFILE` a named profile, and the older `PI_PROFILE` only when `OMP_PROFILE` is
+  not set at all. omp does not read `~/.pi`.
+- **omp hooks are JS/TS modules, not a declarative file.** Beadle copies the modules a plugin
+  ships, byte for byte, into the active agent's `hooks/` directory — but only after you run
+  `beadle hooks approve --plugin <key>`, and the consent key carries the module's digest, so a
+  changed module asks again. Those bytes come from a plugin beadle did not audit and omp neither
+  sandboxes a hook module nor asks for trust, so **restart omp** after a delivery: a live session
+  keeps running the modules it loaded at start.
 
 ## Install
+
+**macOS** — Homebrew:
 
 ```bash
 brew tap odiumuniverse/tap
@@ -221,17 +148,27 @@ brew trust odiumuniverse/tap
 brew install beadle
 ```
 
-Homebrew does not start services on install. To keep the watcher running:
-`brew services start beadle` — it serves the default vault `~/.beadle`; for a
-custom vault use `beadle daemon install` instead.
-
-Or build from source:
+**macOS or Linux** — from source:
 
 ```bash
-git clone git@github.com:odiumuniverse/beadle.git
+git clone https://github.com/odiumuniverse/beadle.git
 cd beadle
-make build          # bin/beadle
+go build -o beadle ./cmd/beadle
 ```
+
+The module is `github.com/odiumuniverse/beadle` and the binary is `beadle`. It needs a writable
+home for the vault (`~/.beadle`, or `$BEADLE_HOME`).
+
+To keep the watcher running in the background, install it as a service — `launchd` on macOS, a
+`systemd` user unit on Linux:
+
+```bash
+beadle daemon install
+```
+
+Homebrew does not start services on install, so on macOS you can also use
+`brew services start beadle`; it serves the default vault `~/.beadle`, while `beadle daemon
+install` also works for a custom vault.
 
 ## Quick start
 
@@ -241,361 +178,163 @@ beadle sync                 # pull every agent into the vault, push the union ba
 beadle status               # resources, conflicts, agents
 beadle diff                 # what a sync would change, item by item
 beadle conflicts            # what waits for a decision
-beadle doctor               # broken symlinks, permissions, drift, collisions
+beadle doctor               # symlinks, permissions, drift, collisions
 ```
 
-`beadle init` wires the defaults on a fresh machine: detected agents are
-enabled, the native bundles of detected hosts are rendered and registered (a
-host without its CLI gets the registration command instead and keeps file
-sync), the present project files of a git checkout are enabled with secrets
-kept out, and the background watcher is installed unless one is already there.
-`--no-daemon` skips the watcher; `--daemon` reinstalls it even when a service
-file exists. `beadle daemon install` does the same later.
-
-Upgrading from config v2: the first command that saves the config flips
-`kinds.permissions` to `sync` and enables the shared skills surface once, with
-a `config: …` line on stderr; hooks already in the vault canon are approved in
-the same pass (a `note: …` line). Opt out per feature: `beadle kinds disable
-permissions`, `beadle agents disable shared`, `beadle hooks revoke <name>`,
-`beadle bundles disable <host>`.
-
-`config.json` is created with explicit defaults; the optional settings
-(`permissions`, `history`, `secrets`) are always visible.
+`beadle init` wires the defaults on a fresh machine: detected agents are enabled, the native
+bundles of detected hosts are rendered and registered (a host without its CLI gets the
+registration command instead and keeps file sync), the present project files of a git checkout are
+enabled with secrets kept out, and the background watcher is installed unless one is already there.
+`--no-daemon` skips the watcher, `--daemon` reinstalls it, and `--agents a,b` restricts which
+agents are enabled.
 
 Run it continuously:
 
 ```bash
-beadle watch                                  # foreground watcher
-beadle daemon install                         # launchd (macOS) / systemd user unit (Linux)
+beadle watch                # foreground watcher
+beadle daemon install       # launchd (macOS) / systemd user unit (Linux)
 ```
 
-## How it works
+Your first run against an older vault tells you what it renamed and applies the change the first
+time a command saves the config; every one of those defaults can be switched off again — `beadle
+kinds disable permissions`, `beadle agents disable shared`, `beadle hooks revoke <name>`, `beadle
+bundles disable <host>`.
 
-Each agent keeps its own files; beadle also remembers what each agent last saw
-— its *base*. A sync pulls each agent's files into the vault, merges them
-against the base with a three-way merge, and pushes the union back:
+## Plugins
 
-```
-agent files ──pull──▶ vault canon ──3-way merge──▶ vault canon ──push──▶ agent files
-                                         ▲
-                                   per-agent base
-```
+beadle manages plugins through [verger](https://github.com/odiumuniverse/verger), which is built
+into the binary: `beadle bundles` renders your canon as a native package and registers it with the
+host's own CLI, and `beadle plugins pin` holds a version per agent.
 
-When both sides changed the same item the merge stops: it becomes a conflict
-that waits for a human or an agent (`beadle conflicts`, `beadle resolve`)
-instead of overwriting either side; files beadle does not manage are untouched.
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the picture.
+Installing plugins from your shell with the standalone [verger](https://github.com/odiumuniverse/verger)
+CLI gives the same result — beadle delivers plugins through verger, so a package installed either
+way lands identically and `beadle status` sees both. Switching between the two tools changes
+nothing on disk: neither rewrites what the other wrote.
 
 ## Reference
 
-What beadle manages, one line per kind; open a block for the mechanics and the
-limits.
+What beadle manages, one line per kind.
 
 <details>
 <summary><b>Rules and instructions</b> — one markdown canon rendered into every agent's rules file</summary>
 
-`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`. *Why:* the thing agents read first is
-usually the thing most out of date.
+`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`. *Why:* the thing agents read first is usually the thing most
+out of date.
 
 </details>
 
 <details>
 <summary><b>MCP servers</b> — one portable canonical form; agent-only fields survive every rewrite</summary>
 
-`timeout`, `oauth`, `enabled`, `trust` and the like stay in the agent's own
-file. New entries are rendered with the file's own indentation — a minified
-file stays minified. *Why:* server lists drift across agents and machines
-fastest.
+`mcp/servers.json` renders into each agent's own document and dialect. Credential values are
+replaced with references; see [Secrets](#secrets).
 
 </details>
 
 <details>
-<summary><b>Secrets</b> — credential values live outside the canon, files carry <code>{secret:NAME}</code> references</summary>
+<summary><b>Skills</b> — whole directory trees, not single files</summary>
 
-The gate covers MCP, memory and project files; rules, skills and permissions
-are not scanned, and `doctor` warns about secret-like lines in rules.
-*Why:* configs get copied and committed; credentials should not.
-
-See [Secrets](#secrets).
+`skills/<name>/` is delivered as a tree so a skill keeps its references.
 
 </details>
 
 <details>
-<summary><b>Skills</b> — whole directory trees, merged file by file</summary>
+<summary><b>Subagents</b> — one markdown canon per subagent</summary>
 
-Plugin caches are skipped; symlinked skills are read but never overwritten;
-plugin skills are farmed through a stable pivot so upgrades do not break
-links. Plugin agents and commands are farmed the same way (`<plugin>--<name>.md`
-for markdown hosts, a rendered TOML copy for Codex agents and Gemini commands;
-a host reads its own plugins' agents and commands natively — another host's
-plugin reaches it as a farmed file, and Codex prompts are pull-only).
-Plugins are read from every host with file-based plugins — Claude Code, Codex, Gemini CLI
-extensions, Antigravity, Cursor and oh-my-pi (`~/.omp/plugins`, or
-`$PI_CONFIG_DIR/plugins` when that relocates the omp root) — and what one
-installs reaches the others:
-a plugin put into Codex shows up for Claude, OpenCode, Gemini and Cursor, and
-the other way round. The same plugin installed in two hosts is presented once
-(the first host wins, with a note); divergent copies are warned about instead
-of hidden. The omp tree is read-only for beadle: omp's installer keeps no
-cross-process lock, so beadle adopts what `omp plugin` installed and never
-writes that directory. A plugin is not farmed back into the host that
-installed it (that host reads its own plugin cache natively, so the farmed
-link would make every skill discoverable twice); the other hosts still receive
-the links. *Why:* skills are the biggest pile of files to keep
-in sync.
+`subagents/<name>.md`, rendered into each host's own frontmatter dialect.
 
 </details>
 
 <details>
-<summary><b>Plugin pins</b> — pin one plugin to a cached version per agent</summary>
+<summary><b>Commands</b> — one markdown canon per slash command</summary>
 
-`beadle plugins pin <key> <version> --agent <id>`. The pin travels in the
-vault; the farm, MCP paths and `heal` follow it, and a version missing from the
-cache is reported instead of silently upgraded. Version pins cover the Claude
-Code plugin cache (the only host with versioned install directories); a pin on
-a plugin from another host is reported as having no effect.
-*Why:* an upgrade can break a plugin's skills or MCP servers mid-task.
+`commands/<name>.md`, with argument placeholders translated per host.
 
 </details>
 
 <details>
-<summary><b>Native bundles and hooks</b> — approved lifecycle hooks and the canon rendered into host plugins</summary>
+<summary><b>Permissions</b> — tools, shell and MCP policy, on by default</summary>
 
-A Claude marketplace plugin, a Gemini extension, an Antigravity plugin, an
-oh-my-pi marketplace plugin (`.omp-plugin/marketplace.json` plus the canonical
-plugin tree, whose version omp reads only from
-`plugins/beadle-canon/.claude-plugin/plugin.json`); the bundle version follows
-the rendered bytes. A full forward sync makes one
-unattended attempt per host that was never touched: render → validate →
-register → probe → flip the file kinds off. Registration goes through the host
-CLIs when they exist, and the result is verified before beadle retires the file
-copies; without the CLI the canon keeps arriving as files and the registration
-command is printed (`unverifiable`). A failed or unverified attempt is not
-retried on every sync — the retry is explicit, `beadle bundles enable <host>`,
-and a rendered canon change reopens it once; a host you disabled by hand stays
-disabled until you enable it again. `bundles disable` materializes everything
-back. Beadle writes hook files but never runs them; the omp bundle carries no hooks,
-because omp's hooks are JS/TS modules and the canon has no code kind — a
-plugin's own modules are delivered separately into the agent's `hooks/`
-directory, behind their own consent and a load probe (see footnote 9).
-The omp registration is driven by omp's own `marketplaces.json` and
-`installed_plugins.json`: `omp plugin marketplace add` is not idempotent (it
-exits non-zero on a repeat), so beadle adds the marketplace only when omp does
-not know it, refreshes the catalog otherwise, force-reinstalls
-(`omp plugin install --force`), and confirms the recorded version by re-reading
-the registry rather than trusting the exit code.
-Cursor and Codex have no
-bundle host: their approved hooks render into the user-level
-`~/.cursor/hooks.json` and `~/.codex/hooks.json` instead, foreign hooks are
-kept, and Codex asks you to review new hooks in `/hooks` before they run.
-MCP servers that carry secrets stay out of the bundle — a plugin package is
-readable by everyone who installs it — and keep arriving through the host MCP
-config.
-*Why:* native plugins survive upgrades and keep hooks in one audited place.
+`permissions/rules.json`. Opt out with `beadle kinds disable permissions`.
 
 </details>
 
 <details>
-<summary><b>Agent Plugins export</b> — the canon as a portable Agent Plugins v1.0.0 package (skills + MCP)</summary>
+<summary><b>Memory</b> — Claude per-project notes</summary>
 
-`beadle export agent-plugins --out DIR` renders the canon into the portable
-format: a closed-schema `plugin.json`, the skill trees (`skills/<name>/**`;
-discovery is the immediate child with a `SKILL.md`, the rest of the tree — scripts,
-references — is copied along), and `mcp.json` with its `$schema`/`mcpServers`
-wrapper and the closed transport union (`stdio`, `streamable-http`, `sse`).
-Servers are portable only when they stay inside the package: `${PLUGIN_ROOT}`
-and relative references (in `command`, `args`, `env`, including behind spaces,
-flags or `=`) must not climb above the root, and `command` must be a bare name
-or a `./relative` path without whitespace — it is never interpolated. Remote
-urls must be `https` without user-info or a fragment (plain `http` is accepted
-on loopback only). `${VAR}`
-secrets are kept as references, never expanded: a reference in `url` or
-`headers` always draws a warning (those fields are never interpolated), and in
-`args`/`env` any placeholder other than `${PLUGIN_ROOT}`/`${PLUGIN_DATA}` does —
-portable clients do not expand it, so that authentication stays the client's
-own. A canon `{secret:NAME}` reference is exported as the portable `${NAME}`
-and announced once (the installing host supplies the value); only whole-value
-references are recognized, so a `{secret:…}` nested inside a larger string
-stays ordinary text. The render is deterministic and idempotent; a re-export removes the
-manifest, `mcp.json` and the `SKILL.md` of any skill that is no longer rendered
-(a directory is removed only when that left it empty) — beadle cannot tell a
-foreign skill directory from its own previous render, so a leftover directory
-keeps its other files and is reported as a warning; loose files, stale tree
-files and foreign directories are never deleted.
-Commands, hooks, agents, rules and plugin-sourced components are outside the v1
-pilot. *Why:* one conformant package a portable host can install, without
-handing it your secrets.
+`memory/<slug>/`, kept per project rather than merged into one canon.
 
 </details>
 
 <details>
-<summary><b>Project scope</b> — per repository; <code>init</code> enables the present files, secrets stay out</summary>
+<summary><b>Project files</b> — per-repository configuration</summary>
 
-[Project scope](#project-scope) names the files and the commands.
-
-</details>
-
-<details>
-<summary><b>Claude memory</b> — per-project notes sync through the vault</summary>
-
-A budget-capped digest lands in project files for the other agents; other
-agents' inbox lines become notes; a secret gate runs before anything is
-adopted. Codex, Pi, Kilo and oh-my-pi (like OpenCode and Cursor) can drop
-free-form lines into their own `inbox.md`, and a sync turns them into project
-memory notes. *Why:* only one agent remembers your project, and everyone else
-should benefit.
-
-</details>
-
-<details>
-<summary><b>Permissions</b> (default on) — tool, shell and MCP rules as one set, merged with <code>deny &gt; ask &gt; allow</code></summary>
-
-Agent-local defaults and path globs stay local; keys must be canonical
-(`tool:` names lowercase), and `doctor` warns about keys no codec can apply.
-Since config v3 the permissions kind is synchronized by default; opt out with
-`beadle kinds disable permissions`. *Why:* permission policy is currently
-retyped in every agent.
-
-</details>
-
-<details>
-<summary><b>Diagnostics and recovery</b> — see and undo what a sync did</summary>
-
-`doctor` reports broken links, drift, collisions and half-finished states;
-`conflicts`/`resolve` settle disagreements; `history`/`restore` roll kinds
-back; `heal` clears quarantined plugins.
-
-</details>
-
-<details>
-<summary><b>Git mergetool audit mode</b> (opt-in) — a conflict materialized as a real git merge state</summary>
-
-The three sides become git objects under
-`refs/beadle/mergetool/<id>/{base,vault,local}`, kept forever, and the commit
-graph becomes the audit trail. File-backed kinds only. Details:
-[ARCHITECTURE.md](ARCHITECTURE.md#mergetool-audit-mode).
-
-</details>
-
-<details>
-<summary><b>Conflict contract</b> — a stable, secret-redacted view and a decision fingerprint</summary>
-
-`beadle conflicts --json` shows the three sides plus a unified patch;
-`resolve --from/--stdin` refuses a decision read before the conflict changed
-(`stale-conflict`), and risky changes need `--allow-risky`. Details:
-[ARCHITECTURE.md](ARCHITECTURE.md#conflict-contract).
+See [Project scope](#project-scope).
 
 </details>
 
 ## Commands
 
-### Core
-
-| Command | Purpose |
+| Command | What it does |
 |---|---|
-| `init [--agents a,b] [--no-daemon] [--daemon]` | create the vault, enable detected agents, wire the defaults (bundles, project files, watcher) |
+| `init [--agents a,b] [--no-daemon] [--daemon]` | create the vault, enable detected agents, wire the defaults |
 | `sync [--dry-run] [--kind k]` | full cycle: pull, merge, push |
 | `pull` / `push` | one direction only (`push` overwrites local agent edits) |
-| `status [--check]` / `diff [--agent id]` | agents, modes and conflicts / what a sync would change |
-
-### Conflicts & recovery
-
-| Command | Purpose |
-|---|---|
+| `status [--check]` / `diff [--agent id]` | agents, modes and conflicts / what a sync would change (`--check` also computes pending changes) |
 | `conflicts [id]` | open conflicts; with an id, the variants |
 | `resolve [id…] --take vault\|agent\|file` | settle conflicts and push the decision |
 | `history <kind>` / `restore <kind> --to N` | snapshots and rollbacks |
 | `doctor` | diagnostics; non-zero exit on errors |
-| `heal [--dry-run]` | clear quarantined plugins, stubs, tombstones and orphan pivots |
-
-### Config & background
-
-| Command | Purpose |
-|---|---|
-| `agents` (`enable`/`disable`/`mode`) | agents and their per-kind modes |
-| `kinds` | switch kinds on or off for every agent |
-| `watch` / `daemon` | background sync, autostart service |
+| `heal [--dry-run]` | clear quarantined plugins and tidy leftovers |
+| `agents` (`enable` / `disable` / `mode`) | agents and their per-kind directions |
+| `kinds` (`enable` / `disable`) | switch kinds on or off for every agent |
+| `watch` / `daemon` | background sync and the autostart service |
 | `secrets list\|set\|rm\|prune\|migrate` | credential values; never printed |
 | `plugins pins\|pin\|unpin` | per-agent plugin version pins |
-| `guide [--humans]` | print the guide for AI agents (or the human guide with `--humans`) |
-| `export agent-plugins --out DIR` | render the canon (skills + MCP) as an Agent Plugins v1.0.0 package |
-| `hooks list\|add\|rm\|approve\|revoke` | lifecycle hooks canon: rendered into native bundles and the Cursor/Codex hooks files (never executed by beadle); `approve --plugin <key>` adopts the command hooks of an installed plugin and (omp) consents to its hook modules |
-| `skills seed\|adopt\|unadopt` | the built-in skills (`beadle-conflicts` + `beadle`), foreign-copy adoption and its restore |
+| `bundles status\|enable\|disable` | native host bundles and their registration |
+| `hooks list\|add\|rm\|approve\|revoke` | lifecycle hooks, rendered into host hook files and bundles — beadle never runs them |
+| `skills seed\|adopt\|unadopt` | the built-in skills, foreign-copy adoption and its restore |
 | `explain <skill>` | which copy of a canon skill each host can read |
-| `bundles status\|enable [host]\|disable [host]` | native host bundles and their registration |
-| `rulings list\|show\|trust\|forget` | remembered conflict decisions applied only on an exact, non-blast-radius match |
-| `project status\|enable <file>\|disable <file>\|forget <file>` | per-repository project scope; nothing happens without an enabled policy |
+| `export agent-plugins --out DIR` | render the canon (skills + MCP) as an Agent Plugins package |
+| `rulings list\|show\|trust\|forget` | remembered conflict decisions, applied only on an exact match |
+| `project status\|enable\|disable\|forget` | per-repository project scope |
+| `guide [--humans]` | print the guide for AI agents, or the human guide |
 
-Global flags: `--vault` (default `~/.beadle`, or `$BEADLE_HOME`), `--verbose`,
-`--log-json`.
+Global flags: `--vault` (default `~/.beadle`, or `$BEADLE_HOME`), `--verbose`, `--log-json`.
 
 ## Project scope
 
-`beadle init` in a git checkout enables the project files that are present on
-disk, with secrets kept out; `beadle project enable <file>` records a file
-manually, and `beadle project status|disable|forget` manages the policy.
-Without a policy (or outside a git checkout) nothing in a repository is
-touched; `doctor` keeps reporting foreign `.mcp.json` / `projects.*`
-collisions. Secret values materialize only in gitignored files; a git-tracked
-file needs the explicit per-file opt-in (`beadle project enable <file>
---allow-secrets`).
+`beadle init` in a git checkout enables the project files that are present on disk, with secrets
+kept out; `beadle project enable <file>` records a file manually, and `beadle project
+status|disable|forget` manages the policy. Without a policy (or outside a git checkout) nothing in
+a repository is touched; `doctor` keeps reporting foreign `.mcp.json` / `projects.*` collisions.
+Secret values materialize only in gitignored files; a git-tracked file needs the explicit per-file
+opt-in (`beadle project enable <file> --allow-secrets`).
 
-The files are `.mcp.json`, `.claude/rules/*.md`, `.cursor/mcp.json`,
-`.cursor/rules/*.mdc`, `.agents/mcp_config.json`, `.omp/AGENTS.md`,
-`.omp/mcp.json`, `AGENTS.md` and `GEMINI.md`. Project identity comes
-from the git origin, so clones and worktrees converge; a missing file is never
+The files are `.mcp.json`, `.claude/rules/*.md`, `.cursor/mcp.json`, `.cursor/rules/*.mdc`,
+`.agents/mcp_config.json`, `.omp/AGENTS.md`, `.omp/mcp.json`, `AGENTS.md` and `GEMINI.md`. Project
+identity comes from the git origin, so clones and worktrees converge; a missing file is never
 treated as a deletion — `project forget` removes scope, a sync never does.
-*Why:* the config that matters most is per-repo, and repos are where a
-personal vault can leak.
 
 ## Secrets
 
-The gate extracts credential values out of the canon into `mcp/secrets.json`
-(0600, never committed) or the OS keychain (`secrets migrate keyring`); files
-carry `{secret:NAME}` references, and shareable files render `${NAME}` instead
-of a value. The scope (MCP, memory and project files; rules, skills and
-permissions are not scanned) is described under [Reference](#reference). With
-`backend: keyring` the store is fail-closed: an unavailable keyring yields
-skips and warnings, never a plaintext fallback.
+The gate extracts credential values out of the canon into `mcp/secrets.json` (0600, never
+committed) or the OS keyring (`beadle secrets migrate keyring`); files carry `{secret:NAME}`
+references, and shareable files render `${NAME}` instead of a value. The keyring backend is
+fail-closed: an unavailable keyring yields skips and warnings, never a plaintext fallback.
 
 ## Principles
 
-- **Real files, symlinks respected.** Beadle never creates symlinks and never
-  replaces yours: a write goes through a link to its target; broken links are
-  reported by `doctor`. Project files are stricter — a symlink, a hard link or
-  a non-regular file is refused.
-- **Nothing is deleted silently.** Deletions propagate only relative to each
-  agent's own base, mass deletions wait as conflicts, and project files that
-  disappear (a branch switch, `git clean`) are reported as `kept`, not removed.
-- **Atomic writes.** tmp file + fsync + rename in the target directory, then
-  fsync of the directory; the file mode is preserved.
-- **Local stays local.** OAuth state, hooks, plugins, UI settings, folder trust
-  — untouched. Secrets never reach the synced canon, the object store or git
-  history; the keyring backend is fail-closed — skips and warnings, never a
-  plaintext fallback.
-
-<details>
-<summary><b>Development</b> — build, test and the package layout</summary>
-
-```bash
-make test    # go test -race -timeout 20m ./...
-make lint    # golangci-lint
-make fmt
-make mod     # go mod tidy && go mod vendor (deps are vendored)
-```
-
-`pkg/engine` is the long package (~6-9 minutes with `-race`): it drives the
-plugin farm, the bundle CLIs and the real-config fixtures. The explicit
-`-timeout 20m` (~2x the observed worst case) keeps a loaded machine or a CI
-runner from tripping Go's 10-minute default, which used to stop the package in
-a different test every run. Override it with `make test TEST_TIMEOUT=30m` on a
-slower box. A single package can be measured on its own with
-`go test -race -count=1 -timeout 20m ./pkg/engine/`.
-
-Layout: `cmd/beadle`,
-`pkg/{cli,vault,config,state,cas,fsutil,merge,kind,agent,engine,project,lock,watch,daemon,history,secret,mcp,skill,permission,subagent,command,frontmatter,bundle,digest,hooks,inbox,plugin,rulings,skills}`.
-
-</details>
+- **Real files, symlinks respected.** Beadle never creates symlinks and never replaces yours: a
+  write goes through a link to its target; broken links are reported by `doctor`. Project files are
+  stricter — a symlink, a hard link or a non-regular file is refused.
+- **Nothing is deleted silently.** Deletions propagate only relative to each agent's own base,
+  mass deletions wait as conflicts, and project files that disappear (a branch switch, `git clean`)
+  are reported as `kept`, not removed.
+- **Atomic writes.** tmp file + fsync + rename in the target directory, then fsync of the
+  directory; the file mode is preserved.
+- **Local stays local.** OAuth state, hooks, plugins, UI settings, folder trust — untouched.
+  Secrets never reach the synced canon, the object store or git history.
 
 ## License
 
