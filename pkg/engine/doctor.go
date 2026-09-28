@@ -851,8 +851,24 @@ func (e *Engine) sameSkillTree(st *state.State, left, right string) (bool, error
 func (e *Engine) secretIssues() []Issue {
 	issues := []Issue{{Severity: SeverityInfo, Message: "secrets backend: " + e.secrets.Backend()}}
 
-	if err := e.secrets.Probe(); err != nil {
-		return append(issues, Issue{Severity: SeverityWarn, Message: "keyring unavailable: " + err.Error()})
+	// A keyring-backed store with no stored value is never probed: reading the
+	// keychain opens a system access dialog beside a destructive "Reset To
+	// Defaults" button, and an empty store has nothing to verify.
+	switch keyringErr := e.secrets.KeyringErr(); {
+	case e.secrets.Backend() != secret.BackendKeyring:
+		if err := e.secrets.Probe(); err != nil {
+			return append(issues, Issue{Severity: SeverityWarn, Message: "keyring unavailable: " + err.Error()})
+		}
+	case keyringErr != nil:
+		// The store already failed on load; reporting that needs no second
+		// keychain read.
+		return append(issues, Issue{Severity: SeverityWarn, Message: "keyring unavailable: " + keyringErr.Error()})
+	case !e.secrets.NeedsProbe():
+		issues = append(issues, Issue{Severity: SeverityInfo, Message: "keyring backend, no stored values — keychain not probed"})
+	default:
+		if err := e.secrets.Probe(); err != nil {
+			return append(issues, Issue{Severity: SeverityWarn, Message: "keyring unavailable: " + err.Error()})
+		}
 	}
 
 	refs, err := e.secretRefs()

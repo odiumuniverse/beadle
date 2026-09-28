@@ -89,10 +89,13 @@ var valueHints = []string{
 }
 
 type Store struct {
-	path       string
-	values     map[string]string
-	backend    string
-	keyring    Keyring
+	path    string
+	values  map[string]string
+	backend string
+	keyring Keyring
+	// recorded is the number of references the loaded document carried,
+	// independent of what the keychain answered.
+	recorded   int
 	keyringErr error
 	touched    map[string]struct{}
 	deleted    map[string]struct{}
@@ -148,6 +151,11 @@ func Load(path string, opts ...Option) (*Store, error) {
 	if doc.Secrets != nil {
 		store.values = doc.Secrets
 	}
+
+	// recorded counts the document's references before any keychain read:
+	// prefetch drops the names the keychain does not answer for, so Len alone
+	// cannot tell "nothing stored" from "keychain unreachable".
+	store.recorded = len(store.values)
 
 	store.prefetch()
 
@@ -207,6 +215,17 @@ func (s *Store) Backend() string {
 
 func (s *Store) KeyringErr() error {
 	return s.keyringErr
+}
+
+// NeedsProbe reports whether a probe can tell anything: a file-backed store
+// needs none, and a keyring-backed store whose document records no reference
+// has nothing to verify. Probing the keychain opens the system access dialog —
+// the one with the destructive "Reset To Defaults" button — so a caller must
+// not open it for an empty store. A keychain that already failed on load is
+// not "empty": KeyringErr carries that result and a caller should report it
+// instead of probing again.
+func (s *Store) NeedsProbe() bool {
+	return s.backend == BackendKeyring && s.recorded > 0
 }
 
 func (s *Store) Probe() error {

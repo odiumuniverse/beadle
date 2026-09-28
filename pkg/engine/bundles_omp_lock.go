@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -42,12 +43,22 @@ var ompPluginLockWait = 30 * time.Second
 func (e *Engine) lockOmpPlugin(report *Report) (func(), bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), ompPluginLockWait)
 
-	release, err := lock.Acquire(ctx, filepath.Join(plugin.OmpRoot(e.home), ompPluginLockFile))
+	lockPath := filepath.Join(plugin.OmpRoot(e.home), ompPluginLockFile)
+
+	release, err := lock.Acquire(ctx, lockPath)
 	if err != nil {
 		cancel()
 
+		reason := err.Error()
+		if errors.Is(err, lock.ErrBusy) {
+			// The lock is shared with every other writer of omp's plugin
+			// state (another beadle run or verger); the message must not
+			// claim a specific holder.
+			reason = fmt.Sprintf("the omp plugin lock %s is held by another writer", lockPath)
+		}
+
 		report.Warnings = append(report.Warnings,
-			fmt.Sprintf("bundles: %v; the omp bundle stays on the manual path", err))
+			fmt.Sprintf("bundles: %s; the omp bundle stays on the manual path", reason))
 
 		return func() { cancel() }, false
 	}
