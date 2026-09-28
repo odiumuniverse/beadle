@@ -23,8 +23,10 @@ func quarantinePlugin(t *testing.T, f *fixture) {
 	plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
 	writeSkill(t, plugin, "alpha", "# alpha\n")
 
-	if len(f.sync(t).Farm) != 2 {
-		t.Fatal("expected two farm results")
+	// Claude is the plugin's own host (native): only the farmed host OpenCode
+	// receives the farm link and later the quarantine stub.
+	if len(f.sync(t).Farm) != 1 {
+		t.Fatal("expected one farm result")
 	}
 
 	// The registry record stays: only the install path is gone, which is the
@@ -35,7 +37,7 @@ func quarantinePlugin(t *testing.T, f *fixture) {
 
 	f.sync(t)
 
-	if !isStub(t, filepath.Join(claudeSkillsDir(f.home), "alpha")) {
+	if !isStub(t, filepath.Join(openCodeSkillsDir(f.home), "alpha")) {
 		t.Fatal("expected a stub after quarantine")
 	}
 }
@@ -65,7 +67,7 @@ func TestHealRemovesQuarantine(t *testing.T) {
 			Convey("Then the stubs and quarantine are removed and the record retired", func() {
 				So(results, ShouldHaveLength, 1)
 				So(results[0].Key, ShouldEqual, "acme/tool")
-				So(results[0].Stubs, ShouldEqual, 2)
+				So(results[0].Stubs, ShouldEqual, 1)
 				So(results[0].Retired, ShouldEqual, 1)
 				So(results[0].Note, ShouldBeEmpty)
 
@@ -192,10 +194,9 @@ func TestHealDryRun(t *testing.T) {
 
 			Convey("Then it predicts the work and writes nothing", func() {
 				So(results, ShouldHaveLength, 1)
-				So(results[0].Stubs, ShouldEqual, 2)
+				So(results[0].Stubs, ShouldEqual, 1)
 				So(results[0].Retired, ShouldEqual, 1)
 
-				So(isStub(t, filepath.Join(claudeSkillsDir(f.home), "alpha")), ShouldBeTrue)
 				So(isStub(t, filepath.Join(openCodeSkillsDir(f.home), "alpha")), ShouldBeTrue)
 
 				So(link, ShouldNotBeEmpty)
@@ -231,12 +232,13 @@ func TestHealKeepsForeign(t *testing.T) {
 			Convey("Then foreign files survive and the record is retired", func() {
 				So(results, ShouldHaveLength, 1)
 				So(results[0].Note, ShouldContainSubstring, "is not empty")
-				So(results[0].Stubs, ShouldEqual, 2)
+				So(results[0].Stubs, ShouldEqual, 1)
 
 				So(read(t, foreignNote), ShouldEqual, "not ours\n")
 				So(errors.Is(quarantineErr, fs.ErrNotExist), ShouldBeTrue)
 				So(read(t, filepath.Join(foreignSkill, "SKILL.md")), ShouldEqual, "# foreign\n")
-				So(isStub(t, filepath.Join(claudeSkillsDir(f.home), "alpha")), ShouldBeFalse)
+				// Only the farmed host held a stub; heal removed it.
+				So(isStub(t, filepath.Join(openCodeSkillsDir(f.home), "alpha")), ShouldBeFalse)
 
 				So(rec.RetiredAt.IsZero(), ShouldBeFalse)
 			})

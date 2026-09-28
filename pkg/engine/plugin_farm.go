@@ -68,18 +68,19 @@ type farmPlan struct {
 	Owner       map[string]string
 	Desired     map[string]struct{}
 	Canon       map[string]struct{}
-	// LoserHosts maps a plugin key to the source hosts whose own copy lost the
-	// dedup or the same-key source conflict: those hosts read their native
-	// copy and must not receive the winner's presentation.
+	// LoserHosts maps a plugin key to the hosts that read their own native
+	// copy of it: the plugin's own source host (it loads the plugin's skills
+	// natively) plus every host whose copy lost the dedup or the same-key
+	// source conflict. None of them may receive a farm link.
 	LoserHosts map[string]map[string]bool
 	// SkillDirs maps a plugin key to the plugin-relative directory its skills
 	// live in (a manifest can move them).
 	SkillDirs map[string]string
 }
 
-// loserHost reports whether one host's own copy of a plugin lost the dedup or
-// the same-key source conflict: the host reads its native copy, so the
-// winner's presentation must not reach it too.
+// loserHost reports whether one host reads its own native copy of a plugin —
+// it installed the plugin, or its copy lost the dedup or the same-key source
+// conflict — so a farm link must not reach it.
 func (p farmPlan) loserHost(agentID, key string) bool {
 	return p.LoserHosts[key][agentID]
 }
@@ -188,6 +189,13 @@ func (e *Engine) farmPluginSkills(active []*agent.Agent) ([]FarmResult, []string
 		}
 
 		if e.config.ModeFor(a.ID, kind.Skills, surface.Traits().DefaultMode) == config.ModeOff {
+			// Creation stays mode-gated, but pruning must run: a host whose
+			// skills mode was flipped off must not keep stale farm links.
+			pruned, pruneWarns := e.pruneFarmLinks(a.ID, surface.Path(), plan, true)
+
+			results = append(results, farmResults(a.ID, kind.Skills, FarmPruned, pruned)...)
+			warns = append(warns, pruneWarns...)
+
 			continue
 		}
 
@@ -281,6 +289,18 @@ func (e *Engine) scanLedgerPlan(plan *farmPlan, ledger pluginLedger) []string {
 			// The same plugin is already presented from another host.
 			continue
 		}
+
+		// The host that installed this plugin reads its own cache's skills
+		// natively: presenting them in that host's skills directory would
+		// make every skill discoverable twice. Every other host still
+		// receives the farm link. Agents and commands keep their own
+		// host/source skip rules (farmFileSpec.Skip), so this native host is
+		// recorded for the skills plan only.
+		if plan.LoserHosts[key] == nil {
+			plan.LoserHosts[key] = map[string]bool{}
+		}
+
+		plan.LoserHosts[key][recSource(rec)] = true
 
 		names, dir, ok, pluginWarns := e.parkedPluginSkills(key, rec)
 
@@ -535,7 +555,7 @@ func (e *Engine) farmAgentSkills(agentID, dir string, plan farmPlan) ([]FarmResu
 		}
 	}
 
-	pruned, pruneWarns := e.pruneFarmLinks(agentID, dir, plan)
+	pruned, pruneWarns := e.pruneFarmLinks(agentID, dir, plan, false)
 
 	warns = append(warns, pruneWarns...)
 
@@ -747,7 +767,38 @@ func (e *Engine) farmLink(path, target string) (FarmAction, error) {
 	return FarmLinked, nil
 }
 
-func (e *Engine) pruneFarmLinks(agentID, dir string, plan farmPlan) (map[string]int, []string) {
+// prunableFarmLink resolves one skills-dir entry to the plugin key it must be
+// pruned for, or ok=false when the entry is not a beadle farm link the plan
+// drops. removeAll ignores the plan and accepts every beadle-owned link.
+func (e *Engine) prunableFarmLink(agentID, dir, name string, plan farmPlan, removeAll bool) (string, bool) {
+	path := filepath.Join(dir, name)
+
+	link, err := os.Readlink(path)
+	if err != nil {
+		return "", false
+	}
+
+	plugin, skillName, ok := e.farmLinkOwner(link)
+	if !ok || skillName != name {
+		return "", false
+	}
+
+	if !removeAll && !e.farmPrunable(agentID, plan, plugin, name) && !e.pinDangling(agentID, plugin, link, name) {
+		return "", false
+	}
+
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&fs.ModeSymlink == 0 {
+		return "", false
+	}
+
+	return plugin, true
+}
+
+// pruneFarmLinks removes the farm links the plan no longer wants. removeAll
+// drops every beadle-owned link instead: the surface is mode-off, so nothing
+// is presented there any more.
+func (e *Engine) pruneFarmLinks(agentID, dir string, plan farmPlan, removeAll bool) (map[string]int, []string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -763,26 +814,13 @@ func (e *Engine) pruneFarmLinks(agentID, dir string, plan farmPlan) (map[string]
 
 	for _, entry := range entries {
 		name := entry.Name()
+
+		plugin, ok := e.prunableFarmLink(agentID, dir, name, plan, removeAll)
+		if !ok {
+			continue
+		}
+
 		path := filepath.Join(dir, name)
-
-		link, err := os.Readlink(path)
-		if err != nil {
-			continue
-		}
-
-		plugin, skillName, ok := e.farmLinkOwner(link)
-		if !ok || skillName != name {
-			continue
-		}
-
-		if !e.farmPrunable(agentID, plan, plugin, name) && !e.pinDangling(agentID, plugin, link, name) {
-			continue
-		}
-
-		info, err := os.Lstat(path)
-		if err != nil || info.Mode()&fs.ModeSymlink == 0 {
-			continue
-		}
 
 		if err := os.Remove(path); err != nil {
 			if !errors.Is(err, fs.ErrNotExist) {

@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -307,7 +308,13 @@ func TestRealConfigE2E(t *testing.T) {
 				}
 
 				pivot := filepath.Join(f.vault.PluginsDir(), "vmkteam", "vmkteam-developer", "current", "skills", "plug-1")
-				So(farmLink(t, claudeSkillsDir(f.home), "plug-1"), ShouldEqual, pivot)
+
+				// Claude installed the plugin (native): the farm link lands on
+				// the farmed hosts, e.g. Gemini.
+				So(farmLink(t, filepath.Join(f.home, ".gemini", "skills"), "plug-1"), ShouldEqual, pivot)
+
+				_, claudePlugErr := os.Lstat(filepath.Join(claudeSkillsDir(f.home), "plug-1"))
+				So(errors.Is(claudePlugErr, fs.ErrNotExist), ShouldBeTrue)
 
 				So(servers, ShouldHaveLength, 7)
 				So(report.Conflicts, ShouldHaveLength, 3)

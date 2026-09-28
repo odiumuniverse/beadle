@@ -197,11 +197,11 @@ func TestA52QuarantineThenRetirePrunesStub(t *testing.T) {
 		report := f.sync(t)
 		So(pluginResult(t, report, "acme/tool").Action, ShouldEqual, engine.PluginQuarantined)
 
-		for _, dir := range []string{claudeSkillsDir(f.home), openCodeSkillsDir(f.home)} {
-			key, ok := skill.IsStubDir(filepath.Join(dir, "alpha"))
-			So(ok, ShouldBeTrue)
-			So(key, ShouldEqual, "acme/tool")
-		}
+		// Claude is the plugin's own host (native): only the farmed host
+		// receives the quarantine stub.
+		key, ok := skill.IsStubDir(filepath.Join(openCodeSkillsDir(f.home), "alpha"))
+		So(ok, ShouldBeTrue)
+		So(key, ShouldEqual, "acme/tool")
 
 		removeFromRegistry(t, f.home, "acme", "tool")
 

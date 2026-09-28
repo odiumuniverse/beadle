@@ -72,8 +72,9 @@ func TestPluginPresentationDirectCacheLinkIsInvisible(t *testing.T) {
 
 		f := presentationFixture(t)
 
+		// Claude is the plugin's own host (native): it owns no farm link, so
+		// seed the foreign direct cache link directly.
 		claudeLink := filepath.Join(claudeSkillsDir(f.home), "plugged")
-		So(os.Remove(claudeLink), ShouldBeNil)
 		versionedLink(t, claudeSkillsDir(f.home), "plugged", cacheSkillPath(f.home, "1.0.0", "plugged"))
 
 		Convey("When sync and doctor run", func() {

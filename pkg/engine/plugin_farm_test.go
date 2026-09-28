@@ -105,14 +105,17 @@ func TestPluginFarmPresentsSkills(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		Convey("When the farm runs", func() {
-			Convey("Then each host links the skills and the canon is untouched", func() {
-				for _, dir := range []string{claudeSkillsDir(f.home), openCodeSkillsDir(f.home)} {
-					So(farmLink(t, dir, "alpha"), ShouldEqual, wantAlpha)
-					So(farmLink(t, dir, "beta"), ShouldEqual, wantBeta)
-					So(read(t, filepath.Join(dir, "alpha", "SKILL.md")), ShouldEqual, "# alpha\n")
-				}
+			Convey("Then the foreign host links the skills and the canon is untouched", func() {
+				// The plugin is Claude source: Claude reads it natively and
+				// gets no farm link; OpenCode is the farmed host.
+				So(farmLink(t, openCodeSkillsDir(f.home), "alpha"), ShouldEqual, wantAlpha)
+				So(farmLink(t, openCodeSkillsDir(f.home), "beta"), ShouldEqual, wantBeta)
+				So(read(t, filepath.Join(openCodeSkillsDir(f.home), "alpha", "SKILL.md")), ShouldEqual, "# alpha\n")
 
-				So(report.Farm, ShouldHaveLength, 2)
+				_, claudeErr := os.Lstat(filepath.Join(claudeSkillsDir(f.home), "alpha"))
+				So(errors.Is(claudeErr, fs.ErrNotExist), ShouldBeTrue)
+
+				So(report.Farm, ShouldHaveLength, 1)
 
 				for _, result := range report.Farm {
 					So(result.Action, ShouldEqual, engine.FarmLinked)
@@ -167,7 +170,7 @@ func TestPluginFarmSurvivesUpgrade(t *testing.T) {
 
 		f.sync(t)
 
-		linkBefore := farmLink(t, claudeSkillsDir(f.home), "alpha")
+		linkBefore := farmLink(t, openCodeSkillsDir(f.home), "alpha")
 
 		upgraded := pluginTree(t, f.home, "acme", "tool", "2.0.0")
 		writeSkill(t, upgraded, "alpha", "# alpha v2\n")
@@ -177,9 +180,12 @@ func TestPluginFarmSurvivesUpgrade(t *testing.T) {
 		Convey("When it upgrades", func() {
 			Convey("Then the link is stable and content updates", func() {
 				So(report.Farm, ShouldBeEmpty)
-				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, linkBefore)
 				So(farmLink(t, openCodeSkillsDir(f.home), "alpha"), ShouldEqual, linkBefore)
-				So(read(t, filepath.Join(claudeSkillsDir(f.home), "alpha", "SKILL.md")), ShouldEqual, "# alpha v2\n")
+				So(read(t, filepath.Join(openCodeSkillsDir(f.home), "alpha", "SKILL.md")), ShouldEqual, "# alpha v2\n")
+
+				// Claude reads its own plugin natively: it owns no farm link.
+				_, claudeErr := os.Lstat(filepath.Join(claudeSkillsDir(f.home), "alpha"))
+				So(errors.Is(claudeErr, fs.ErrNotExist), ShouldBeTrue)
 			})
 		})
 	})
@@ -207,12 +213,12 @@ func TestPluginFarmPrunesDroppedSkill(t *testing.T) {
 		_, alphaOpen := os.Stat(filepath.Join(openCodeSkillsDir(f.home), "alpha"))
 
 		Convey("When the farm reconciles", func() {
-			Convey("Then the dropped skill is pruned on both hosts", func() {
+			Convey("Then the dropped skill is pruned on the farmed host", func() {
 				So(errors.Is(alphaClaude, fs.ErrNotExist), ShouldBeTrue)
 				So(errors.Is(alphaOpen, fs.ErrNotExist), ShouldBeTrue)
-				So(farmLink(t, claudeSkillsDir(f.home), "beta"), ShouldEqual, pluginCurrentSkill(f, "beta"))
+				So(farmLink(t, openCodeSkillsDir(f.home), "beta"), ShouldEqual, pluginCurrentSkill(f, "beta"))
 
-				So(report.Farm, ShouldHaveLength, 2)
+				So(report.Farm, ShouldHaveLength, 1)
 
 				for _, result := range report.Farm {
 					So(result.Action, ShouldEqual, engine.FarmPruned)
@@ -239,7 +245,9 @@ func TestPluginFarmCollisions(t *testing.T) {
 
 			report := f.sync(t)
 
-			So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, pluginCurrentSkill(f, "alpha"))
+			// Claude installed both plugins: it is native here, so the farm
+			// link reaches the other host only.
+			So(farmLink(t, openCodeSkillsDir(f.home), "alpha"), ShouldEqual, pluginCurrentSkill(f, "alpha"))
 			So(containsWarning(report.Warnings, "already provided by acme/tool"), ShouldBeTrue)
 		})
 
@@ -248,18 +256,25 @@ func TestPluginFarmCollisions(t *testing.T) {
 
 			f := newFixture(t)
 			f.emptyConfigs(t)
+			geminiHome(t, f)
+			enableAgents(t, f, agent.GeminiCLIID)
+
+			geminiDir := filepath.Join(f.home, ".gemini", "skills")
 
 			plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
 			writeSkill(t, plugin, "alpha", "# plugin\n")
 
 			f.sync(t)
-			So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, pluginCurrentSkill(f, "alpha"))
+			// Claude is the plugin's own host (native): the farm link lives on
+			// the farmed host Gemini (its skills surface is ModeSync, so it
+			// also receives the canon below).
+			So(farmLink(t, geminiDir, "alpha"), ShouldEqual, pluginCurrentSkill(f, "alpha"))
 
 			write(t, filepath.Join(f.vault.SkillsDir(), "alpha", "SKILL.md"), "# canon\n")
 
 			report := f.sync(t)
 
-			info, err := os.Lstat(filepath.Join(claudeSkillsDir(f.home), "alpha"))
+			info, err := os.Lstat(filepath.Join(geminiDir, "alpha"))
 			So(err, ShouldBeNil)
 
 			var pruned []engine.FarmResult
@@ -271,7 +286,9 @@ func TestPluginFarmCollisions(t *testing.T) {
 			}
 
 			So(info.Mode()&fs.ModeSymlink, ShouldEqual, fs.FileMode(0))
-			So(read(t, filepath.Join(claudeSkillsDir(f.home), "alpha", "SKILL.md")), ShouldEqual, "# canon\n")
+			So(read(t, filepath.Join(geminiDir, "alpha", "SKILL.md")), ShouldEqual, "# canon\n")
+			// The canon shadows the farm for every farmed host (Gemini and
+			// OpenCode); Claude is native and owns no link.
 			So(pruned, ShouldHaveLength, 2)
 		})
 
@@ -307,21 +324,24 @@ func TestPluginFarmCollisions(t *testing.T) {
 			writeSkill(t, plugin, "alpha", "# plugin alpha\n")
 			writeSkill(t, plugin, "beta", "# plugin beta\n")
 
-			claudeDir := claudeSkillsDir(f.home)
-			So(os.MkdirAll(claudeDir, 0o700), ShouldBeNil)
+			// The farmed host is OpenCode: Claude is the plugin's own host and
+			// receives no farm link, so the foreign-entry guard is exercised
+			// on the farmed directory.
+			openCodeDir := openCodeSkillsDir(f.home)
+			So(os.MkdirAll(openCodeDir, 0o700), ShouldBeNil)
 
 			foreignTarget := filepath.Join(f.home, "elsewhere", "alpha")
 			write(t, filepath.Join(foreignTarget, "SKILL.md"), "# foreign\n")
-			So(os.Symlink(foreignTarget, filepath.Join(claudeDir, "alpha")), ShouldBeNil)
+			So(os.Symlink(foreignTarget, filepath.Join(openCodeDir, "alpha")), ShouldBeNil)
 
-			realDir := filepath.Join(claudeDir, "beta")
+			realDir := filepath.Join(openCodeDir, "beta")
 			write(t, filepath.Join(realDir, "SKILL.md"), "# real\n")
 
 			realInode := inode(t, realDir)
 
 			report := f.sync(t)
 
-			link, err := os.Readlink(filepath.Join(claudeDir, "alpha"))
+			link, err := os.Readlink(filepath.Join(openCodeDir, "alpha"))
 			So(err, ShouldBeNil)
 
 			var skipped []engine.FarmResult
@@ -352,19 +372,23 @@ func TestPluginFarmStubsOnQuarantine(t *testing.T) {
 
 		f.sync(t)
 
-		foreignDir := filepath.Join(claudeSkillsDir(f.home), "Foreign")
+		openCodeDir := openCodeSkillsDir(f.home)
+
+		foreignDir := filepath.Join(openCodeDir, "Foreign")
 		write(t, filepath.Join(foreignDir, "SKILL.md"), "# foreign\n")
 
 		foreignTarget := filepath.Join(f.home, "elsewhere", "helper")
 		write(t, filepath.Join(foreignTarget, "SKILL.md"), "# helper\n")
-		So(os.Symlink(foreignTarget, filepath.Join(claudeSkillsDir(f.home), "Helper")), ShouldBeNil)
+		So(os.Symlink(foreignTarget, filepath.Join(openCodeDir, "Helper")), ShouldBeNil)
 
 		So(os.RemoveAll(plugin), ShouldBeNil)
 
 		report := f.sync(t)
 
-		Convey("When sync stubs the hosts", func() {
-			So(report.Farm, ShouldHaveLength, 2)
+		Convey("When sync stubs the farmed host", func() {
+			// Claude is the plugin's own host (native): only the farmed host
+			// receives the quarantine stub.
+			So(report.Farm, ShouldHaveLength, 1)
 
 			for _, result := range report.Farm {
 				So(result.Action, ShouldEqual, engine.FarmStubbed)
@@ -372,15 +396,13 @@ func TestPluginFarmStubsOnQuarantine(t *testing.T) {
 				So(result.Count, ShouldEqual, 1)
 			}
 
-			for _, dir := range []string{claudeSkillsDir(f.home), openCodeSkillsDir(f.home)} {
-				key, ok := skill.IsStubDir(filepath.Join(dir, "alpha"))
-				So(ok, ShouldBeTrue)
-				So(key, ShouldEqual, "acme/tool")
-			}
+			key, ok := skill.IsStubDir(filepath.Join(openCodeDir, "alpha"))
+			So(ok, ShouldBeTrue)
+			So(key, ShouldEqual, "acme/tool")
 
 			So(read(t, filepath.Join(foreignDir, "SKILL.md")), ShouldEqual, "# foreign\n")
 
-			link, err := os.Readlink(filepath.Join(claudeSkillsDir(f.home), "Helper"))
+			link, err := os.Readlink(filepath.Join(openCodeDir, "Helper"))
 			So(err, ShouldBeNil)
 			So(link, ShouldEqual, foreignTarget)
 
@@ -415,7 +437,9 @@ func TestPluginFarmReplacesStubOnReinstall(t *testing.T) {
 		So(os.RemoveAll(plugin), ShouldBeNil)
 
 		f.sync(t)
-		So(isStub(t, filepath.Join(claudeSkillsDir(f.home), "alpha")), ShouldBeTrue)
+		// Claude is the plugin's own host (native): the stub lands on the
+		// farmed host only.
+		So(isStub(t, filepath.Join(openCodeSkillsDir(f.home), "alpha")), ShouldBeTrue)
 
 		reinstalled := pluginTree(t, f.home, "acme", "tool", "1.0.0")
 		writeSkill(t, reinstalled, "alpha", "# alpha\n")
@@ -431,10 +455,8 @@ func TestPluginFarmReplacesStubOnReinstall(t *testing.T) {
 					So(result.Action, ShouldNotEqual, engine.FarmStubbed)
 				}
 
-				for _, dir := range []string{claudeSkillsDir(f.home), openCodeSkillsDir(f.home)} {
-					So(isStub(t, filepath.Join(dir, "alpha")), ShouldBeFalse)
-					So(farmLink(t, dir, "alpha"), ShouldEqual, pluginCurrentSkill(f, "alpha"))
-				}
+				So(isStub(t, filepath.Join(openCodeSkillsDir(f.home), "alpha")), ShouldBeFalse)
+				So(farmLink(t, openCodeSkillsDir(f.home), "alpha"), ShouldEqual, pluginCurrentSkill(f, "alpha"))
 
 				So(entries, ShouldBeEmpty)
 			})
@@ -458,7 +480,9 @@ func TestPluginFarmPrunesOrphanStub(t *testing.T) {
 		So(os.RemoveAll(plugin), ShouldBeNil)
 
 		f.sync(t)
-		So(isStub(t, filepath.Join(claudeSkillsDir(f.home), "alpha")), ShouldBeTrue)
+		// Claude is the plugin's own host (native): the orphan stub lands on
+		// the farmed host only.
+		So(isStub(t, filepath.Join(openCodeSkillsDir(f.home), "alpha")), ShouldBeTrue)
 
 		upgraded := pluginTree(t, f.home, "acme", "tool", "2.0.0")
 		writeSkill(t, upgraded, "beta", "# beta\n")
@@ -477,12 +501,13 @@ func TestPluginFarmPrunesOrphanStub(t *testing.T) {
 		}
 
 		Convey("When the farm reconciles", func() {
-			Convey("Then the orphan stub is pruned on both hosts", func() {
+			Convey("Then the orphan stub is pruned on the farmed host", func() {
 				So(errors.Is(alphaClaude, fs.ErrNotExist), ShouldBeTrue)
 				So(errors.Is(alphaOpen, fs.ErrNotExist), ShouldBeTrue)
-				So(farmLink(t, claudeSkillsDir(f.home), "beta"), ShouldEqual, pluginCurrentSkill(f, "beta"))
 				So(farmLink(t, openCodeSkillsDir(f.home), "beta"), ShouldEqual, pluginCurrentSkill(f, "beta"))
-				So(pruned, ShouldEqual, 2)
+
+				// Claude is native here: only the farmed host's stub is pruned.
+				So(pruned, ShouldEqual, 1)
 			})
 		})
 	})
@@ -504,14 +529,16 @@ func TestPluginFarmStubSkipsShadowedName(t *testing.T) {
 
 			f.sync(t)
 
-			So(farmLink(t, claudeSkillsDir(f.home), "shared"), ShouldEqual, filepath.Join(f.vault.PluginsDir(), "aaa", "loser", "current", "skills", "shared"))
+			// Both plugins are Claude source (native): the farm link lives on
+			// the other host.
+			So(farmLink(t, openCodeSkillsDir(f.home), "shared"), ShouldEqual, filepath.Join(f.vault.PluginsDir(), "aaa", "loser", "current", "skills", "shared"))
 
 			So(os.RemoveAll(loser), ShouldBeNil)
 
 			report := f.sync(t)
 
-			So(isStub(t, filepath.Join(claudeSkillsDir(f.home), "shared")), ShouldBeFalse)
-			So(read(t, filepath.Join(claudeSkillsDir(f.home), "shared", "SKILL.md")), ShouldEqual, "# winner\n")
+			So(isStub(t, filepath.Join(openCodeSkillsDir(f.home), "shared")), ShouldBeFalse)
+			So(read(t, filepath.Join(openCodeSkillsDir(f.home), "shared", "SKILL.md")), ShouldEqual, "# winner\n")
 
 			for _, result := range report.Farm {
 				So(result.Action, ShouldNotEqual, engine.FarmStubbed)
@@ -523,11 +550,16 @@ func TestPluginFarmStubSkipsShadowedName(t *testing.T) {
 
 			f := newFixture(t)
 			f.emptyConfigs(t)
+			geminiHome(t, f)
+			enableAgents(t, f, agent.GeminiCLIID)
+
+			geminiDir := filepath.Join(f.home, ".gemini", "skills")
 
 			plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
 			writeSkill(t, plugin, "alpha", "# plugin\n")
 
 			f.sync(t)
+			So(farmLink(t, geminiDir, "alpha"), ShouldEqual, pluginCurrentSkill(f, "alpha"))
 
 			write(t, filepath.Join(f.vault.SkillsDir(), "alpha", "SKILL.md"), "# canon\n")
 
@@ -535,8 +567,10 @@ func TestPluginFarmStubSkipsShadowedName(t *testing.T) {
 
 			report := f.sync(t)
 
-			So(isStub(t, filepath.Join(claudeSkillsDir(f.home), "alpha")), ShouldBeFalse)
-			So(read(t, filepath.Join(claudeSkillsDir(f.home), "alpha", "SKILL.md")), ShouldEqual, "# canon\n")
+			// The canon shadows the quarantined plugin: the farmed host Gemini
+			// (ModeSync) receives the canon instead of a stub.
+			So(isStub(t, filepath.Join(geminiDir, "alpha")), ShouldBeFalse)
+			So(read(t, filepath.Join(geminiDir, "alpha", "SKILL.md")), ShouldEqual, "# canon\n")
 
 			for _, result := range report.Farm {
 				So(result.Action, ShouldNotEqual, engine.FarmStubbed)
@@ -561,10 +595,12 @@ func TestPluginFarmStubSymlinkNotReadAsSkill(t *testing.T) {
 
 		f.sync(t)
 
-		stub := filepath.Join(claudeSkillsDir(f.home), "alpha")
+		// Claude is the plugin's own host (native): the stub lands on the
+		// farmed host only.
+		stub := filepath.Join(openCodeSkillsDir(f.home), "alpha")
 		So(isStub(t, stub), ShouldBeTrue)
 
-		So(os.Symlink(stub, filepath.Join(claudeSkillsDir(f.home), "helper")), ShouldBeNil)
+		So(os.Symlink(stub, filepath.Join(openCodeSkillsDir(f.home), "helper")), ShouldBeNil)
 
 		f.sync(t)
 
@@ -667,6 +703,8 @@ func TestPluginFarmSkipsOffAndDisabled(t *testing.T) {
 
 			f := newFixture(t)
 			f.emptyConfigs(t)
+			geminiHome(t, f)
+			enableAgents(t, f, agent.GeminiCLIID)
 
 			plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
 			writeSkill(t, plugin, "alpha", "# alpha\n")
@@ -675,10 +713,15 @@ func TestPluginFarmSkipsOffAndDisabled(t *testing.T) {
 
 			f.sync(t)
 
-			So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, pluginCurrentSkill(f, "alpha"))
+			// Claude is the plugin's own host (native); Gemini is the farmed
+			// host, while the mode-off OpenCode is untouched.
+			So(farmLink(t, filepath.Join(f.home, ".gemini", "skills"), "alpha"), ShouldEqual, pluginCurrentSkill(f, "alpha"))
 
 			_, openErr := os.Stat(openCodeSkillsDir(f.home))
 			So(errors.Is(openErr, fs.ErrNotExist), ShouldBeTrue)
+
+			_, claudeErr := os.Lstat(filepath.Join(claudeSkillsDir(f.home), "alpha"))
+			So(errors.Is(claudeErr, fs.ErrNotExist), ShouldBeTrue)
 		})
 
 		Convey("When the skills kind is disabled, nothing is farmed", func() {
@@ -731,7 +774,8 @@ func TestPluginFarmNoPruneOnLedgerError(t *testing.T) {
 
 		f.sync(t)
 
-		linkBefore := farmLink(t, claudeSkillsDir(f.home), "alpha")
+		// Claude is the plugin's own host (native); OpenCode owns the farm link.
+		linkBefore := farmLink(t, openCodeSkillsDir(f.home), "alpha")
 
 		So(os.Remove(f.vault.PluginsLedgerPath()), ShouldBeNil)
 		So(os.MkdirAll(f.vault.PluginsLedgerPath(), 0o700), ShouldBeNil)
@@ -740,7 +784,6 @@ func TestPluginFarmNoPruneOnLedgerError(t *testing.T) {
 
 		Convey("When sync runs", func() {
 			Convey("Then the farm does not prune and warns about the ledger", func() {
-				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, linkBefore)
 				So(farmLink(t, openCodeSkillsDir(f.home), "alpha"), ShouldEqual, linkBefore)
 				So(report.Farm, ShouldBeEmpty)
 				So(containsWarning(report.Warnings, "ledger"), ShouldBeTrue)
@@ -804,11 +847,13 @@ func TestPluginFarmSkipsSkillSymlinkedOutsideCache(t *testing.T) {
 		entries, err := os.ReadDir(f.vault.SkillsDir())
 		So(err, ShouldBeNil)
 
-		_, helperErr := os.Stat(filepath.Join(claudeSkillsDir(f.home), "helper"))
+		_, helperErr := os.Stat(filepath.Join(openCodeSkillsDir(f.home), "helper"))
 
 		Convey("When sync runs", func() {
 			Convey("Then only the regular skill is farmed", func() {
-				So(report.Farm, ShouldHaveLength, 2)
+				// Claude is the plugin's own host (native): the farmed host is
+				// OpenCode, and it links only the regular skill.
+				So(report.Farm, ShouldHaveLength, 1)
 
 				for _, result := range report.Farm {
 					So(result.Action, ShouldEqual, engine.FarmLinked)
@@ -835,7 +880,8 @@ func TestPluginFarmNoPruneOnUnreadableSkills(t *testing.T) {
 
 		f.sync(t)
 
-		linkBefore := farmLink(t, claudeSkillsDir(f.home), "alpha")
+		// Claude is the plugin's own host (native); OpenCode owns the farm link.
+		linkBefore := farmLink(t, openCodeSkillsDir(f.home), "alpha")
 
 		skillsPath := filepath.Join(plugin, "skills")
 		So(os.Chmod(skillsPath, 0o000), ShouldBeNil)
@@ -849,7 +895,6 @@ func TestPluginFarmNoPruneOnUnreadableSkills(t *testing.T) {
 		Convey("When sync runs", func() {
 			Convey("Then it does not prune and warns", func() {
 				So(report.Farm, ShouldBeEmpty)
-				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, linkBefore)
 				So(farmLink(t, openCodeSkillsDir(f.home), "alpha"), ShouldEqual, linkBefore)
 				So(containsWarning(report.Warnings, "skills cannot be read"), ShouldBeTrue)
 			})
@@ -869,7 +914,8 @@ func TestPluginFarmGatesDirectionAndKinds(t *testing.T) {
 
 		f.sync(t)
 
-		linkBefore := farmLink(t, claudeSkillsDir(f.home), "alpha")
+		// Claude is the plugin's own host (native); OpenCode owns the farm link.
+		linkBefore := farmLink(t, openCodeSkillsDir(f.home), "alpha")
 
 		pluginTree(t, f.home, "acme", "tool", "2.0.0")
 
@@ -880,9 +926,9 @@ func TestPluginFarmGatesDirectionAndKinds(t *testing.T) {
 
 		Convey("When pull and a narrowed kind set run", func() {
 			Convey("Then neither touches the farm", func() {
-				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, linkBefore)
+				So(farmLink(t, openCodeSkillsDir(f.home), "alpha"), ShouldEqual, linkBefore)
 				So(report.Farm, ShouldBeEmpty)
-				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, linkBefore)
+				So(farmLink(t, openCodeSkillsDir(f.home), "alpha"), ShouldEqual, linkBefore)
 			})
 		})
 	})

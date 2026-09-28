@@ -307,8 +307,9 @@ func TestMigrateForkAsideConflict(t *testing.T) {
 		aside := filepath.Join(dir, "alpha.migrating")
 		write(t, aside, "occupied\n")
 
+		// Claude is the plugin's own host (native): it owns no farm link, so
+		// seed the legacy cache link directly.
 		claudeDir := claudeSkillsDir(f.home)
-		So(os.Remove(filepath.Join(claudeDir, "beta")), ShouldBeNil)
 		versionedLink(t, claudeDir, "beta", plugin+"/skills/beta/")
 
 		results, err := f.engine.Heal(t.Context(), false)
@@ -361,7 +362,10 @@ func TestMigrateIdenticalForkBeforeSync(t *testing.T) {
 
 				So(results, ShouldHaveLength, 1)
 				So(results[0].Key, ShouldEqual, "acme/tool")
-				So(results[0].Migrated, ShouldEqual, 1)
+				// Two migrations: OpenCode's pre-sync fork and the identical
+				// canon copy Claude received (Claude is the plugin's own host,
+				// so it never held a farm link there).
+				So(results[0].Migrated, ShouldEqual, 2)
 
 				So(link, ShouldEqual, filepath.Join(pivotSkillsDir(f, "acme", "tool"), "alpha"))
 				So(read(t, f.vaultSkill("alpha")), ShouldEqual, "# alpha\n")
@@ -424,8 +428,9 @@ func TestMigrateIdenticalForkDivergedCanonKeepsBoth(t *testing.T) {
 		So(os.RemoveAll(filepath.Join(dir, "alpha")), ShouldBeNil)
 		write(t, filepath.Join(dir, "alpha", "SKILL.md"), "# alpha\n")
 
+		// Claude is the plugin's own host (native): it owns no farm link, so
+		// seed the legacy cache link directly.
 		claudeDir := claudeSkillsDir(f.home)
-		So(os.Remove(filepath.Join(claudeDir, "beta")), ShouldBeNil)
 		versionedLink(t, claudeDir, "beta", plugin+"/skills/beta/")
 
 		results, err := f.engine.Heal(t.Context(), false)
@@ -683,8 +688,9 @@ func TestHealReportsMigration(t *testing.T) {
 
 		f.sync(t)
 
+		// Claude is the plugin's own host (native): it owns no farm link, so
+		// seed the legacy cache link directly.
 		claudeDir := claudeSkillsDir(f.home)
-		So(os.Remove(filepath.Join(claudeDir, "alpha")), ShouldBeNil)
 		versionedLink(t, claudeDir, "alpha", plugin+"/skills/alpha/")
 
 		openCodeDir := openCodeSkillsDir(f.home)

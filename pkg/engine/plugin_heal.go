@@ -163,7 +163,7 @@ func mergeMigrations(results []HealResult, migrations []MigrateResult) []HealRes
 func (e *Engine) healPlugin(ctx context.Context, key string, dryRun bool) (HealResult, bool) {
 	result := HealResult{Key: key}
 
-	dirs, err := e.skillsDirs(ctx)
+	dirs, err := e.skillsDirs(ctx, false)
 	if err != nil {
 		result.Note = err.Error()
 
@@ -184,7 +184,10 @@ func (e *Engine) healPlugin(ctx context.Context, key string, dryRun bool) (HealR
 	return result, !dryRun
 }
 
-func (e *Engine) skillsDirs(ctx context.Context) ([]string, error) {
+// skillsDirs lists the skills directories of the active hosts. modeGated is
+// true for the callers that must leave mode-off surfaces alone (doctor);
+// pruning runs regardless of the skills mode, so heal and migrate pass false.
+func (e *Engine) skillsDirs(ctx context.Context, modeGated bool) ([]string, error) {
 	if e.home == "" {
 		return nil, nil
 	}
@@ -198,7 +201,11 @@ func (e *Engine) skillsDirs(ctx context.Context) ([]string, error) {
 
 	for _, a := range active {
 		surface := a.Surface(kind.Skills)
-		if surface == nil || e.config.ModeFor(a.ID, kind.Skills, surface.Traits().DefaultMode) == config.ModeOff {
+		if surface == nil {
+			continue
+		}
+
+		if modeGated && e.config.ModeFor(a.ID, kind.Skills, surface.Traits().DefaultMode) == config.ModeOff {
 			continue
 		}
 

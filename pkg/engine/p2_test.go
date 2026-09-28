@@ -55,6 +55,8 @@ func TestPluginPinFarmUsesPinnedPivot(t *testing.T) {
 
 		f := newFixture(t)
 		f.emptyConfigs(t)
+		geminiHome(t, f)
+		enableAgents(t, f, agent.GeminiCLIID)
 
 		v1 := pluginTree(t, f.home, "acme", "tool", "1.0.0")
 		writeSkill(t, v1, "alpha", "# v1\n")
@@ -66,14 +68,16 @@ func TestPluginPinFarmUsesPinnedPivot(t *testing.T) {
 
 		f.sync(t)
 
-		claudeDir := claudeSkillsDir(f.home)
+		// Claude is the plugin's own host (native): Gemini is the unpinned
+		// farmed host the pin comparison uses.
+		geminiDir := filepath.Join(f.home, ".gemini", "skills")
 		openCodeDir := openCodeSkillsDir(f.home)
 
 		Convey("When a newer version appears", func() {
 			So(farmLink(t, openCodeDir, "alpha"), ShouldEqual, pinSkillPath(f, "1.0.0", "alpha"))
-			So(farmLink(t, claudeDir, "alpha"), ShouldEqual, currentSkillPath(f, "alpha"))
+			So(farmLink(t, geminiDir, "alpha"), ShouldEqual, currentSkillPath(f, "alpha"))
 			So(read(t, filepath.Join(openCodeDir, "alpha", "SKILL.md")), ShouldEqual, "# v1\n")
-			So(read(t, filepath.Join(claudeDir, "alpha", "SKILL.md")), ShouldEqual, "# v2\n")
+			So(read(t, filepath.Join(geminiDir, "alpha", "SKILL.md")), ShouldEqual, "# v2\n")
 			So(readLink(t, pinPath(f, "1.0.0")), ShouldEqual, v1)
 
 			v3 := pluginTree(t, f.home, "acme", "tool", "3.0.0")
@@ -83,9 +87,9 @@ func TestPluginPinFarmUsesPinnedPivot(t *testing.T) {
 
 			Convey("Then the pin holds and the unpinned agent follows current", func() {
 				So(farmLink(t, openCodeDir, "alpha"), ShouldEqual, pinSkillPath(f, "1.0.0", "alpha"))
-				So(farmLink(t, claudeDir, "alpha"), ShouldEqual, currentSkillPath(f, "alpha"))
+				So(farmLink(t, geminiDir, "alpha"), ShouldEqual, currentSkillPath(f, "alpha"))
 				So(read(t, filepath.Join(openCodeDir, "alpha", "SKILL.md")), ShouldEqual, "# v1\n")
-				So(read(t, filepath.Join(claudeDir, "alpha", "SKILL.md")), ShouldEqual, "# v3\n")
+				So(read(t, filepath.Join(geminiDir, "alpha", "SKILL.md")), ShouldEqual, "# v3\n")
 				So(readLink(t, pinPath(f, "1.0.0")), ShouldEqual, v1)
 				So(readLink(t, filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current")), ShouldEqual, v3)
 			})
@@ -99,6 +103,8 @@ func TestPluginPinMissingVersionIsSkipped(t *testing.T) {
 
 		f := newFixture(t)
 		f.emptyConfigs(t)
+		geminiHome(t, f)
+		enableAgents(t, f, agent.GeminiCLIID)
 
 		plugin := pluginTree(t, f.home, "acme", "tool", "1.0.0")
 		writeSkill(t, plugin, "alpha", "# v1\n")
@@ -117,7 +123,9 @@ func TestPluginPinMissingVersionIsSkipped(t *testing.T) {
 			Convey("Then the pin is kept, the version is not substituted and doctor errors", func() {
 				So(strings.Join(report.Warnings, " "), ShouldContainSubstring,
 					"pinned version 9.9.9 of acme/tool is not in the plugin cache; keeping the pin (no silent upgrade)")
-				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, currentSkillPath(f, "alpha"))
+				// Claude is the plugin's own host (native): Gemini is the
+				// unpinned farmed host that follows current.
+				So(farmLink(t, filepath.Join(f.home, ".gemini", "skills"), "alpha"), ShouldEqual, currentSkillPath(f, "alpha"))
 				So(entries, ShouldBeEmpty)
 
 				So(hasIssue(issues, engine.SeverityError, "9.9.9"), ShouldBeTrue)
@@ -252,6 +260,8 @@ func TestPluginPinDifferentSkillSet(t *testing.T) {
 
 		f := newFixture(t)
 		f.emptyConfigs(t)
+		geminiHome(t, f)
+		enableAgents(t, f, agent.GeminiCLIID)
 
 		v1 := pluginTree(t, f.home, "acme", "tool", "1.0.0")
 		writeSkill(t, v1, "alpha", "# v1 alpha\n")
@@ -264,7 +274,9 @@ func TestPluginPinDifferentSkillSet(t *testing.T) {
 
 		report := f.sync(t)
 
-		claudeDir := claudeSkillsDir(f.home)
+		// Claude is the plugin's own host (native): Gemini is the unpinned
+		// farmed host.
+		geminiDir := filepath.Join(f.home, ".gemini", "skills")
 		openCodeDir := openCodeSkillsDir(f.home)
 
 		issues, err := f.engine.Doctor(t.Context())
@@ -273,8 +285,8 @@ func TestPluginPinDifferentSkillSet(t *testing.T) {
 		Convey("When sync runs", func() {
 			Convey("Then a skill absent from the pin is skipped and never linked", func() {
 				So(farmLink(t, openCodeDir, "alpha"), ShouldEqual, pinSkillPath(f, "1.0.0", "alpha"))
-				So(farmLink(t, claudeDir, "alpha"), ShouldEqual, currentSkillPath(f, "alpha"))
-				So(farmLink(t, claudeDir, "beta"), ShouldEqual, currentSkillPath(f, "beta"))
+				So(farmLink(t, geminiDir, "alpha"), ShouldEqual, currentSkillPath(f, "alpha"))
+				So(farmLink(t, geminiDir, "beta"), ShouldEqual, currentSkillPath(f, "beta"))
 
 				_, err := os.Lstat(filepath.Join(openCodeDir, "beta"))
 				So(errors.Is(err, fs.ErrNotExist), ShouldBeTrue)
@@ -294,6 +306,8 @@ func TestPluginPinDropsSkillMissingInPinnedVersion(t *testing.T) {
 
 		f := newFixture(t)
 		f.emptyConfigs(t)
+		geminiHome(t, f)
+		enableAgents(t, f, agent.GeminiCLIID)
 
 		v1 := pluginTree(t, f.home, "acme", "tool", "1.0.0")
 		writeSkill(t, v1, "alpha", "# v1 alpha\n")
@@ -317,7 +331,9 @@ func TestPluginPinDropsSkillMissingInPinnedVersion(t *testing.T) {
 			Convey("Then the stale link is pruned and the other agent keeps it", func() {
 				So(farmLink(t, openCodeDir, "alpha"), ShouldEqual, pinSkillPath(f, "1.0.0", "alpha"))
 				So(errors.Is(err, fs.ErrNotExist), ShouldBeTrue)
-				So(farmLink(t, claudeSkillsDir(f.home), "beta"), ShouldEqual, currentSkillPath(f, "beta"))
+				// Claude is the plugin's own host (native): Gemini is the
+				// unpinned farmed host that keeps the skill.
+				So(farmLink(t, filepath.Join(f.home, ".gemini", "skills"), "beta"), ShouldEqual, currentSkillPath(f, "beta"))
 			})
 		})
 	})

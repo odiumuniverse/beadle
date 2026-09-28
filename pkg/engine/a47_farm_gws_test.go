@@ -12,7 +12,9 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/plugin"
 )
 
@@ -143,8 +145,10 @@ func TestA47ClaudeSourceStaysNativeForAgentsAndCommands(t *testing.T) {
 					So(errors.Is(err, fs.ErrNotExist), ShouldBeTrue)
 				}
 
-				// Claude still receives the plugin's skills next to its native copy.
-				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, pluginFarmLink(f, "acme", "tool", "skills", "alpha"))
+				// Claude reads its own plugin's skills natively: no farm link
+				// is added next to that native copy.
+				_, claudeSkillErr := os.Lstat(filepath.Join(claudeSkillsDir(f.home), "alpha"))
+				So(errors.Is(claudeSkillErr, fs.ErrNotExist), ShouldBeTrue)
 
 				So(report.Errors(), ShouldBeEmpty)
 			})
@@ -179,7 +183,7 @@ func TestA47DedupWinnerSkipsLoserHost(t *testing.T) {
 		report := f.sync(t)
 
 		Convey("When the sync runs", func() {
-			Convey("Then the winner reaches every host but the losing one", func() {
+			Convey("Then the winner reaches every other host but the losing one", func() {
 				So(report.Errors(), ShouldBeEmpty)
 
 				// Gemini wins: its copy is presented to the other hosts.
@@ -188,9 +192,10 @@ func TestA47DedupWinnerSkipsLoserHost(t *testing.T) {
 					ShouldEqual, pluginFarmLink(f, "gemini-cli", "tool", "agents", "helper.md"))
 				So(hostMCPServers(t, f.claudeConfig(), "mcpServers"), ShouldContainKey, "srv")
 
-				// The winner host reads its own extension natively.
-				So(farmLink(t, filepath.Join(f.home, ".gemini", "skills"), "alpha"),
-					ShouldEqual, pluginFarmLink(f, "gemini-cli", "tool", "skills", "alpha"))
+				// The winner host reads its own extension natively: the farm
+				// adds no link next to that native copy.
+				_, geminiSkillErr := os.Lstat(filepath.Join(f.home, ".gemini", "skills", "alpha"))
+				So(errors.Is(geminiSkillErr, fs.ErrNotExist), ShouldBeTrue)
 				So(read(t, filepath.Join(f.home, ".gemini", "settings.json")), ShouldNotContainSubstring, "srv")
 
 				// Codex lost the dedup: it keeps its native cache and receives
@@ -373,7 +378,12 @@ func TestA47DuplicatePluginPresentedOnce(t *testing.T) {
 				So(containsWarning(report.Notes, "presenting the caveman/caveman copy"), ShouldBeTrue)
 
 				want := pluginFarmLink(f, "caveman", "caveman", "skills", "alpha")
-				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, want)
+
+				// Claude installed the winner: it reads its own plugin
+				// natively, so the winner reaches the other hosts only.
+				_, claudeErr := os.Lstat(filepath.Join(claudeSkillsDir(f.home), "alpha"))
+				So(errors.Is(claudeErr, fs.ErrNotExist), ShouldBeTrue)
+				So(farmLink(t, openCodeSkillsDir(f.home), "alpha"), ShouldEqual, want)
 
 				// Gemini lost the dedup: it keeps reading its own extension and
 				// receives nothing from the winner.
@@ -396,7 +406,12 @@ func TestA47DuplicatePluginPresentedOnce(t *testing.T) {
 				Convey("Then the surviving copy takes over", func() {
 					want := pluginFarmLink(f, "gemini-cli", "caveman", "skills", "alpha")
 					So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, want)
-					So(farmLink(t, filepath.Join(f.home, ".gemini", "skills"), "alpha"), ShouldEqual, want)
+
+					// Gemini installed the survivor: it reads its own extension
+					// natively and gets no farm link.
+					_, geminiSkillErr := os.Lstat(filepath.Join(f.home, ".gemini", "skills", "alpha"))
+					So(errors.Is(geminiSkillErr, fs.ErrNotExist), ShouldBeTrue)
+
 					So(farmLink(t, a47OpenCodeAgentsDir(f.home), "caveman--helper.md"), ShouldEqual, pluginFarmLink(f, "gemini-cli", "caveman", "agents", "helper.md"))
 				})
 			})
@@ -411,7 +426,11 @@ func TestA47DuplicatePluginPresentedOnce(t *testing.T) {
 				Convey("Then both stay visible and the divergence is warned", func() {
 					So(containsWarning(report.Warnings, "different content"), ShouldBeTrue)
 					So(hasIssue(issues, engine.SeverityWarn, "different content"), ShouldBeTrue)
-					So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, pluginFarmLink(f, "caveman", "caveman", "skills", "alpha"))
+					// Claude reads its own plugin natively; the winner reaches
+					// the other hosts.
+					_, claudeErr := os.Lstat(filepath.Join(claudeSkillsDir(f.home), "alpha"))
+					So(errors.Is(claudeErr, fs.ErrNotExist), ShouldBeTrue)
+					So(farmLink(t, openCodeSkillsDir(f.home), "alpha"), ShouldEqual, pluginFarmLink(f, "caveman", "caveman", "skills", "alpha"))
 				})
 			})
 		})
@@ -640,7 +659,11 @@ func TestA47BeadleBundlePluginIsSelfSkipped(t *testing.T) {
 				So(seen, ShouldBeTrue)
 
 				So(pluginResult(t, report, "acme/tool").Action, ShouldEqual, engine.PluginCreated)
-				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current", "skills", "alpha"))
+
+				// Claude installed acme/tool: it reads the plugin natively and
+				// gets no farm link next to it.
+				_, alphaErr := os.Lstat(filepath.Join(claudeSkillsDir(f.home), "alpha"))
+				So(errors.Is(alphaErr, fs.ErrNotExist), ShouldBeTrue)
 
 				for _, result := range report.Plugins {
 					So(result.Key, ShouldNotEqual, "beadle/beadle-canon")
@@ -704,4 +727,75 @@ func TestA47RemovedForeignPluginIsPruned(t *testing.T) {
 
 func a47OpenCodeAgentsDir(home string) string {
 	return filepath.Join(home, ".config", "opencode", "agents")
+}
+
+// TestA47NativeSourceHostSkillIsNotFarmed pins the skills native rule for a
+// host other than Claude: Gemini reads its own extension natively, so the farm
+// presents nothing in ~/.gemini/skills, while every other host still receives
+// the extension's skill.
+func TestA47NativeSourceHostSkillIsNotFarmed(t *testing.T) {
+	Convey("Given a Gemini extension with a skill", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		geminiHome(t, f)
+		enableAgents(t, f, agent.GeminiCLIID)
+
+		dir := geminiExtensionTree(t, f.home, "ext")
+		writeSkill(t, dir, "alpha", "# alpha\n")
+
+		f.sync(t)
+
+		Convey("When the farm runs", func() {
+			Convey("Then the extension host gets nothing and the other host gets the link", func() {
+				_, geminiErr := os.Lstat(filepath.Join(f.home, ".gemini", "skills", "alpha"))
+				So(errors.Is(geminiErr, fs.ErrNotExist), ShouldBeTrue)
+
+				So(farmLink(t, claudeSkillsDir(f.home), "alpha"),
+					ShouldEqual, pluginFarmLink(f, "gemini-cli", "ext", "skills", "alpha"))
+			})
+		})
+	})
+}
+
+// TestA47ModeOffPrunesFarmLinks pins the mode-independent prune: flipping an
+// agent to skills mode off stops creation but still removes its existing farm
+// links, so a disabled surface is never stuck with stale skill links.
+func TestA47ModeOffPrunesFarmLinks(t *testing.T) {
+	Convey("Given a farmed foreign plugin skill", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		dir := codexPluginTree(t, f.home, "acme", "tool", "1.0.0")
+		writeSkill(t, dir, "alpha", "# alpha\n")
+
+		f.sync(t)
+
+		link := filepath.Join(claudeSkillsDir(f.home), "alpha")
+		So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, pluginFarmLink(f, "acme", "tool", "skills", "alpha"))
+
+		f.config.SetMode(agent.ClaudeCodeID, kind.Skills, config.ModeOff)
+
+		report := f.sync(t)
+
+		Convey("When the agent is flipped to skills off", func() {
+			Convey("Then its farm link is pruned and not recreated", func() {
+				_, err := os.Lstat(link)
+				So(errors.Is(err, fs.ErrNotExist), ShouldBeTrue)
+
+				pruned := false
+
+				for _, result := range report.Farm {
+					if result.Agent == agent.ClaudeCodeID && result.Plugin == "acme/tool" && result.Action == engine.FarmPruned {
+						pruned = true
+					}
+				}
+
+				So(pruned, ShouldBeTrue)
+			})
+		})
+	})
 }
