@@ -40,6 +40,18 @@ func ompFixture(t *testing.T) *fixture {
 	return f
 }
 
+// ompConfiguredFixture enables exactly omp and plants the agent config.yml a
+// real install has, so the host is detected by its config and the test never
+// depends on an omp binary on the machine's PATH.
+func ompConfiguredFixture(t *testing.T) *fixture {
+	t.Helper()
+
+	f := ompFixture(t)
+	write(t, filepath.Join(ompAgentRoot(f.home), "config.yml"), "setupVersion: 2\n")
+
+	return f
+}
+
 func writeOMPPluginsRegistry(t *testing.T, home, key, installPath, version string) {
 	t.Helper()
 
@@ -550,7 +562,7 @@ func TestOmpFileSurfacesSync(t *testing.T) {
 	Convey("Given the canon and an omp agent", t, func() {
 		t.Setenv("PI_CONFIG_DIR", "")
 
-		f := ompFixture(t)
+		f := ompConfiguredFixture(t)
 		f.emptyConfigs(t)
 		missingCLI(t)
 

@@ -80,7 +80,10 @@ func TestOmpDoctorHealthySystem(t *testing.T) {
 
 		f := newFixture(t)
 
-		write(t, filepath.Join(f.home, ".omp", "agent", "config.yml"), "setupVersion: 2\n")
+		// The active profile relocates the agent dir, so the host config has
+		// to sit in the profile's agent dir: detection must be config-based
+		// and never a lookup of an omp binary on the machine's PATH.
+		write(t, filepath.Join(f.home, ".omp", "profiles", "work", "agent", "config.yml"), "setupVersion: 2\n")
 
 		Convey("When doctor runs", func() {
 			issues, err := f.engine.Doctor(t.Context())

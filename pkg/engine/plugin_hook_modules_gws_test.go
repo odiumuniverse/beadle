@@ -29,10 +29,7 @@ func ompHookFixture(t *testing.T) *fixture {
 		t.Setenv(name, "")
 	}
 
-	f := ompFixture(t)
-	write(t, filepath.Join(ompAgentRoot(f.home), "config.yml"), "setupVersion: 2\n")
-
-	return f
+	return ompConfiguredFixture(t)
 }
 
 // ompHookDir is the module directory of the fixture's active omp agent.

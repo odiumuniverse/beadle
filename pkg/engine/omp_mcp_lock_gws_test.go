@@ -16,7 +16,7 @@ func TestOmpMCPWriteKeepsForeignKeys(t *testing.T) {
 	Convey("Given an omp home whose mcp.json holds a foreign server", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
-		f := ompFixture(t)
+		f := ompConfiguredFixture(t)
 
 		path := filepath.Join(f.home, ".omp", "agent", "mcp.json")
 		write(t, path, `{"mcpServers":{"foreign":{"type":"stdio","command":"their-own"}}}`)
