@@ -261,8 +261,12 @@ func TestOmpPluginSourceInDoctor(t *testing.T) {
 // the way the real host behaves.
 type ompHostState struct {
 	Marketplace bool
-	Installed   bool
-	Version     string
+	// SourceURI is the sourceUri omp recorded for the marketplace: the
+	// directory `marketplace add` was given. It stays empty for a state the
+	// fixture never created through the CLI.
+	SourceURI string
+	Installed bool
+	Version   string
 }
 
 func (h *ompHostState) writeState(t *testing.T, home string) {
@@ -272,7 +276,8 @@ func (h *ompHostState) writeState(t *testing.T, home string) {
 
 	if h.Marketplace {
 		write(t, filepath.Join(root, "marketplaces.json"),
-			`{"version":1,"marketplaces":[{"name":"beadle","sourceType":"local","sourceUri":"/tmp/beadle"}]}`)
+			fmt.Sprintf(`{"version":1,"marketplaces":[{"name":"beadle","sourceType":"local","sourceUri":%q,`+
+				`"catalogPath":"p/plugins/cache/marketplaces/beadle/marketplace.json"}]}`, h.SourceURI))
 	} else {
 		_ = os.Remove(filepath.Join(root, "marketplaces.json"))
 	}
@@ -295,6 +300,7 @@ func (h *ompHostState) apply(t *testing.T, f *fixture, name string, args []strin
 	switch strings.Join(args, " ") {
 	case "plugin marketplace add " + ompBundleDir(f):
 		h.Marketplace = true
+		h.SourceURI = ompBundleDir(f)
 	case "plugin marketplace update beadle":
 		h.Marketplace = true
 	case "plugin install beadle-canon@beadle", "plugin install --force beadle-canon@beadle":
@@ -304,6 +310,7 @@ func (h *ompHostState) apply(t *testing.T, f *fixture, name string, args []strin
 		h.Installed = false
 	case "plugin marketplace remove beadle":
 		h.Marketplace = false
+		h.SourceURI = ""
 	}
 
 	h.writeState(t, f.home)
@@ -418,7 +425,7 @@ func TestOmpBundleEnableRefreshesAnExistingMarketplace(t *testing.T) {
 	Convey("Given omp already knows the beadle marketplace", t, func() {
 		f := ompBundleFixture(t)
 
-		host := &ompHostState{Marketplace: true}
+		host := &ompHostState{Marketplace: true, SourceURI: ompBundleDir(f)}
 		host.writeState(t, f.home)
 
 		cli := ompBundleCLI(t, f, host)

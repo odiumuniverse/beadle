@@ -42,7 +42,7 @@ func (e *Engine) probeBundle(host bundle.Host, dir, version string) (string, str
 	case bundle.Gemini:
 		return e.probeGeminiBundle()
 	case bundle.Omp:
-		return e.probeOmpBundle(version)
+		return e.probeOmpBundle(dir, version)
 	default:
 		return e.probeAntigravityBundle()
 	}
@@ -109,7 +109,15 @@ type ompPluginEntry struct {
 // probeOmpBundle reads omp's own plugin listing: the host records the version
 // it installed, so a mismatch means omp serves a different bundle than the one
 // just rendered. The listing carries no secrets.
-func (e *Engine) probeOmpBundle(version string) (string, string) {
+func (e *Engine) probeOmpBundle(dir, version string) (string, string) {
+	// The listing names a plugin by key only, so a same-named install from a
+	// marketplace beadle did not register would read as beadle's own bundle.
+	// The registry is the ownership proof.
+	registered, err := e.ompBundleRegistry(dir)
+	if err != nil || !registered.Owned {
+		return state.VerifyUnverifiable, "omp does not record beadle's own marketplace; the bundle cannot be attributed to beadle"
+	}
+
 	stdout, code, err := e.runHost(bundle.Omp, cliPlugin, "list", "--json")
 	if tier, note, ok := unreachableProbe(bundle.Omp, err); ok {
 		return tier, note

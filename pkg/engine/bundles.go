@@ -501,9 +501,65 @@ func (e *Engine) registerBundle(host bundle.Host, dir string, entry *state.Bundl
 // whether the marketplace and the plugin are registered, and the version omp
 // recorded for the plugin.
 type ompRegistry struct {
+	// Marketplace is true when an entry carries beadle's marketplace name;
+	// Owned is true only when that entry points at beadle's own catalog
+	// directory. A name match alone proves nothing: the user may have
+	// registered a marketplace of their own under the same name, and acting
+	// on it would remove or re-point their data.
 	Marketplace bool
-	Plugin      bool
-	Version     string
+	Owned       bool
+	// ForeignURI is the sourceUri of the same-named marketplace that is not
+	// beadle's, kept for the conflict warning.
+	ForeignURI string
+	Plugin     bool
+	Version    string
+}
+
+// ompMarketplace is one entry of omp's marketplaces.json (the live shape on
+// 18.4.1: name, sourceType, sourceUri, catalogPath, addedAt, updatedAt).
+type ompMarketplace struct {
+	Name        string `json:"name"`
+	SourceType  string `json:"sourceType"`
+	SourceURI   string `json:"sourceUri"`
+	CatalogPath string `json:"catalogPath"`
+}
+
+// sameOmpDir reports whether two paths name the same directory. omp records
+// the sourceUri exactly as it was passed to `marketplace add`, so a resolved
+// comparison recognizes beadle's own catalog directory even through a symlink
+// or a relative spelling. The catalog path is deliberately not used as proof:
+// omp keys its cache directory by marketplace NAME, so a foreign marketplace
+// called "beadle" lands in the very same cache directory.
+func sameOmpDir(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+
+	resolve := func(path string) string {
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			return resolved
+		}
+
+		return filepath.Clean(path)
+	}
+
+	return resolve(a) == resolve(b)
+}
+
+// ompForeignMarketplace renders the conflict a same-named marketplace that is
+// not beadle's creates: beadle never touches it, and the user decides.
+func ompForeignMarketplace(uri, dir string) string {
+	if uri == "" {
+		uri = "an unrecorded source"
+	}
+
+	return fmt.Sprintf(
+		"omp already has a marketplace named %q pointing at %s, not at beadle's %s; it is left untouched — remove it with `omp plugin marketplace remove %s` if it is stale, then re-register the bundle",
+		bundle.MarketplaceName, uri, dir, bundle.MarketplaceName)
 }
 
 // ompBundleRegistry reads omp's marketplace registry and installed-plugin
@@ -512,7 +568,7 @@ type ompRegistry struct {
 // non-idempotent `omp plugin marketplace add` breaks a second run. Beadle only
 // reads these files — writing omp's state root would race omp's own installer,
 // which holds no cross-process lock.
-func (e *Engine) ompBundleRegistry() (ompRegistry, error) {
+func (e *Engine) ompBundleRegistry(dir string) (ompRegistry, error) {
 	var registry ompRegistry
 
 	root := plugin.OmpRoot(e.home)
@@ -521,9 +577,7 @@ func (e *Engine) ompBundleRegistry() (ompRegistry, error) {
 	switch {
 	case err == nil:
 		var doc struct {
-			Marketplaces []struct {
-				Name string `json:"name"`
-			} `json:"marketplaces"`
+			Marketplaces []ompMarketplace `json:"marketplaces"`
 		}
 
 		if err := json.Unmarshal(marketplaces, &doc); err != nil {
@@ -531,8 +585,17 @@ func (e *Engine) ompBundleRegistry() (ompRegistry, error) {
 		}
 
 		for _, entry := range doc.Marketplaces {
-			if entry.Name == bundle.MarketplaceName {
-				registry.Marketplace = true
+			if entry.Name != bundle.MarketplaceName {
+				continue
+			}
+
+			registry.Marketplace = true
+
+			switch {
+			case sameOmpDir(entry.SourceURI, dir):
+				registry.Owned = true
+			case registry.ForeignURI == "":
+				registry.ForeignURI = entry.SourceURI
 			}
 		}
 	case !errors.Is(err, fs.ErrNotExist):
@@ -574,7 +637,10 @@ func ompBundleKey() string {
 func ompBundleCommands(dir string, registered ompRegistry) [][]string {
 	var commands [][]string
 
-	if registered.Marketplace {
+	// Updating a marketplace refreshes it from the source it was added with:
+	// only beadle's own entry may be updated, everything else is added from
+	// the directory beadle renders.
+	if registered.Owned {
 		commands = append(commands, []string{cliPlugin, cliMarketplace, "update", bundle.MarketplaceName})
 	} else {
 		commands = append(commands, []string{cliPlugin, cliMarketplace, "add", dir})
@@ -603,11 +669,23 @@ func (e *Engine) registerOmpBundle(host bundle.Host, dir string, entry *state.Bu
 // recorded version is the only proof of what the host will serve. The caller
 // holds the shared plugin lock.
 func (e *Engine) registerOmpBundleLocked(host bundle.Host, dir string, entry *state.BundleState, version string, report *Report) (string, string) {
-	registered, err := e.ompBundleRegistry()
+	registered, err := e.ompBundleRegistry(dir)
 	if err != nil {
 		report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: cannot read the omp plugin registry: %v", err))
 
 		return bundleGenerated, bundleInstructions(host, dir, e.home)
+	}
+
+	if registered.Marketplace && !registered.Owned {
+		// The name is taken by a marketplace beadle did not register: adding
+		// our directory under the same name is impossible and re-pointing the
+		// foreign entry would destroy the user's setup, so the bundle stays on
+		// the file copies and the user decides.
+		conflict := ompForeignMarketplace(registered.ForeignURI, dir)
+
+		report.Warnings = append(report.Warnings, "bundles: "+conflict)
+
+		return bundleGenerated, conflict
 	}
 
 	if registered.Plugin && registered.Version == version {
@@ -623,7 +701,7 @@ func (e *Engine) registerOmpBundleLocked(host bundle.Host, dir string, entry *st
 		return bundleGenerated, err.Error()
 	}
 
-	confirmed, err := e.ompBundleRegistry()
+	confirmed, err := e.ompBundleRegistry(dir)
 	if err != nil {
 		report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: cannot re-read the omp plugin registry: %v", err))
 
@@ -662,7 +740,7 @@ func (e *Engine) unregisterOmpBundle(dir string, report *Report) (bool, string) 
 // state shows as already done: the CLI errors on an uninstall or a marketplace
 // removal that has nothing to act on. The caller holds the shared plugin lock.
 func (e *Engine) unregisterOmpBundleLocked(dir string, report *Report) (bool, string) {
-	registered, err := e.ompBundleRegistry()
+	registered, err := e.ompBundleRegistry(dir)
 	if err != nil {
 		report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: cannot read the omp plugin registry: %v", err))
 
@@ -671,12 +749,20 @@ func (e *Engine) unregisterOmpBundleLocked(dir string, report *Report) (bool, st
 
 	var commands [][]string
 
-	if registered.Plugin {
+	// Only an install that came through beadle's own marketplace may be
+	// removed: a same-named foreign marketplace (and the plugin installed from
+	// it) belongs to the user.
+	if registered.Plugin && registered.Owned {
 		commands = append(commands, []string{cliPlugin, cliUninstall, ompBundleKey()})
 	}
 
-	if registered.Marketplace {
+	if registered.Owned {
 		commands = append(commands, []string{cliPlugin, cliMarketplace, "remove", bundle.MarketplaceName})
+	}
+
+	if registered.Marketplace && !registered.Owned {
+		report.Warnings = append(report.Warnings,
+			"bundles: "+ompForeignMarketplace(registered.ForeignURI, dir)+"; nothing of beadle's was removed")
 	}
 
 	if len(commands) == 0 {
@@ -689,7 +775,7 @@ func (e *Engine) unregisterOmpBundleLocked(dir string, report *Report) (bool, st
 		return false, err.Error()
 	}
 
-	if confirmed, err := e.ompBundleRegistry(); err == nil && confirmed.Plugin {
+	if confirmed, err := e.ompBundleRegistry(dir); err == nil && confirmed.Plugin && confirmed.Owned {
 		report.Warnings = append(report.Warnings, "bundles: the omp registry still records "+ompBundleKey())
 
 		return false, bundleUnregisterInstructions(bundle.Omp, dir, e.home)
