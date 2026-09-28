@@ -114,7 +114,7 @@ func (antigravitySubagentCodec) fields(doc subagent.Document, existing []byte) (
 	}
 
 	if len(doc.Skills) > 0 {
-		fields = append(fields, subagent.Field{Key: "skills", Value: doc.Skills})
+		fields = append(fields, subagent.Field{Key: skillsKey, Value: doc.Skills})
 	}
 
 	return fields, doc.Body, nil
@@ -182,7 +182,7 @@ func antigravityToolsLost(doc subagent.Document) bool {
 
 // managed lists the frontmatter keys the Antigravity codec owns.
 func (antigravitySubagentCodec) managed() []string {
-	return []string{nameKey, descriptionKey, toolsKey, "mainAgent", "subagent", modelKey, "skills"}
+	return []string{nameKey, descriptionKey, toolsKey, "mainAgent", "subagent", modelKey, skillsKey}
 }
 
 // strayKeys is empty: Antigravity ignores unknown frontmatter keys.

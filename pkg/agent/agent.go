@@ -133,6 +133,9 @@ func All(home, cwd string) []*Agent {
 		Codex(home, cwd),
 		Pi(home, cwd),
 		Kilo(home, cwd),
+		// omp owns its own ~/.omp/agent/skills, so its position does not
+		// affect the shared-path dedup; it reads ~/.agents/skills read-only.
+		Omp(home, cwd),
 		// DSH comes after SharedSkills: when DSH_HOME points at ~/.agents the
 		// two share the skills directory, and the read-view dedup gives the
 		// path to the first surface that is present — a pull-only surface must

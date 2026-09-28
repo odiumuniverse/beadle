@@ -7,6 +7,7 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 )
 
@@ -48,6 +49,33 @@ func TestSkillsSurfaceCaps(t *testing.T) {
 				filepath.Join("/home/u", ".claude", "skills"),
 			})
 			So(caps.NamespacedBundle, ShouldBeFalse)
+		})
+	})
+
+	Convey("Given the omp skills surface", t, func() {
+		t.Setenv("PI_CONFIG_DIR", "")
+		t.Setenv("PI_CODING_AGENT_DIR", "")
+		t.Setenv("OMP_PROFILE", "")
+
+		surface := agent.Omp("/home/u", "/tmp").Surface(kind.Skills)
+
+		declared, ok := surface.(agent.SkillCapsSurface)
+		So(ok, ShouldBeTrue)
+
+		area, isArea := surface.(agent.SkillReadArea)
+		So(isArea, ShouldBeTrue)
+
+		caps := declared.SkillCaps()
+
+		Convey("Then the native dir shadows the shared agents home", func() {
+			So(caps.Shadowing, ShouldBeTrue)
+			So(caps.ReadOrder, ShouldResemble, []string{
+				filepath.Join("/home/u", ".omp", "agent", "skills"),
+				filepath.Join("/home/u", ".agents", "skills"),
+			})
+			So(caps.NamespacedBundle, ShouldBeFalse)
+			So(area.ReadDirs(), ShouldResemble, caps.ReadOrder)
+			So(surface.Traits().DefaultMode, ShouldEqual, config.ModePull)
 		})
 	})
 

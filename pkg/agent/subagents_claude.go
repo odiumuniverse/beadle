@@ -59,9 +59,9 @@ func (claudeSubagentCodec) fields(doc subagent.Document, _ []byte) ([]subagent.F
 // permissionMode and isolation are enums.
 func claudeFieldValid(key string, doc subagent.Document) bool {
 	switch key {
-	case "mode", "hidden":
+	case modeKey, hiddenKey:
 		return false
-	case "color":
+	case colorKey:
 		return slices.Contains(claudeColors, doc.Color)
 	case "permissionMode":
 		return slices.Contains(claudePermissionModes, doc.PermissionMode)
@@ -78,7 +78,7 @@ func (claudeSubagentCodec) managed() []string {
 	out := make([]string, 0, len(subagent.Keys()))
 
 	for _, key := range subagent.Keys() {
-		if key == "mode" || key == "hidden" {
+		if key == modeKey || key == hiddenKey {
 			continue
 		}
 

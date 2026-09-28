@@ -13,12 +13,15 @@ import (
 // isolatedHome is the temp home TestMain pins the environment to.
 var isolatedHome string
 
-// isolateTestHome pins HOME, BEADLE_HOME, DSH_HOME and an empty
-// DSH_AGENTS_HOME to a temp directory before the suite runs: a test that
-// forgets its own t.Setenv("HOME", …) must never touch the developer's real
-// home. The empty DSH_AGENTS_HOME makes the DSH adapter resolve its shared
-// root (~/.agents) from each test's own home instead of a developer's value;
-// a test that wants another location overrides it with t.Setenv, which wins.
+// isolateTestHome pins HOME, BEADLE_HOME, DSH_HOME, an empty
+// DSH_AGENTS_HOME and the omp root/profile environment to a temp directory
+// before the suite runs: a test that forgets its own t.Setenv("HOME", …) must
+// never touch the developer's real home. The empty DSH_AGENTS_HOME makes the
+// DSH adapter resolve its shared root (~/.agents) from each test's own home
+// instead of a developer's value; a test that wants another location
+// overrides it with t.Setenv, which wins. The omp keys are pinned empty for
+// the same reason: the omp adapter resolves its root from each test's own
+// home unless a test sets PI_CONFIG_DIR/PI_CODING_AGENT_DIR/OMP_PROFILE.
 // XDG_CONFIG_HOME is deliberately left alone here: most of this package's
 // tests override HOME per test and rely on the code falling back to
 // <home>/.config, so pinning XDG would send the code into the isolation
@@ -34,10 +37,13 @@ func isolateTestHome(m *testing.M) int {
 	defer func() { _ = os.RemoveAll(home) }()
 
 	for name, value := range map[string]string{
-		"HOME":            home,
-		"BEADLE_HOME":     filepath.Join(home, ".beadle"),
-		"DSH_HOME":        filepath.Join(home, ".dsh"),
-		"DSH_AGENTS_HOME": "",
+		"HOME":                home,
+		"BEADLE_HOME":         filepath.Join(home, ".beadle"),
+		"DSH_HOME":            filepath.Join(home, ".dsh"),
+		"DSH_AGENTS_HOME":     "",
+		"PI_CONFIG_DIR":       "",
+		"PI_CODING_AGENT_DIR": "",
+		"OMP_PROFILE":         "",
 	} {
 		//nolint:usetesting // TestMain cannot use t.Setenv; tests override per test
 		if err := os.Setenv(name, value); err != nil {
@@ -74,6 +80,13 @@ func TestSuiteHomeIsolation(t *testing.T) {
 				// its default (~/.agents) from each test's own home, so a
 				// developer's value cannot leak into the suite.
 				So(os.Getenv("DSH_AGENTS_HOME"), ShouldBeEmpty)
+
+				// The omp root/profile keys are pinned empty for the same
+				// reason: the omp adapter resolves its root from each test's
+				// own home.
+				for _, name := range []string{"PI_CONFIG_DIR", "PI_CODING_AGENT_DIR", "OMP_PROFILE"} {
+					So(os.Getenv(name), ShouldBeEmpty)
+				}
 			})
 		})
 	})

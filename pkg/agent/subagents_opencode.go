@@ -128,7 +128,7 @@ var ocV1Keys = []string{promptKey, "permission", "temperature", "top_p", "disabl
 // ocV2Keys lists every key of the OpenCode v2 subagent schema. Anything else
 // makes the host fall back to its legacy decoder.
 var ocV2Keys = []string{
-	"description", "mode", "model", "hidden", "color", "steps", "permissions",
+	"description", modeKey, modelKey, hiddenKey, colorKey, "steps", "permissions",
 	"variant", "request", "system", "disabled",
 }
 
@@ -363,11 +363,11 @@ func (openCodeSubagentCodec) fields(doc subagent.Document, existing []byte) ([]s
 	}
 
 	if doc.Color != "" && ocColorRE.MatchString(doc.Color) {
-		add("color", doc.Color)
+		add(colorKey, doc.Color)
 	}
 
 	if doc.Hidden != nil {
-		add("hidden", *doc.Hidden)
+		add(hiddenKey, *doc.Hidden)
 	}
 
 	rules, err := ocPermissions(doc, existing)

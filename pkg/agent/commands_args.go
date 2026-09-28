@@ -87,6 +87,14 @@ var commandArgsPi = commandArgs{
 	shell: shellNone, file: fileNone,
 }
 
+// commandArgsOmp is the oh-my-pi dialect: 1-based positional arguments and
+// $ARGUMENTS, no shell blocks, no file references and no named or defaulted
+// placeholders. omp's own extras ($@, $@[start:len], prompt.render) are not
+// canon spellings, so they stay literal text and the read side reports them.
+var commandArgsOmp = commandArgs{
+	all: commandAllArgs, positional: true, shell: shellNone, file: fileNone,
+}
+
 // commandArgsCodex is the Codex prompts dialect (pull-only): 1-based and
 // named, no shell or file expansion inside templates.
 var commandArgsCodex = commandArgs{

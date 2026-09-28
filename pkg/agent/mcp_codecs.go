@@ -394,6 +394,9 @@ var bundleMCPCodecs = map[string]mcpCodec{
 	ClaudeCodeID:     claudeMCP,
 	GeminiCLIID:      geminiMCP,
 	AntigravityCLIID: antigravityMCP,
+	// omp's native MCP file is the Claude dialect; without the entry the
+	// encoder would fail with "no MCP dialect for bundles".
+	OmpID: claudeMCP,
 }
 
 // EncodeMCPServers renders canonical server items in the agent's MCP dialect.

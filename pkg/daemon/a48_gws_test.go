@@ -13,9 +13,12 @@ import (
 )
 
 func TestUnitEnvPinsIdentity(t *testing.T) {
-	Convey("Given an invoking environment with XDG, DSH and PATH set", t, func() {
+	Convey("Given an invoking environment with XDG, DSH, omp and PATH set", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "/xdg")
 		t.Setenv("DSH_HOME", "/dsh")
+		t.Setenv("PI_CONFIG_DIR", ".omp-alt")
+		t.Setenv("PI_CODING_AGENT_DIR", "/omp/agent")
+		t.Setenv("OMP_PROFILE", "work")
 		t.Setenv("PATH", "/usr/bin:/bin")
 
 		Convey("When the unit environment is built for a custom vault", func() {
@@ -26,6 +29,9 @@ func TestUnitEnvPinsIdentity(t *testing.T) {
 				So(env["BEADLE_HOME"], ShouldEqual, "/vault/custom")
 				So(env["XDG_CONFIG_HOME"], ShouldEqual, "/xdg")
 				So(env["DSH_HOME"], ShouldEqual, "/dsh")
+				So(env["PI_CONFIG_DIR"], ShouldEqual, ".omp-alt")
+				So(env["PI_CODING_AGENT_DIR"], ShouldEqual, "/omp/agent")
+				So(env["OMP_PROFILE"], ShouldEqual, "work")
 				So(env["PATH"], ShouldEqual, "/usr/bin:/bin")
 			})
 		})
@@ -39,15 +45,21 @@ func TestUnitEnvPinsIdentity(t *testing.T) {
 			})
 		})
 
-		Convey("When XDG and DSH are unset", func() {
+		Convey("When XDG, DSH and the omp keys are unset", func() {
 			t.Setenv("XDG_CONFIG_HOME", "")
 			t.Setenv("DSH_HOME", "")
+			t.Setenv("PI_CONFIG_DIR", "")
+			t.Setenv("PI_CODING_AGENT_DIR", "")
+			t.Setenv("OMP_PROFILE", "")
 
 			env := daemon.UnitEnv("/home/u", "")
 
 			Convey("Then the unit does not carry empty values", func() {
 				So(env, ShouldNotContainKey, "XDG_CONFIG_HOME")
 				So(env, ShouldNotContainKey, "DSH_HOME")
+				So(env, ShouldNotContainKey, "PI_CONFIG_DIR")
+				So(env, ShouldNotContainKey, "PI_CODING_AGENT_DIR")
+				So(env, ShouldNotContainKey, "OMP_PROFILE")
 				So(env, ShouldNotContainKey, "BEADLE_HOME")
 				So(env["HOME"], ShouldEqual, "/home/u")
 			})

@@ -944,14 +944,25 @@ func TestNewAgentDetect(t *testing.T) {
 		home := t.TempDir()
 		cwd := t.TempDir()
 
+		// omp detection is directory-or-binary: keep a developer's omp out
+		// of PATH so the directory decision is what the test observes.
+		t.Setenv("PATH", "/usr/bin:/bin")
+		t.Setenv("PI_CONFIG_DIR", "")
+		t.Setenv("PI_CODING_AGENT_DIR", "")
+		t.Setenv("OMP_PROFILE", "")
+
 		cases := []struct {
-			name string
-			a    *agent.Agent
-			dir  string
+			name  string
+			a     *agent.Agent
+			dir   string
+			probe string
 		}{
-			{"codex", agent.Codex(home, cwd), filepath.Join(home, ".codex")},
-			{"pi", agent.Pi(home, cwd), filepath.Join(home, ".pi", "agent")},
-			{"kilo", agent.Kilo(home, cwd), filepath.Join(home, ".config", "kilo")},
+			{"codex", agent.Codex(home, cwd), filepath.Join(home, ".codex"), ""},
+			{"pi", agent.Pi(home, cwd), filepath.Join(home, ".pi", "agent"), ""},
+			{"kilo", agent.Kilo(home, cwd), filepath.Join(home, ".config", "kilo"), ""},
+			// omp is detected by its agent config.yml (or the binary), not by
+			// the bare directory.
+			{"omp", agent.Omp(home, cwd), filepath.Join(home, ".omp", "agent"), "config.yml"},
 		}
 
 		for _, tc := range cases {
@@ -961,6 +972,10 @@ func TestNewAgentDetect(t *testing.T) {
 				So(detected, ShouldBeFalse)
 
 				So(os.MkdirAll(tc.dir, 0o750), ShouldBeNil)
+
+				if tc.probe != "" {
+					writeFile(t, filepath.Join(tc.dir, tc.probe), "setupVersion: 2\n")
+				}
 
 				detected, err = tc.a.Detect()
 
@@ -978,8 +993,8 @@ func TestNewAgentsRegistered(t *testing.T) {
 		all := agent.All(t.TempDir(), t.TempDir())
 
 		Convey("When looking up the new agents", func() {
-			Convey("Then all three are registered", func() {
-				for _, id := range []string{agent.CodexID, agent.PiID, agent.KiloID} {
+			Convey("Then all of them are registered", func() {
+				for _, id := range []string{agent.CodexID, agent.PiID, agent.KiloID, agent.OmpID} {
 					So(agent.ByID(all, id), ShouldNotBeNil)
 				}
 			})
@@ -1039,8 +1054,11 @@ func TestCodexRules(t *testing.T) {
 }
 
 func TestNewAgentSkillsAlsoReads(t *testing.T) {
-	Convey("Given skill directories for Codex, Pi, Kilo and shared", t, func() {
+	Convey("Given skill directories for Codex, Pi, Kilo, omp and shared", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("PI_CONFIG_DIR", "")
+		t.Setenv("PI_CODING_AGENT_DIR", "")
+		t.Setenv("OMP_PROFILE", "")
 
 		home := t.TempDir()
 		cwd := t.TempDir()
@@ -1048,11 +1066,13 @@ func TestNewAgentSkillsAlsoReads(t *testing.T) {
 		codexOwn := filepath.Join(home, ".codex", "skills")
 		piOwn := filepath.Join(home, ".pi", "agent", "skills")
 		kiloOwn := filepath.Join(home, ".kilo", "skills")
+		ompOwn := filepath.Join(home, ".omp", "agent", "skills")
 		sharedOwn := filepath.Join(home, ".agents", "skills")
 
 		writeFile(t, filepath.Join(codexOwn, "codex-own", "SKILL.md"), "# codex\n")
 		writeFile(t, filepath.Join(piOwn, "pi-own", "SKILL.md"), "# pi\n")
 		writeFile(t, filepath.Join(kiloOwn, "kilo-own", "SKILL.md"), "# kilo\n")
+		writeFile(t, filepath.Join(ompOwn, "omp-own", "SKILL.md"), "# omp\n")
 		writeFile(t, filepath.Join(sharedOwn, "shared-own", "SKILL.md"), "# shared\n")
 
 		cases := []struct {
@@ -1063,6 +1083,7 @@ func TestNewAgentSkillsAlsoReads(t *testing.T) {
 			{"codex", agent.Codex(home, cwd), codexOwn},
 			{"pi", agent.Pi(home, cwd), piOwn},
 			{"kilo", agent.Kilo(home, cwd), kiloOwn},
+			{"omp", agent.Omp(home, cwd), ompOwn},
 		}
 
 		for _, tc := range cases {
@@ -1207,6 +1228,7 @@ func TestInboxPaths(t *testing.T) {
 				So(agent.InboxPath(home, agent.CodexID), ShouldEqual, filepath.Join(home, ".codex", "inbox.md"))
 				So(agent.InboxPath(home, agent.PiID), ShouldEqual, filepath.Join(home, ".pi", "agent", "inbox.md"))
 				So(agent.InboxPath(home, agent.KiloID), ShouldEqual, filepath.Join(home, ".config", "kilo", "inbox.md"))
+				So(agent.InboxPath(home, agent.OmpID), ShouldEqual, filepath.Join(home, ".omp", "agent", "inbox.md"))
 				So(agent.InboxPath(home, agent.ClaudeCodeID), ShouldBeEmpty)
 			})
 		})

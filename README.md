@@ -44,7 +44,7 @@ manage** alone.
         │  pull changes               │  push changes
    ┌────┴─────┬───────────┬───────────┴────┐
  Claude Code  OpenCode   Gemini CLI     Cursor
-  + Antigravity CLI + Codex CLI + Pi + Kilo Code
+  + Antigravity CLI + Codex CLI + Pi + Kilo Code + oh-my-pi (omp)
 ```
 
 [Why use it](#why-use-it) · [Supported agents](#supported-agents) ·
@@ -91,6 +91,7 @@ manage** alone.
 | Pi | ✓ `~/.pi/agent/AGENTS.md` | ✓ `~/.pi/agent/mcp.json` ⁴ | reads `~/.agents/skills` natively; flat `<name>.md` ⁵ | — (not documented) | — (no sub-agents by design) | ✓ `~/.pi/agent/prompts` ⁷ |
 | Kilo Code | ✓ `~/.config/kilo/AGENTS.md` | ✓ `kilo.jsonc` ² | reads `~/.agents/skills` natively | ✓ default on ³ | ✓ `~/.config/kilo/agents`, legacy `agent/` and `mode(s)/` read ⁶ | ✓ `~/.config/kilo/commands`, legacy `command/` read ⁷ |
 | DeepSeek Harness | ✓ `~/.dsh/AGENTS.md` (write) + project chain `AGENTS.md`/`CLAUDE.md` (pull, root → cwd) | ✓ `~/.dsh/cordis.patch.yml` (home patch layer; stdio + streamable-http) | ✓ writes `~/.dsh/skills` (rank 400 beats the shared agents-home: `$DSH_AGENTS_HOME` or `~/.agents`); flat `<name>.md` read ⁵ | — (runtime knobs, non-goal A-41) | — (code providers, non-goal A-41) | — (plugin code, non-goal A-41) |
+| oh-my-pi (`omp`) | ✓ `~/.omp/agent/AGENTS.md` (user) + project `<cwd>/.omp/AGENTS.md` ⁹ | ✓ `~/.omp/agent/mcp.json` (Claude dialect) + project `<cwd>/.omp/mcp.json` ⁹ | pull; reads `~/.agents/skills` natively, native `~/.omp/agent/skills` wins by name ⁹ | — (config.yml policy, v1 non-goal) ⁹ | ✓ `~/.omp/agent/agents` | ✓ `~/.omp/agent/commands` ⁷ ⁹ |
 
 ¹ OpenCode: V2 reads `AGENTS.md` only; MCP is `mcp.servers` in V2 and `mcp` in
   V1 — merged as one union, comments in `opencode.jsonc` preserved.
@@ -121,7 +122,11 @@ manage** alone.
   not synced yet, `doctor` reports both. Gemini `kind: remote` agents and the
   workspace subagent directories (`.gemini/agents`, `.agents/agents`,
   `.cursor/agents`, `.codex/agents`) are v1 non-goals. Codex files are edited
-  surgically — comments and foreign keys stay.
+  surgically — comments and foreign keys stay. oh-my-pi requires `name` and
+  `description` (a file missing either is skipped); its own keys (`spawns`,
+  `autoloadSkills`, `thinking-level`, `output`, `blocking`, `thinking`) stay in
+  the file, while the canonical keys it does not define stay in the vault and
+  `doctor` reports them.
 
 ⁷ Commands: the canon is `<vault>/commands/<name>.md` (frontmatter +
   template). Beadle shifts positional arguments between Claude's 0-based `$0`
@@ -129,6 +134,8 @@ manage** alone.
   and skips a host whose dialect cannot express a placeholder (doctor
   explains). Codex prompts are deprecated: beadle pulls them into the vault
   but never writes them back; Cursor file commands are not supported yet.
+  oh-my-pi takes the 1-based `$1`/`$ARGUMENTS` form and expands no shell or
+  file constructs, so `${N:-default}` and `$NAME` are skipped for it.
 
 ⁸ Claude Code v2.1.280 reads the project `AGENTS.md` natively (the `agents-md`
   banner). Beadle manages that one file and never touches a project
@@ -136,6 +143,27 @@ manage** alone.
   (double-load) or an unmanaged legacy file with the `beadle project enable
   AGENTS.md` hint, and
   stays silent when the two files are identical.
+
+⁹ oh-my-pi (`omp`) is not Pi: its user root is `~/.omp` (`PI_CONFIG_DIR`
+  relocates it, `PI_CODING_AGENT_DIR` the agent dir, `OMP_PROFILE`/`PI_PROFILE`
+  a named profile) and it does not read `~/.pi`. Rules: the user context file
+  `~/.omp/agent/AGENTS.md` — the only user-level context file omp loads, it
+  shadows `~/.claude/CLAUDE.md` and `~/.agents/AGENTS.md`; `RULES.md` and
+  `rules/` are not managed. The project scope is `<cwd>/.omp/AGENTS.md` and
+  `<cwd>/.omp/mcp.json` (omp's native project root is the nearest non-empty
+  `.omp/`, not the checkout root — creating it also makes omp stop looking at
+  farther `.omp` directories up the tree). MCP: the `mcp.json` Claude dialect;
+  the compatibility file `~/.omp/agent/.mcp.json` is read by omp but never
+  written, and `disabledServers`/`enabledServers` are not managed. Skills: the
+  native directory `~/.omp/agent/skills` (`<name>/SKILL.md`, the frontmatter
+  `description` is required — a skill without one is dropped by omp) defaults
+  to `pull` and reads `~/.agents/skills` with the native copy winning by name
+  (provider priority 100 over 70). Commands are one level of `*.md` under
+  `~/.omp/agent/commands`, 1-based with `$ARGUMENTS` and no shell or file
+  expansion; `$@`, `$@[start:len]` and `prompt.render` are omp-only and stay
+  literal. Approval policy (`tools.approval*`, `bash.patterns`) lives in the
+  host-owned `config.yml` and is not managed, and omp's hooks (JS/TS factories),
+  extensions, custom tools and memory backends are v1 non-goals.
 
 A ✓ means beadle writes that surface; a `pull` marker means beadle reads it
 but does not write until the mode is flipped (`beadle agents mode <agent>
@@ -147,11 +175,14 @@ migration (mode `sync`): it is the delivery channel for the agents that read
 it natively. Opt out with `beadle agents disable shared`.
 
 Beadle creates only the surfaces marked creatable: the rules files of Claude
-Code, Gemini CLI and DeepSeek Harness, the skills directories of Claude Code,
-Gemini CLI and DeepSeek Harness, the Codex `config.toml`, the DeepSeek Harness
+Code, Gemini CLI, DeepSeek Harness and oh-my-pi, the skills directories of
+Claude Code, Gemini CLI, DeepSeek Harness and oh-my-pi, the Codex
+`config.toml`, the DeepSeek Harness
 `cordis.patch.yml`, the subagent directories of Claude Code, OpenCode, Kilo
-Code, Codex, Gemini CLI, Antigravity and Cursor, the command directories of
-Claude Code, OpenCode, Gemini CLI, Codex, Pi and Kilo Code, and the shared
+Code, Codex, Gemini CLI, Antigravity, Cursor and oh-my-pi, the command
+directories of
+Claude Code, OpenCode, Gemini CLI, Codex, Pi, Kilo Code and oh-my-pi, and the
+shared
 `~/.agents/skills` directory. Every other surface is written only when
 its config file already exists — an agent discovered by its directory alone is
 skipped with `no config file to write into; create <path> first` until the file
@@ -364,10 +395,10 @@ handing it your secrets.
 
 A budget-capped digest lands in project files for the other agents; other
 agents' inbox lines become notes; a secret gate runs before anything is
-adopted. Codex, Pi and Kilo (like OpenCode and Cursor) can drop free-form
-lines into their own `inbox.md`, and a sync turns them into project memory
-notes. *Why:* only one agent remembers your project, and everyone else should
-benefit.
+adopted. Codex, Pi, Kilo and oh-my-pi (like OpenCode and Cursor) can drop
+free-form lines into their own `inbox.md`, and a sync turns them into project
+memory notes. *Why:* only one agent remembers your project, and everyone else
+should benefit.
 
 </details>
 
@@ -465,7 +496,8 @@ file needs the explicit per-file opt-in (`beadle project enable <file>
 --allow-secrets`).
 
 The files are `.mcp.json`, `.claude/rules/*.md`, `.cursor/mcp.json`,
-`.cursor/rules/*.mdc`, `.agents/mcp_config.json`, `AGENTS.md` and `GEMINI.md`. Project identity comes
+`.cursor/rules/*.mdc`, `.agents/mcp_config.json`, `.omp/AGENTS.md`,
+`.omp/mcp.json`, `AGENTS.md` and `GEMINI.md`. Project identity comes
 from the git origin, so clones and worktrees converge; a missing file is never
 treated as a deletion — `project forget` removes scope, a sync never does.
 *Why:* the config that matters most is per-repo, and repos are where a

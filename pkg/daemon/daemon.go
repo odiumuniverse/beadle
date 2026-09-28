@@ -26,7 +26,10 @@ const (
 // and vault from: a unit must pin them, and doctor compares exactly these.
 // PATH is pinned too (the watcher needs git and friends), but it is a snapshot
 // of the installing shell rather than an identity, so doctor ignores it.
-var IdentityEnvKeys = []string{"HOME", "BEADLE_HOME", "XDG_CONFIG_HOME", "DSH_HOME"}
+var IdentityEnvKeys = []string{
+	"HOME", "BEADLE_HOME", "XDG_CONFIG_HOME", "DSH_HOME",
+	"PI_CONFIG_DIR", "PI_CODING_AGENT_DIR", "OMP_PROFILE",
+}
 
 type Spec struct {
 	Label      string
@@ -44,16 +47,16 @@ type Spec struct {
 
 // UnitEnv builds the environment a service unit must pin from the invoking
 // environment: HOME and the vault are always explicit (BEADLE_HOME only when
-// it differs from the default), XDG_CONFIG_HOME/DSH_HOME/PATH travel when set.
+// it differs from the default), the agent-specific roots
+// (XDG_CONFIG_HOME/DSH_HOME and omp's PI_CONFIG_DIR/PI_CODING_AGENT_DIR/
+// OMP_PROFILE) and PATH travel when set.
 func UnitEnv(home, vaultRoot string) map[string]string {
 	env := map[string]string{"HOME": home}
 
-	if value := os.Getenv("XDG_CONFIG_HOME"); value != "" {
-		env["XDG_CONFIG_HOME"] = value
-	}
-
-	if value := os.Getenv("DSH_HOME"); value != "" {
-		env["DSH_HOME"] = value
+	for _, key := range []string{"XDG_CONFIG_HOME", "DSH_HOME", "PI_CONFIG_DIR", "PI_CODING_AGENT_DIR", "OMP_PROFILE"} {
+		if value := os.Getenv(key); value != "" {
+			env[key] = value
+		}
 	}
 
 	if vaultRoot != "" && vaultRoot != filepath.Join(home, vault.DefaultDirName) {

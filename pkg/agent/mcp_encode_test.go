@@ -27,6 +27,9 @@ func TestEncodeMCPServers(t *testing.T) {
 			antigravity, err := agent.EncodeMCPServers(agent.AntigravityCLIID, servers)
 			So(err, ShouldBeNil)
 
+			omp, err := agent.EncodeMCPServers(agent.OmpID, servers)
+			So(err, ShouldBeNil)
+
 			Convey("Then each dialect uses its own field names", func() {
 				So(claude["plug"], ShouldResemble, map[string]any{
 					"type":    "stdio",
@@ -37,6 +40,9 @@ func TestEncodeMCPServers(t *testing.T) {
 				So(claude["web"], ShouldResemble, map[string]any{"type": "http", "url": "https://example.com/mcp"})
 				So(gemini["web"], ShouldResemble, map[string]any{"httpUrl": "https://example.com/mcp"})
 				So(antigravity["web"], ShouldResemble, map[string]any{"serverUrl": "https://example.com/mcp"})
+
+				// omp's native MCP file is the Claude dialect.
+				So(omp, ShouldResemble, claude)
 			})
 		})
 	})

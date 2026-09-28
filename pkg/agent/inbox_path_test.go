@@ -20,6 +20,7 @@ func TestInboxPath(t *testing.T) {
 				So(agent.InboxPath(home, agent.OpenCodeID), ShouldEqual, filepath.Join(home, ".config", "opencode", "inbox.md"))
 				So(agent.InboxPath(home, agent.GeminiCLIID), ShouldEqual, filepath.Join(home, ".gemini", "inbox.md"))
 				So(agent.InboxPath(home, agent.CursorID), ShouldEqual, filepath.Join(home, ".cursor", "inbox.md"))
+				So(agent.InboxPath(home, agent.OmpID), ShouldEqual, filepath.Join(home, ".omp", "agent", "inbox.md"))
 				So(agent.InboxPath(home, agent.ClaudeCodeID), ShouldBeEmpty)
 				So(agent.InboxPath(home, agent.SharedID), ShouldBeEmpty)
 			})

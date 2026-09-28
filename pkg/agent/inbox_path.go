@@ -26,6 +26,8 @@ func InboxPath(home, id string) string {
 		return filepath.Join(home, ".pi", "agent", "inbox.md")
 	case KiloID:
 		return filepath.Join(home, ".config", "kilo", "inbox.md")
+	case OmpID:
+		return filepath.Join(OmpAgentDir(home), "inbox.md")
 	default:
 		return ""
 	}

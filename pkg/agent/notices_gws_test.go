@@ -46,6 +46,9 @@ func TestSubagentNotices(t *testing.T) {
 			So(noticeText(noticesFor(agent.AntigravityCLI(home, home), "x.md", value)), ShouldContainSubstring, `unmappable tool "TodoWrite" for antigravity`)
 			So(noticeText(noticesFor(agent.Cursor(home, home), "x.md", value)), ShouldContainSubstring, "not expressible for cursor")
 			So(noticeText(noticesFor(agent.Codex(home, home), "x.md", value)), ShouldContainSubstring, "not expressible for codex")
+			// omp takes canonical tool names as-is (the host normalizes the
+			// case), so only the Claude model alias is reported.
+			So(noticeText(noticesFor(agent.Omp(home, home), "x.md", value)), ShouldContainSubstring, "does not map to omp")
 		})
 	})
 
@@ -92,6 +95,8 @@ func TestSubagentNotices(t *testing.T) {
 			So(noticeText(noticesFor(agent.GeminiCLI(home, home), "x.md", value)), ShouldContainSubstring, "readonly without a tool allowlist")
 			So(noticeText(noticesFor(agent.AntigravityCLI(home, home), "x.md", value)), ShouldContainSubstring, "readonly without a tool allowlist")
 			So(noticeText(noticesFor(agent.Codex(home, home), "x.md", value)), ShouldContainSubstring, "permissionMode is not expressible for codex")
+			So(noticeText(noticesFor(agent.Omp(home, home), "x.md", value)), ShouldContainSubstring, "permissionMode is not expressible for omp")
+			So(noticeText(noticesFor(agent.Omp(home, home), "x.md", value)), ShouldContainSubstring, "disallowedTools is not expressible for omp")
 
 			// Cursor expresses the read-only state itself; no note is due.
 			So(noticesFor(agent.Cursor(home, home), "x.md", value), ShouldBeEmpty)
