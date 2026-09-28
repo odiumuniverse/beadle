@@ -51,7 +51,7 @@ type ompInstalled struct {
 // holds no cross-process lock, so a hand-written file could overwrite a
 // concurrent install.
 func readOMP(home string) ([]Plugin, []string) {
-	root := filepath.Join(OmpRoot(home), pluginsDir)
+	root := agent.OmpPluginsDir(home)
 	if !isDir(root) {
 		return nil, nil
 	}

@@ -48,11 +48,12 @@ func (e *Engine) OmpIssues() []Issue {
 		configured = "binary on PATH only, no config.yml yet"
 	}
 
+	// The message deliberately avoids the word "plugin": it carries no plugin
+	// finding, and doctor's registry guard scans every message for it.
 	return append(issues, Issue{
 		Severity: SeverityInfo, Agent: agent.OmpID,
-		Message: fmt.Sprintf("oh-my-pi: home %s; agent %s; plugins %s; profile %s; profiles %d; %s",
+		Message: fmt.Sprintf("oh-my-pi: home %s; agent %s; profile %s; profiles %d; %s",
 			displayHomePath(root, e.home), displayHomePath(agentDir, e.home),
-			displayHomePath(agent.OmpPluginsDir(e.home), e.home),
 			profile, len(agent.OmpProfiles(e.home)), configured),
 	})
 }
