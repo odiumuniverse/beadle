@@ -34,10 +34,22 @@ func (e *Engine) repairPluginLinks(active []*agent.Agent) (int, []string) {
 		return 0, nil
 	}
 
+	// A vault that belongs to another home is not repaired: the sweep only
+	// removes what the ledger proves is gone.
+	guard := e.pluginHomeGuard()
+	if !guard.Retireable() {
+		return 0, []string{guard.Warning()}
+	}
+
 	// Only a plugin the ledger retired (or one it never knew: an orphan pivot
 	// heal already removed) leaves links to clean. A live parked plugin keeps
 	// its links even when the pivot is not on disk at this instant.
-	live := e.livePluginKeys()
+	live, ok := e.livePluginKeys()
+	if !ok {
+		// An unreadable ledger proves nothing is gone: removing links against
+		// it could delete the only working copy of a skill.
+		return 0, []string{"plugins: cannot read the plugin ledger; no stale link is removed"}
+	}
 
 	var (
 		removed int
@@ -136,13 +148,15 @@ func removeDanglingPluginLinks(dir, pivotRoot string, live map[string]bool) (int
 
 // livePluginKeys lists the ledger keys beadle still presents. A link into a
 // plugin that is missing from the set was retired (or never recorded at all,
-// which is what an orphan pivot heal already removed looks like).
-func (e *Engine) livePluginKeys() map[string]bool {
+// which is what an orphan pivot heal already removed looks like). The second
+// result is false when the ledger cannot be read: the caller must fail closed
+// then, because an empty set would read as "every plugin is gone".
+func (e *Engine) livePluginKeys() (map[string]bool, bool) {
 	live := map[string]bool{}
 
 	ledger, _, err := loadPluginLedger(e.vault.PluginsLedgerPath())
 	if err != nil {
-		return live
+		return live, false
 	}
 
 	for key, rec := range ledger.Plugins {
@@ -151,7 +165,7 @@ func (e *Engine) livePluginKeys() map[string]bool {
 		}
 	}
 
-	return live
+	return live, true
 }
 
 // pluginKeyAt splits the plugin key a link target under pivotRoot belongs to:

@@ -107,11 +107,8 @@ type pluginGroup struct {
 func (e *Engine) retireableRemoved(installed map[string]struct{}, ledger *pluginLedger) ([]PluginResult, bool, []string) {
 	guard := e.pluginHomeGuard()
 
-	switch {
-	case !guard.Retireable():
+	if !guard.Retireable() {
 		return nil, false, []string{guard.Warning()}
-	case guard.Recorded == "":
-		e.rememberVaultHome()
 	}
 
 	removed, dirty := e.retireRemoved(installed, ledger)
@@ -214,7 +211,10 @@ func (e *Engine) reconcileOrphanEdges(ledger *pluginLedger, ledgerBroken, dirty 
 		warns   []string
 	)
 
-	if !ledgerBroken {
+	// Orphan pivots are beadle's own artifacts, but a foreign home sees a
+	// vault it does not own: the same guard as the retirement pass keeps the
+	// destructive half away from it.
+	if !ledgerBroken && e.pluginHomeGuard().Retireable() {
 		var retireWarns []string
 
 		retired, retireWarns = e.retireOrphanPivots(*ledger, e.pinnedVersions(), false)

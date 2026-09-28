@@ -200,6 +200,8 @@ func (e *Engine) sync(ctx context.Context, opts SyncOptions) (*Report, error) {
 		return nil, err
 	}
 
+	e.recordSyncHome(st)
+
 	active, err := e.activeAgents(ctx)
 	if err != nil {
 		return nil, err

@@ -109,3 +109,95 @@ func TestPluginRetireOnAForeignHomeWithTheOptIn(t *testing.T) {
 		})
 	})
 }
+
+// orphanPivotDir plants an orphan pivot: a symlink-only directory under the
+// vault whose plugin key the ledger never recorded.
+func orphanPivotDir(t *testing.T, f *fixture) string {
+	t.Helper()
+
+	dir := filepath.Join(f.vault.PluginsDir(), "orphan", "gone")
+	So(os.MkdirAll(dir, 0o750), ShouldBeNil)
+
+	target := filepath.Join(t.TempDir(), "cache", "skills", "alpha")
+	So(os.MkdirAll(target, 0o750), ShouldBeNil)
+	So(os.Symlink(target, filepath.Join(dir, "current")), ShouldBeNil)
+
+	return dir
+}
+
+func TestOrphanPivotKeptOnAForeignHome(t *testing.T) {
+	Convey("Given an orphan pivot in a vault that belongs to another home", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		dir := orphanPivotDir(t, f)
+
+		st, err := state.Load(f.vault.StatePath())
+		So(err, ShouldBeNil)
+
+		st.Home = "/somewhere/else"
+		So(st.Save(f.vault.StatePath()), ShouldBeNil)
+
+		report := f.sync(t)
+
+		Convey("Then the pivot survives and the warning names every skipped pass", func() {
+			_, err := os.Stat(dir)
+			So(err, ShouldBeNil)
+
+			warnings := strings.Join(report.Warnings, "\n")
+			So(warnings, ShouldContainSubstring, "orphan pivot removal")
+			So(warnings, ShouldContainSubstring, "stale link cleanup")
+			So(warnings, ShouldContainSubstring, "plugin retirement")
+		})
+	})
+}
+
+func TestOrphanPivotRetiredOnTheRecordedHome(t *testing.T) {
+	Convey("Given an orphan pivot in a vault that belongs to this home", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		dir := orphanPivotDir(t, f)
+
+		report := f.sync(t)
+
+		Convey("Then it is retired exactly as before", func() {
+			_, err := os.Stat(dir)
+			So(os.IsNotExist(err), ShouldBeTrue)
+			So(strings.Join(report.Warnings, "\n"), ShouldNotContainSubstring, "BEADLE_ALLOW_HOME_MOVE")
+		})
+	})
+}
+
+func TestOrphanPivotRetiredWithTheOptInAndTheHomeIsAdopted(t *testing.T) {
+	Convey("Given the user accepted the home move", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+		t.Setenv("BEADLE_ALLOW_HOME_MOVE", "1")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		dir := orphanPivotDir(t, f)
+
+		st, err := state.Load(f.vault.StatePath())
+		So(err, ShouldBeNil)
+
+		st.Home = "/somewhere/else"
+		So(st.Save(f.vault.StatePath()), ShouldBeNil)
+
+		f.sync(t)
+
+		Convey("Then the pivot is retired and the vault records the new home", func() {
+			_, err := os.Stat(dir)
+			So(os.IsNotExist(err), ShouldBeTrue)
+
+			after, err := state.Load(f.vault.StatePath())
+			So(err, ShouldBeNil)
+			So(after.Home, ShouldEqual, f.home)
+		})
+	})
+}

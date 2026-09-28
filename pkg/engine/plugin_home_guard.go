@@ -56,21 +56,18 @@ func (g pluginHomeGuard) Retireable() bool {
 // Warning renders the skip, naming both homes and the opt-in.
 func (g pluginHomeGuard) Warning() string {
 	return "plugins: this vault was synced from " + g.Recorded + " but the current home is " + g.Current +
-		"; plugin retirement and pivot removal are skipped (set " + pluginHomeMoveEnv +
-		"=1 to adopt the current home, then re-run)"
+		"; plugin retirement, orphan pivot removal and stale link cleanup are skipped (set " +
+		pluginHomeMoveEnv + "=1 to adopt the current home, then re-run)"
 }
 
-// rememberVaultHome records the current home on the vault's first sync, so a
-// later foreign home becomes detectable.
-func (e *Engine) rememberVaultHome() {
-	st, err := state.Load(e.vault.StatePath())
-	if err != nil || st.Home == e.home {
-		return
+// recordSyncHome records the home this vault is synced from: the first sync
+// sets it, and a user who explicitly allowed the move adopts the current home
+// here, so the plugin guard compares against a current record afterwards and
+// the warning does not repeat forever.
+func (e *Engine) recordSyncHome(st *state.State) {
+	if guard := e.pluginHomeGuard(); guard.Retireable() && (st.Home == "" || guard.Allowed) {
+		st.Home = e.home
 	}
-
-	st.Home = e.home
-
-	_ = st.Save(e.vault.StatePath())
 }
 
 // sameHomePath compares two homes the way the plugin readers would see them:
