@@ -10,8 +10,8 @@ import (
 )
 
 // Host is a host whose user-level hooks file beadle presents the approved
-// canon into. Native bundle hosts (Claude, Gemini, Antigravity) render hooks
-// through pkg/bundle instead.
+// canon into. Native bundle hosts (Claude, Gemini, Antigravity, omp) render
+// hooks through pkg/bundle instead, and omp has no command-hook file at all.
 type Host string
 
 const (

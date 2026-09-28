@@ -15,7 +15,7 @@ import (
 func (a *app) newBundlesCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "bundles",
-		Short: "Generate and register native host bundles (Claude marketplace, Gemini extension, Antigravity plugin)",
+		Short: "Generate and register native host bundles (Claude marketplace, Gemini extension, Antigravity plugin, omp marketplace)",
 		Args:  cobra.NoArgs,
 	}
 
@@ -111,7 +111,7 @@ func (a *app) newBundlesToggleCmd(enable bool) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&host, "host", "", "bundle host: claude, gemini or antigravity (positional works too)")
+	cmd.Flags().StringVar(&host, "host", "", "bundle host: claude, gemini, antigravity or omp (positional works too)")
 
 	return cmd
 }

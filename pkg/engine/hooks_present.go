@@ -27,8 +27,8 @@ type hookFileTarget struct {
 }
 
 // hookFileTargets lists the user-level hooks files beadle presents the canon
-// into. Native bundle hosts (Claude, Gemini, Antigravity) render hooks through
-// pkg/bundle instead.
+// into. Native bundle hosts (Claude, Gemini, Antigravity, omp) render hooks
+// through pkg/bundle instead, and omp has no command-hook file at all.
 func hookFileTargets(home string) []hookFileTarget {
 	targets := make([]hookFileTarget, 0, 2)
 

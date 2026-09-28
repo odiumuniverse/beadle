@@ -41,6 +41,8 @@ func (e *Engine) probeBundle(host bundle.Host, dir, version string) (string, str
 		return e.probeClaudeBundle(version)
 	case bundle.Gemini:
 		return e.probeGeminiBundle()
+	case bundle.Omp:
+		return e.probeOmpBundle(version)
 	default:
 		return e.probeAntigravityBundle()
 	}
@@ -91,6 +93,56 @@ func (e *Engine) probeClaudeBundle(version string) (string, string) {
 		default:
 			return state.VerifyExecuted, ""
 		}
+	}
+
+	return state.VerifyFailed, "the host does not list " + id
+}
+
+// ompPluginEntry is one entry of `omp plugin list --json`.
+type ompPluginEntry struct {
+	ID      string `json:"id"`
+	Entries []struct {
+		Version string `json:"version"`
+	} `json:"entries"`
+}
+
+// probeOmpBundle reads omp's own plugin listing: the host records the version
+// it installed, so a mismatch means omp serves a different bundle than the one
+// just rendered. The listing carries no secrets.
+func (e *Engine) probeOmpBundle(version string) (string, string) {
+	stdout, code, err := e.runHost(bundle.Omp, cliPlugin, "list", "--json")
+	if tier, note, ok := unreachableProbe(bundle.Omp, err); ok {
+		return tier, note
+	}
+
+	if err != nil || code != 0 {
+		return state.VerifyFailed, "omp plugin list --json failed: " + probeFailure(err, code)
+	}
+
+	var listing struct {
+		Marketplace []ompPluginEntry `json:"marketplace"`
+	}
+
+	if err := json.Unmarshal(stdout, &listing); err != nil {
+		return state.VerifyFailed, "omp plugin list --json output is not parseable"
+	}
+
+	id := ompBundleKey()
+
+	for _, entry := range listing.Marketplace {
+		if entry.ID != id {
+			continue
+		}
+
+		if len(entry.Entries) == 0 {
+			return state.VerifyFailed, "the host lists " + id + " without an install record"
+		}
+
+		if install := entry.Entries[0]; install.Version != version {
+			return state.VerifyFailed, fmt.Sprintf("the host serves version %s while the bundle is %s", install.Version, version)
+		}
+
+		return state.VerifyExecuted, ""
 	}
 
 	return state.VerifyFailed, "the host does not list " + id

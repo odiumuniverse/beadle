@@ -4,7 +4,7 @@ beadle keeps one configuration for every AI coding agent you use. You edit your
 rules, MCP servers, skills, subagents, commands, permissions or memory **once**,
 in a directory you own (the *vault*, by default `~/.beadle`), and beadle keeps
 the agents in sync: Claude Code, OpenCode, Gemini CLI, Cursor, Antigravity,
-Codex, Pi, Kilo and DeepSeek Harness.
+Codex, Pi, Kilo, DeepSeek Harness and oh-my-pi (omp).
 
 It writes real files, merges each item with a 3-way merge against the last known
 state of every agent, and when two sides changed the same item it records a
@@ -54,7 +54,8 @@ checkout — secrets in project files need an explicit opt-in
 ## Plugins
 
 Plugins are read from **every host with file-based plugins** — Claude Code, Codex, Gemini CLI
-extensions, Antigravity and Cursor — scanned and **parked** in the vault, then
+extensions, Antigravity, Cursor and oh-my-pi (`~/.omp/plugins`, adopted read-only) — scanned
+and **parked** in the vault, then
 presented to the active hosts: install a plugin in any one and it arrives
 everywhere. Skills arrive as links in every host's skills directory (Claude
 included, next to its native plugin copy). Subagents and commands arrive as

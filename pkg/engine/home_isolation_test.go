@@ -17,8 +17,10 @@ var isolatedHome string
 // empty DSH_AGENTS_HOME to a temp directory before the suite runs: a test that
 // forgets its own t.Setenv("HOME", …) must never touch the developer's real
 // home. The empty DSH_AGENTS_HOME makes the DSH adapter resolve its shared
-// root (~/.agents) from each test's own home instead of a developer's value;
-// a test that wants another location overrides it with t.Setenv, which wins.
+// root (~/.agents) from each test's own home instead of a developer's value,
+// and the empty omp variables keep the omp plugin root (~/.omp, or the
+// PI_CONFIG_DIR directory) under each test's own home; a test that wants
+// another location overrides them with t.Setenv, which wins.
 // The XDG location points at the same <home>/.config a fallback would resolve
 // to, so tests that compute the path from HOME keep matching.
 func isolateTestHome(m *testing.M) int {
@@ -32,11 +34,14 @@ func isolateTestHome(m *testing.M) int {
 	defer func() { _ = os.RemoveAll(home) }()
 
 	for name, value := range map[string]string{
-		"HOME":            home,
-		"XDG_CONFIG_HOME": filepath.Join(home, ".config"),
-		"BEADLE_HOME":     filepath.Join(home, ".beadle"),
-		"DSH_HOME":        filepath.Join(home, ".dsh"),
-		"DSH_AGENTS_HOME": "",
+		"HOME":                home,
+		"XDG_CONFIG_HOME":     filepath.Join(home, ".config"),
+		"BEADLE_HOME":         filepath.Join(home, ".beadle"),
+		"DSH_HOME":            filepath.Join(home, ".dsh"),
+		"DSH_AGENTS_HOME":     "",
+		"PI_CONFIG_DIR":       "",
+		"PI_CODING_AGENT_DIR": "",
+		"OMP_PROFILE":         "",
 	} {
 		//nolint:usetesting // TestMain cannot use t.Setenv; tests override per test
 		if err := os.Setenv(name, value); err != nil {
@@ -69,10 +74,14 @@ func TestSuiteHomeIsolation(t *testing.T) {
 					So(os.Getenv(name), ShouldContainSubstring, isolatedHome)
 				}
 
-				// DSH_AGENTS_HOME is pinned empty: the DSH adapter resolves
-				// its default (~/.agents) from each test's own home, so a
-				// developer's value cannot leak into the suite.
+				// DSH_AGENTS_HOME and the omp variables are pinned empty: the
+				// adapters resolve their defaults from each test's own home,
+				// so a developer's value cannot leak into the suite.
 				So(os.Getenv("DSH_AGENTS_HOME"), ShouldBeEmpty)
+
+				for _, name := range []string{"PI_CONFIG_DIR", "PI_CODING_AGENT_DIR", "OMP_PROFILE"} {
+					So(os.Getenv(name), ShouldBeEmpty)
+				}
 			})
 		})
 	})

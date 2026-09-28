@@ -83,6 +83,10 @@ func pluginMCPDialect(source string) (mcpCodec, []string) {
 		return geminiMCP, []string{"extensionPath"}
 	case AntigravityCLIID:
 		return antigravityMCP, []string{"PLUGIN_ROOT", pluginRootVar}
+	case OmpID:
+		// omp's native MCP file is the Claude dialect, and it loads
+		// Claude-format plugins; the Claude plugin root placeholder applies.
+		return claudeMCP, []string{pluginRootVar}
 	default:
 		return claudeMCP, []string{pluginRootVar}
 	}

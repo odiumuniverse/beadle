@@ -1,0 +1,288 @@
+package plugin
+
+import (
+	"maps"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+)
+
+const (
+	// ompDirName is omp's default user root. PI_CONFIG_DIR names another
+	// directory under $HOME; agent.OmpHome resolves the same way.
+	ompDirName = ".omp"
+	// ompPluginMetaDir is omp's own plugin manifest directory. omp reads it,
+	// but it reads the version from .claude-plugin/plugin.json only: a plugin
+	// that ships the .omp-plugin manifest alone installs as 0.0.0, so this
+	// reader never takes a version from it either.
+	ompPluginMetaDir = ".omp-plugin"
+	// ompPackageFile is the manifest of an npm/linked omp plugin: `omp plugin
+	// link` refuses a directory without it.
+	ompPackageFile = "package.json"
+	// ompNodeModulesDir holds the symlinks of every installed omp plugin:
+	// marketplace installs point into plugins/cache, linked/npm packages point
+	// at their source directory.
+	ompNodeModulesDir = "node_modules"
+)
+
+// OmpRoot returns omp's user root, the directory that holds the plugin state
+// (marketplaces.json and plugins/). PI_CONFIG_DIR relocates the whole root
+// under $HOME — live-verified: PI_CONFIG_DIR=relocated moves both the agent
+// directory and plugins/ to <home>/relocated — and an empty value keeps the
+// ~/.omp default. It mirrors agent.OmpHome for this package, which sits below
+// pkg/agent; a pkg/engine test keeps the two resolutions in step.
+func OmpRoot(home string) string {
+	if dir := os.Getenv("PI_CONFIG_DIR"); dir != "" {
+		return filepath.Join(home, dir)
+	}
+
+	return filepath.Join(home, ompDirName)
+}
+
+// ompInstalled is omp's installed_plugins.json (version 2): the marketplace
+// installs keyed by name@marketplace, each with the resolved install path and
+// the version omp recorded.
+type ompInstalled struct {
+	Plugins map[string][]installRecord `json:"plugins"`
+}
+
+// readOMP reads the plugins omp installed into its user root. omp keeps no
+// "available but not installed" list: the installs are named by
+// plugins/installed_plugins.json, and the remaining node_modules symlinks are
+// the linked and npm packages. Beadle never writes this tree: omp's installer
+// holds no cross-process lock, so a hand-written file could overwrite a
+// concurrent install.
+func readOMP(home string) ([]Plugin, []string) {
+	root := filepath.Join(OmpRoot(home), pluginsDir)
+	if !isDir(root) {
+		return nil, nil
+	}
+
+	registry, warns := readOMPInstalled(root)
+
+	var plugins []Plugin
+
+	covered := map[string]struct{}{}
+
+	for _, key := range slices.Sorted(maps.Keys(registry)) {
+		name, marketplace, ok := strings.Cut(key, "@")
+		if !ok || name == "" || marketplace == "" {
+			warns = append(warns, warnf(SourceOMP, "malformed plugin key %s", key))
+
+			continue
+		}
+
+		for _, record := range registry[key] {
+			plugin, ok, pluginWarns := ompRegistryPlugin(marketplace, name, record)
+
+			warns = append(warns, pluginWarns...)
+
+			if !ok {
+				continue
+			}
+
+			covered[plugin.Name] = struct{}{}
+
+			plugins = append(plugins, plugin)
+		}
+	}
+
+	linked, linkedWarns := readOMPNodeModules(root, covered)
+
+	plugins = append(plugins, linked...)
+	warns = append(warns, linkedWarns...)
+
+	return plugins, warns
+}
+
+// readOMPInstalled reads the user-scope marketplace registry. A missing file
+// is not a warning: an omp install without marketplace plugins has none.
+func readOMPInstalled(root string) (map[string][]installRecord, []string) {
+	var doc ompInstalled
+
+	path := filepath.Join(root, installedFile)
+
+	state, warns := readJSONManifest(path, SourceOMP, &doc)
+	if state == manifestMissing {
+		return nil, nil
+	}
+
+	if state != manifestParsed {
+		return nil, warns
+	}
+
+	return doc.Plugins, warns
+}
+
+// ompRegistryPlugin turns one registry record into a plugin. omp records the
+// resolved install path and the version at install time, so the registry is
+// the source of truth and the manifest only fills name and description: the
+// version omp actually installs is the one in .claude-plugin/plugin.json.
+func ompRegistryPlugin(marketplace, name string, record installRecord) (Plugin, bool, []string) {
+	plugin := Plugin{
+		Source:      SourceOMP,
+		Origin:      marketplace,
+		Name:        name,
+		Version:     record.Version,
+		Scope:       fallback(record.Scope, scopeUser),
+		InstallPath: record.InstallPath,
+	}
+
+	if record.InstallPath == "" || !isDir(record.InstallPath) {
+		return plugin, false, []string{warnf(SourceOMP, "installed plugin %s@%s %s: %s", name, marketplace, missingDirNote, record.InstallPath)}
+	}
+
+	meta, state, warns := readOMPManifest(record.InstallPath)
+
+	if state == manifestParsed {
+		plugin.Name = fallback(meta.Name, plugin.Name)
+		plugin.Description = meta.Description
+	}
+
+	plugin.fillArtifacts(SourceOMP, &warns)
+
+	return plugin, true, warns
+}
+
+// readOMPNodeModules reads the omp plugins that only exist as a node_modules
+// symlink: the packages `omp plugin link` or an npm install put there. A
+// marketplace install is already covered by the registry under the same
+// package name, so it is skipped here.
+func readOMPNodeModules(root string, covered map[string]struct{}) ([]Plugin, []string) {
+	dir := filepath.Join(root, ompNodeModulesDir)
+
+	var (
+		plugins []Plugin
+		warns   []string
+	)
+
+	for _, name := range subdirs(dir) {
+		if _, ok := covered[name]; ok {
+			continue
+		}
+
+		installPath := filepath.Join(dir, name)
+
+		meta, state, manifestWarns := readOMPPackageManifest(installPath)
+		if state == manifestMissing {
+			// A node_modules entry without package.json cannot be linked by
+			// omp; fall back to the plugin manifests for a registry-less
+			// marketplace copy.
+			meta, state, manifestWarns = readOMPManifest(installPath)
+		}
+
+		warns = append(warns, manifestWarns...)
+
+		if state == manifestMissing {
+			warns = append(warns, warnf(SourceOMP, "linked plugin %s has no %s; skipped", name, ompPackageFile))
+
+			continue
+		}
+
+		if state != manifestParsed {
+			continue
+		}
+
+		plugin := Plugin{
+			Source: SourceOMP,
+			// A linked package has no marketplace, so the host id names its
+			// namespace, as it does for the other hosts without marketplaces.
+			Origin:      SourceOMP,
+			Name:        fallback(meta.Name, name),
+			Version:     meta.Version,
+			Description: meta.Description,
+			Scope:       scopeUser,
+			InstallPath: installPath,
+		}
+
+		plugin.fillArtifacts(SourceOMP, &warns)
+
+		plugins = append(plugins, plugin)
+	}
+
+	return plugins, warns
+}
+
+// ompArtifacts resolves an omp plugin payload: skills/<name>/SKILL.md,
+// agents/*.md, commands/*.md (omp loads a non-recursive *.md glob), the
+// Claude-compatible .mcp.json, and the hook modules. omp has no command-hook
+// file, so the hooks are reported rather than presented; rules/, tools/ and
+// package.json#omp.extensions carry no unified kind and are not presented
+// either.
+func ompArtifacts(installPath string) (pluginArtifacts, []string) {
+	out := pluginArtifacts{
+		Skills:   scanSkillDirs(filepath.Join(installPath, skillsDir)),
+		Agents:   scanNamedFiles(filepath.Join(installPath, agentsDir), []string{markdownExt}, false),
+		Commands: scanNamedFiles(filepath.Join(installPath, commandsDir), []string{markdownExt}, false),
+	}
+
+	var warns []string
+
+	hooks, hookWarns, err := ReadHooksFor(SourceOMP, installPath)
+	if err != nil {
+		warns = append(warns, warnf(SourceOMP, "plugin %s: %v", installPath, err))
+	} else {
+		warns = append(warns, hookWarns...)
+	}
+
+	mcp, mcpWarns := resolveMCPNames(SourceOMP, installPath)
+
+	warns = append(warns, mcpWarns...)
+
+	out.Hooks = hookEventNames(hooks)
+	out.MCP = mcp
+
+	return out, warns
+}
+
+// ompPluginMetaCandidate is the position of .omp-plugin/plugin.json in the
+// omp manifest candidates: the only one omp reads without taking a version.
+const ompPluginMetaCandidate = 2
+
+// readOMPPackageManifest reads the package.json of an npm/linked omp plugin.
+// `omp plugin list` reports that manifest's version, so it is the version omp
+// itself serves for a linked package.
+func readOMPPackageManifest(dir string) (pluginMeta, manifestState, []string) {
+	var meta pluginMeta
+
+	state, warns := readJSONManifest(filepath.Join(dir, ompPackageFile), SourceOMP, &meta)
+
+	return meta, state, warns
+}
+
+// readOMPManifest reads the manifest of one omp plugin directory. The
+// .claude-plugin/plugin.json omp installs from wins, then the package.json of
+// an npm/linked package, then the .omp-plugin/plugin.json omp reads for
+// identity only. The version always comes from one of the first two: omp
+// reports 0.0.0 for a plugin that declares its version only in .omp-plugin.
+func readOMPManifest(dir string) (pluginMeta, manifestState, []string) {
+	candidates := []string{
+		filepath.Join(dir, metaDir, metaFile),
+		filepath.Join(dir, ompPackageFile),
+		filepath.Join(dir, ompPluginMetaDir, metaFile),
+	}
+
+	for i, path := range candidates {
+		var meta pluginMeta
+
+		state, warns := readJSONManifest(path, SourceOMP, &meta)
+		if state == manifestMissing {
+			continue
+		}
+
+		if state != manifestParsed {
+			return pluginMeta{}, state, warns
+		}
+
+		if i == ompPluginMetaCandidate {
+			// omp never reads a version from .omp-plugin/plugin.json: a plugin
+			// that declares it only there installs as 0.0.0.
+			meta.Version = ""
+		}
+
+		return meta, manifestParsed, warns
+	}
+
+	return pluginMeta{}, manifestMissing, nil
+}

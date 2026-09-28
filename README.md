@@ -163,7 +163,16 @@ manage** alone.
   expansion; `$@`, `$@[start:len]` and `prompt.render` are omp-only and stay
   literal. Approval policy (`tools.approval*`, `bash.patterns`) lives in the
   host-owned `config.yml` and is not managed, and omp's hooks (JS/TS factories),
-  extensions, custom tools and memory backends are v1 non-goals.
+  extensions, custom tools and memory backends are v1 non-goals. omp is also a
+  bundle host: the catalog is `.omp-plugin/marketplace.json` with the plugin
+  tree beside it — the version comes from
+  `plugins/beadle-canon/.claude-plugin/plugin.json`, the only manifest omp
+  reads a version from (a `.omp-plugin/plugin.json`-only plugin installs as
+  `0.0.0`) — and no hooks file is written, because omp has none to write.
+  File-based plugins are adopted from `~/.omp/plugins` (the marketplace cache
+  and the `node_modules` links) read-only, and the registration is driven by
+  omp's own `marketplaces.json`/`installed_plugins.json` because
+  `omp plugin marketplace add` is not idempotent.
 
 A ✓ means beadle writes that surface; a `pull` marker means beadle reads it
 but does not write until the mode is flipped (`beadle agents mode <agent>
@@ -305,11 +314,18 @@ for markdown hosts, a rendered TOML copy for Codex agents and Gemini commands;
 a host reads its own plugins' agents and commands natively — another host's
 plugin reaches it as a farmed file, and Codex prompts are pull-only).
 Plugins are read from every host with file-based plugins — Claude Code, Codex, Gemini CLI
-extensions, Antigravity and Cursor — and what one installs reaches the others:
+extensions, Antigravity, Cursor and oh-my-pi (`~/.omp/plugins`, or
+`$PI_CONFIG_DIR/plugins` when that relocates the omp root) — and what one
+installs reaches the others:
 a plugin put into Codex shows up for Claude, OpenCode, Gemini and Cursor, and
 the other way round. The same plugin installed in two hosts is presented once
 (the first host wins, with a note); divergent copies are warned about instead
-of hidden. *Why:* skills are the biggest pile of files to keep
+of hidden. The omp tree is read-only for beadle: omp's installer keeps no
+cross-process lock, so beadle adopts what `omp plugin` installed and never
+writes that directory. A plugin is not farmed back into the host that
+installed it (that host reads its own plugin cache natively, so the farmed
+link would make every skill discoverable twice); the other hosts still receive
+the links. *Why:* skills are the biggest pile of files to keep
 in sync.
 
 </details>
@@ -329,8 +345,11 @@ a plugin from another host is reported as having no effect.
 <details>
 <summary><b>Native bundles and hooks</b> — approved lifecycle hooks and the canon rendered into host plugins</summary>
 
-A Claude marketplace plugin, a Gemini extension, an Antigravity plugin; the
-bundle version follows the rendered bytes. A full forward sync makes one
+A Claude marketplace plugin, a Gemini extension, an Antigravity plugin, an
+oh-my-pi marketplace plugin (`.omp-plugin/marketplace.json` plus the canonical
+plugin tree, whose version omp reads only from
+`plugins/beadle-canon/.claude-plugin/plugin.json`); the bundle version follows
+the rendered bytes. A full forward sync makes one
 unattended attempt per host that was never touched: render → validate →
 register → probe → flip the file kinds off. Registration goes through the host
 CLIs when they exist, and the result is verified before beadle retires the file
@@ -339,7 +358,16 @@ command is printed (`unverifiable`). A failed or unverified attempt is not
 retried on every sync — the retry is explicit, `beadle bundles enable <host>`,
 and a rendered canon change reopens it once; a host you disabled by hand stays
 disabled until you enable it again. `bundles disable` materializes everything
-back. Beadle writes hook files but never runs them. Cursor and Codex have no
+back. Beadle writes hook files but never runs them; omp receives no hooks,
+because its hooks are JS/TS modules with no declarative file to write (the
+bundle names the skipped hooks once instead of silently dropping them).
+The omp registration is driven by omp's own `marketplaces.json` and
+`installed_plugins.json`: `omp plugin marketplace add` is not idempotent (it
+exits non-zero on a repeat), so beadle adds the marketplace only when omp does
+not know it, refreshes the catalog otherwise, force-reinstalls
+(`omp plugin install --force`), and confirms the recorded version by re-reading
+the registry rather than trusting the exit code.
+Cursor and Codex have no
 bundle host: their approved hooks render into the user-level
 `~/.cursor/hooks.json` and `~/.codex/hooks.json` instead, foreign hooks are
 kept, and Codex asks you to review new hooks in `/hooks` before they run.

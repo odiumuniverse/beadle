@@ -13,12 +13,12 @@ import (
 // isolatedHome is the temp home TestMain pins the environment to.
 var isolatedHome string
 
-// isolateTestHome pins HOME, XDG_CONFIG_HOME, BEADLE_HOME and DSH_HOME to a
-// temp directory before the suite runs: a test that forgets its own
-// t.Setenv("HOME", …) must never touch the developer's real home. The XDG
-// location points at the same <home>/.config a fallback would resolve to, so
-// tests that compute the path from HOME keep matching. A test that needs
-// another location overrides it with t.Setenv, which wins.
+// isolateTestHome pins HOME, XDG_CONFIG_HOME, BEADLE_HOME, DSH_HOME and the
+// omp root variables to a temp directory before the suite runs: a test that
+// forgets its own t.Setenv("HOME", …) must never touch the developer's real
+// home. The XDG location points at the same <home>/.config a fallback would
+// resolve to, so tests that compute the path from HOME keep matching. A test
+// that needs another location overrides it with t.Setenv, which wins.
 func isolateTestHome(m *testing.M) int {
 	home, err := os.MkdirTemp("", "beadle-test-home") //nolint:usetesting // TestMain has no *testing.T to hang t.TempDir on
 	if err != nil {
@@ -30,10 +30,13 @@ func isolateTestHome(m *testing.M) int {
 	defer func() { _ = os.RemoveAll(home) }()
 
 	for name, value := range map[string]string{
-		"HOME":            home,
-		"XDG_CONFIG_HOME": filepath.Join(home, ".config"),
-		"BEADLE_HOME":     filepath.Join(home, ".beadle"),
-		"DSH_HOME":        filepath.Join(home, ".dsh"),
+		"HOME":                home,
+		"XDG_CONFIG_HOME":     filepath.Join(home, ".config"),
+		"BEADLE_HOME":         filepath.Join(home, ".beadle"),
+		"DSH_HOME":            filepath.Join(home, ".dsh"),
+		"PI_CONFIG_DIR":       "",
+		"PI_CODING_AGENT_DIR": "",
+		"OMP_PROFILE":         "",
 	} {
 		//nolint:usetesting // TestMain cannot use t.Setenv; tests override per test
 		if err := os.Setenv(name, value); err != nil {
@@ -63,6 +66,10 @@ func TestSuiteHomeIsolation(t *testing.T) {
 				}
 
 				So(os.Getenv("XDG_CONFIG_HOME"), ShouldEqual, filepath.Join(isolatedHome, ".config"))
+
+				for _, name := range []string{"PI_CONFIG_DIR", "PI_CODING_AGENT_DIR", "OMP_PROFILE"} {
+					So(os.Getenv(name), ShouldBeEmpty)
+				}
 			})
 		})
 	})

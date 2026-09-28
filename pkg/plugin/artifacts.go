@@ -74,6 +74,8 @@ func resolveArtifacts(source, installPath string) (pluginArtifacts, []string) {
 		out, warns = antigravityArtifacts(installPath)
 	case SourceCursor:
 		out, warns = cursorArtifacts(installPath)
+	case SourceOMP:
+		out, warns = ompArtifacts(installPath)
 	default:
 		out, warns = claudeArtifacts(installPath)
 	}
@@ -408,6 +410,8 @@ func MCPDocument(source, installPath string) (data []byte, rel string, warns []s
 		return mcpFileDocument(installPath, source, []string{agyMCPFile})
 	case SourceGeminiCLI:
 		return geminiMCPDocument(installPath)
+	case SourceOMP:
+		return mcpFileDocument(installPath, source, []string{mcpFile})
 	default:
 		return mcpFileDocument(installPath, source, []string{mcpFile})
 	}

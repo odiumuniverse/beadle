@@ -41,9 +41,8 @@ var hookEvents = map[Host]map[string]hookTarget{
 	},
 }
 
-func renderHooks(req Request) ([]byte, []string, error) {
-	var warns []string
-
+// approvedHookNames lists the hook names the user approved, in hook order.
+func approvedHookNames(req Request) []string {
 	names := make([]string, 0, len(req.Hooks))
 
 	for _, name := range slices.Sorted(maps.Keys(req.Hooks)) {
@@ -51,6 +50,30 @@ func renderHooks(req Request) ([]byte, []string, error) {
 			names = append(names, name)
 		}
 	}
+
+	return names
+}
+
+// hooklessHosts lists the bundle hosts with no command-hook file, so the
+// canon's command hooks have nowhere to be rendered. omp is hookless: its
+// hooks are TypeScript/JavaScript modules (hooks/pre/*.ts, hooks/post/*.ts)
+// that default-export a factory and bind handlers in code — there is no
+// declarative hook schema, so the bundle carries none (live-verified against
+// omp 18.4.1 and omp://hooks.md, "Discovery and loading").
+var hooklessHosts = map[Host]bool{Omp: true}
+
+func renderHooks(req Request) ([]byte, []string, error) {
+	names := approvedHookNames(req)
+
+	if hooklessHosts[req.Host] {
+		if len(names) == 0 {
+			return nil, nil, nil
+		}
+
+		return nil, []string{fmt.Sprintf("%s has no command-hook file; %d approved hook(s) are not delivered", req.Host, len(names))}, nil
+	}
+
+	var warns []string
 
 	if req.Host == Antigravity {
 		doc := map[string]any{}

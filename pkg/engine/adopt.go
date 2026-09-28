@@ -299,7 +299,7 @@ func (e *Engine) adoptionTarget(hostName string) (*agent.Agent, error) {
 		return a, nil
 	}
 
-	return nil, fmt.Errorf("unknown host %q (expected an agent id or claude/gemini/antigravity)", hostName)
+	return nil, fmt.Errorf("unknown host %q (expected an agent id or claude/gemini/antigravity/omp)", hostName)
 }
 
 // adoptable classifies one host for adoption: it returns the record to write

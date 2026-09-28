@@ -42,6 +42,12 @@ func (e *Engine) pluginSourceRoots(source string) []string {
 		}
 	case plugin.SourceCursor:
 		return []string{filepath.Join(home, ".cursor", "plugins")}
+	case plugin.SourceOMP:
+		// omp keeps every install (marketplace cache and node_modules
+		// symlinks) under <ompRoot>/plugins; <ompRoot> is ~/.omp unless
+		// PI_CONFIG_DIR relocates it. plugin.OmpRoot is the reader's own
+		// resolution, so containment and discovery cannot drift.
+		return []string{filepath.Join(plugin.OmpRoot(home), "plugins")}
 	default:
 		return []string{filepath.Join(home, ".claude", "plugins")}
 	}

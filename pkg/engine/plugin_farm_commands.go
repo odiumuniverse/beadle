@@ -22,6 +22,9 @@ var farmCommandSpec = farmFileSpec{
 	Skip: map[string][]string{
 		agent.ClaudeCodeID: {plugin.SourceClaudeCode},
 		agent.CodexID:      nil,
+		// omp's command discovery reads its own plugin registry natively; its
+		// own plugins are skipped while another host's still arrives farmed.
+		agent.OmpID: {plugin.SourceOMP},
 	},
 	ValidName: command.ValidName,
 	SourceExts: map[string][]string{

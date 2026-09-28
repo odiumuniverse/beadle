@@ -23,17 +23,20 @@ const (
 	Claude      Host = "claude"
 	Gemini      Host = "gemini"
 	Antigravity Host = "antigravity"
+	Omp         Host = "omp"
 
 	MarketplaceName  = "beadle"
 	PluginName       = "beadle-canon"
 	versionPrefix    = "0.0.0-"
 	keyName          = "name"
 	keyDescription   = "description"
+	keyVersion       = "version"
+	keyMCPServers    = "mcpServers"
 	canonDescription = "beadle vault canon: skills, MCP servers and approved hooks"
 )
 
 func Hosts() []Host {
-	return []Host{Claude, Gemini, Antigravity}
+	return []Host{Claude, Gemini, Antigravity, Omp}
 }
 
 func ParseHost(name string) (Host, error) {
@@ -44,8 +47,10 @@ func ParseHost(name string) (Host, error) {
 		return Gemini, nil
 	case "antigravity", "antigravity-cli", "agy":
 		return Antigravity, nil
+	case "omp", "oh-my-pi":
+		return Omp, nil
 	default:
-		return "", fmt.Errorf("unknown bundle host %q (expected claude, gemini or antigravity)", name)
+		return "", fmt.Errorf("unknown bundle host %q (expected claude, gemini, antigravity or omp)", name)
 	}
 }
 
@@ -55,13 +60,15 @@ func (h Host) AgentID() string {
 		return agent.ClaudeCodeID
 	case Gemini:
 		return agent.GeminiCLIID
+	case Omp:
+		return agent.OmpID
 	default:
 		return agent.AntigravityCLIID
 	}
 }
 
 func (h Host) Kinds() []kind.ID {
-	if h == Claude {
+	if h == Claude || h == Omp {
 		return []kind.ID{kind.Skills, kind.MCP}
 	}
 
@@ -82,6 +89,8 @@ func (h Host) Binary() string {
 		return "claude"
 	case Gemini:
 		return "gemini"
+	case Omp:
+		return "omp"
 	default:
 		return "agy"
 	}
@@ -119,59 +128,59 @@ func Plan(req Request) (Result, map[string][]byte, error) {
 
 	version := contentVersion(req.Host, files)
 
-	stamp := func(rel string, patch func(doc map[string]any)) error {
-		doc := map[string]any{}
-
-		if err := json.Unmarshal(files[rel], &doc); err != nil {
-			return fmt.Errorf("stamp %s: %w", rel, err)
-		}
-
-		patch(doc)
-
-		data, err := encodeJSON(doc)
-		if err != nil {
-			return err
-		}
-
-		files[rel] = data
-
-		return nil
-	}
-
-	switch req.Host {
-	case Claude:
-		if err := stamp(".claude-plugin/marketplace.json", func(doc map[string]any) {
-			plugins, _ := doc["plugins"].([]any)
-			if len(plugins) == 0 {
-				return
-			}
-
-			entry, _ := plugins[0].(map[string]any)
-			if entry != nil {
-				entry["version"] = version
-			}
-		}); err != nil {
-			return Result{}, nil, err
-		}
-
-		if err := stamp("plugins/beadle-canon/.claude-plugin/plugin.json", func(doc map[string]any) {
-			doc["version"] = version
-		}); err != nil {
-			return Result{}, nil, err
-		}
-	case Gemini:
-		if err := stamp("gemini-extension.json", func(doc map[string]any) {
-			doc["version"] = version
-		}); err != nil {
-			return Result{}, nil, err
-		}
-	case Antigravity:
-		// The Antigravity plugin schema forbids extra properties: the
-		// manifest carries name and description only. The version lives in
-		// state.BundleState.
+	if err := stampBundleVersion(req.Host, version, files); err != nil {
+		return Result{}, nil, err
 	}
 
 	return Result{Version: version, Warnings: warns}, files, nil
+}
+
+// stampBundleVersion writes the rendered version into every document of the
+// bundle the host reads it from: the plugin manifest's version field, and the
+// catalog plugin entry the host compares on upgrade. A host with no version
+// document (Antigravity) stamps nothing.
+func stampBundleVersion(host Host, version string, files map[string][]byte) error {
+	documents := map[Host][]string{
+		Claude: {".claude-plugin/marketplace.json", "plugins/" + PluginName + "/.claude-plugin/plugin.json"},
+		Gemini: {"gemini-extension.json"},
+		Omp:    {".omp-plugin/marketplace.json", "plugins/" + PluginName + "/.claude-plugin/plugin.json"},
+	}
+
+	for _, rel := range documents[host] {
+		if err := stampVersion(rel, version, files); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// stampVersion writes version into one bundle document: the first catalog
+// plugin entry when the document is a catalog, the top-level version field
+// otherwise.
+func stampVersion(rel, version string, files map[string][]byte) error {
+	doc := map[string]any{}
+
+	if err := json.Unmarshal(files[rel], &doc); err != nil {
+		return fmt.Errorf("stamp %s: %w", rel, err)
+	}
+
+	if plugins, ok := doc["plugins"].([]any); ok && len(plugins) > 0 {
+		if entry, _ := plugins[0].(map[string]any); entry != nil {
+			entry[keyVersion] = version
+		}
+	} else {
+		doc[keyVersion] = version
+	}
+
+	data, err := encodeJSON(doc)
+	if err != nil {
+		return err
+	}
+
+	files[rel] = data
+
+	return nil
 }
 
 func Render(root string, req Request) (Result, error) {
@@ -219,72 +228,148 @@ func render(req Request) (map[string][]byte, []string, error) {
 
 	switch req.Host {
 	case Claude:
-		marketplace, err := encodeJSON(map[string]any{
-			keyName:        MarketplaceName,
-			"owner":        map[string]any{keyName: MarketplaceName},
-			keyDescription: canonDescription,
-			"plugins": []any{map[string]any{
-				keyName:  PluginName,
-				"source": "./plugins/" + PluginName,
-			}},
-		})
-		if err != nil {
+		if err := addClaudePlugin(files, req, servers, hookDoc); err != nil {
 			return nil, nil, err
 		}
-
-		manifest, err := encodeJSON(map[string]any{
-			keyName:        PluginName,
-			keyDescription: canonDescription,
-			"author":       map[string]any{keyName: MarketplaceName},
-		})
-		if err != nil {
-			return nil, nil, err
-		}
-
-		mcpDoc, err := encodeJSON(map[string]any{"mcpServers": servers})
-		if err != nil {
-			return nil, nil, err
-		}
-
-		files[".claude-plugin/marketplace.json"] = marketplace
-		files["plugins/"+PluginName+"/.claude-plugin/plugin.json"] = manifest
-		files["plugins/"+PluginName+"/.mcp.json"] = mcpDoc
-		files["plugins/"+PluginName+"/hooks/hooks.json"] = hookDoc
-
-		addSkills(files, "plugins/"+PluginName+"/skills", req.Skills)
 	case Gemini:
-		manifest, err := encodeJSON(map[string]any{
-			keyName:        PluginName,
-			keyDescription: "beadle vault canon: MCP servers and approved hooks",
-			"mcpServers":   servers,
-		})
-		if err != nil {
+		if err := addGeminiExtension(files, servers, hookDoc); err != nil {
 			return nil, nil, err
 		}
-
-		files["gemini-extension.json"] = manifest
-		files["hooks/hooks.json"] = hookDoc
 	case Antigravity:
-		manifest, err := encodeJSON(map[string]any{keyName: PluginName, keyDescription: canonDescription})
-		if err != nil {
+		if err := addAntigravityPlugin(files, req, servers, hookDoc); err != nil {
 			return nil, nil, err
 		}
-
-		mcpDoc, err := encodeJSON(map[string]any{"mcpServers": servers})
-		if err != nil {
+	case Omp:
+		if err := addOmpPlugin(files, req, servers); err != nil {
 			return nil, nil, err
 		}
-
-		files["plugin.json"] = manifest
-		files["mcp_config.json"] = mcpDoc
-		files["hooks.json"] = hookDoc
-
-		addSkills(files, "skills", req.Skills)
 	default:
 		return nil, nil, fmt.Errorf("unsupported bundle host %q", req.Host)
 	}
 
 	return files, warns, nil
+}
+
+// addClaudePlugin renders the Claude marketplace, the plugin manifest, the
+// plugin MCP document and the plugin hooks document.
+func addClaudePlugin(files map[string][]byte, req Request, servers map[string]any, hookDoc []byte) error {
+	marketplace, err := encodeJSON(map[string]any{
+		keyName:        MarketplaceName,
+		"owner":        map[string]any{keyName: MarketplaceName},
+		keyDescription: canonDescription,
+		"plugins": []any{map[string]any{
+			keyName:  PluginName,
+			"source": "./plugins/" + PluginName,
+		}},
+	})
+	if err != nil {
+		return err
+	}
+
+	manifest, err := encodeJSON(map[string]any{
+		keyName:        PluginName,
+		keyDescription: canonDescription,
+		"author":       map[string]any{keyName: MarketplaceName},
+	})
+	if err != nil {
+		return err
+	}
+
+	mcpDoc, err := encodeJSON(map[string]any{keyMCPServers: servers})
+	if err != nil {
+		return err
+	}
+
+	files[".claude-plugin/marketplace.json"] = marketplace
+	files["plugins/"+PluginName+"/.claude-plugin/plugin.json"] = manifest
+	files["plugins/"+PluginName+"/.mcp.json"] = mcpDoc
+	files["plugins/"+PluginName+"/hooks/hooks.json"] = hookDoc
+
+	addSkills(files, "plugins/"+PluginName+"/skills", req.Skills)
+
+	return nil
+}
+
+// addAntigravityPlugin renders the Antigravity plugin manifest (name and
+// description only: the schema forbids extra properties), the MCP document
+// and the owner-keyed hooks document.
+func addAntigravityPlugin(files map[string][]byte, req Request, servers map[string]any, hookDoc []byte) error {
+	manifest, err := encodeJSON(map[string]any{keyName: PluginName, keyDescription: canonDescription})
+	if err != nil {
+		return err
+	}
+
+	mcpDoc, err := encodeJSON(map[string]any{keyMCPServers: servers})
+	if err != nil {
+		return err
+	}
+
+	files["plugin.json"] = manifest
+	files["mcp_config.json"] = mcpDoc
+	files["hooks.json"] = hookDoc
+
+	addSkills(files, "skills", req.Skills)
+
+	return nil
+}
+
+// addGeminiExtension renders the Gemini extension manifest (the MCP servers
+// inline) plus its hooks document.
+func addGeminiExtension(files map[string][]byte, servers map[string]any, hookDoc []byte) error {
+	manifest, err := encodeJSON(map[string]any{
+		keyName:        PluginName,
+		keyDescription: "beadle vault canon: MCP servers and approved hooks",
+		keyMCPServers:  servers,
+	})
+	if err != nil {
+		return err
+	}
+
+	files["gemini-extension.json"] = manifest
+	files["hooks/hooks.json"] = hookDoc
+
+	return nil
+}
+
+// addOmpPlugin renders the native omp bundle: the .omp-plugin catalog with the
+// plugin tree beside it. The plugin manifest stays in .claude-plugin/ because
+// that is the only manifest omp reads a version from, and no hooks file is
+// written: omp hooks are code modules, not a command document.
+func addOmpPlugin(files map[string][]byte, req Request, servers map[string]any) error {
+	marketplace, err := encodeJSON(map[string]any{
+		keyName:        MarketplaceName,
+		"owner":        map[string]any{keyName: MarketplaceName},
+		keyDescription: canonDescription,
+		"plugins": []any{map[string]any{
+			keyName:  PluginName,
+			"source": "./plugins/" + PluginName,
+		}},
+	})
+	if err != nil {
+		return err
+	}
+
+	manifest, err := encodeJSON(map[string]any{
+		keyName:        PluginName,
+		keyDescription: canonDescription,
+		"author":       map[string]any{keyName: MarketplaceName},
+	})
+	if err != nil {
+		return err
+	}
+
+	mcpDoc, err := encodeJSON(map[string]any{keyMCPServers: servers})
+	if err != nil {
+		return err
+	}
+
+	files[".omp-plugin/marketplace.json"] = marketplace
+	files["plugins/"+PluginName+"/.claude-plugin/plugin.json"] = manifest
+	files["plugins/"+PluginName+"/.mcp.json"] = mcpDoc
+
+	addSkills(files, "plugins/"+PluginName+"/skills", req.Skills)
+
+	return nil
 }
 
 func addSkills(files map[string][]byte, prefix string, skills map[string]map[string][]byte) {

@@ -16,7 +16,13 @@ var farmAgentSpec = farmFileSpec{
 	DirName:   farmAgentsDirName,
 	Label:     "agent",
 	Artifacts: farmAgentsDirName,
-	Skip:      map[string][]string{agent.ClaudeCodeID: {plugin.SourceClaudeCode}},
+	Skip: map[string][]string{
+		agent.ClaudeCodeID: {plugin.SourceClaudeCode},
+		// omp reads its own plugin registry natively (its agent and command
+		// discovery), so its plugins must not be farmed back into it; another
+		// host's plugin still reaches it as a farmed file.
+		agent.OmpID: {plugin.SourceOMP},
+	},
 	ValidName: subagent.ValidName,
 	Rename:    renameFarmAgent,
 	SourceExts: map[string][]string{

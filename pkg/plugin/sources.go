@@ -13,17 +13,21 @@ const (
 	SourceGeminiCLI      = "gemini-cli"
 	SourceAntigravityCLI = "antigravity-cli"
 	SourceCursor         = "cursor"
+	SourceOMP            = "omp"
 )
 
 // sourceOrder lists the plugin hosts in host-registration order. The order
 // breaks ties when the same plugin namespace is found in several hosts:
-// the first source wins, and the others are reported.
+// the first source wins, and the others are reported. omp ranks last: a
+// plugin it installed is also visible to its Claude-compatibility provider,
+// so a Claude copy wins the presentation when both describe one plugin.
 var sourceOrder = []string{
 	SourceClaudeCode,
 	SourceGeminiCLI,
 	SourceAntigravityCLI,
 	SourceCursor,
 	SourceCodex,
+	SourceOMP,
 }
 
 // SourceHosts returns the supported plugin host IDs in host-registration
@@ -73,6 +77,8 @@ func readSource(source, home string) ([]Plugin, []string) {
 		return readAntigravity(home)
 	case SourceCursor:
 		return readCursor(home)
+	case SourceOMP:
+		return readOMP(home)
 	default:
 		return nil, nil
 	}

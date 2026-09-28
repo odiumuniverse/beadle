@@ -100,6 +100,7 @@ func TestBundlesCommands(t *testing.T) {
 			So(out, ShouldContainSubstring, "claude")
 			So(out, ShouldContainSubstring, "gemini")
 			So(out, ShouldContainSubstring, "antigravity")
+			So(out, ShouldContainSubstring, "omp")
 
 			out, err = runCLI(t, "bundles", "enable", "--host", "antigravity")
 			So(err, ShouldBeNil)

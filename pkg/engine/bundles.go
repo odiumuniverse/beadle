@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -19,6 +21,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/hooks"
 	"github.com/odiumuniverse/beadle/pkg/hostcli"
 	"github.com/odiumuniverse/beadle/pkg/kind"
+	"github.com/odiumuniverse/beadle/pkg/plugin"
 	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
@@ -42,7 +45,15 @@ const (
 	bundlePending   = "pending"
 	bundleNoop      = "noop"
 	cliPlugin       = "plugin"
-	bundleNoteLimit = 400
+	cliMarketplace  = "marketplace"
+	cliInstall      = "install"
+	cliUninstall    = "uninstall"
+	cliUpdate       = "update"
+	// ompMarketplacesFile and ompInstalledFile are omp's own plugin state,
+	// under <ompRoot>: the marketplace registry and the installed plugins.
+	ompMarketplacesFile = "marketplaces.json"
+	ompInstalledFile    = "installed_plugins.json"
+	bundleNoteLimit     = 400
 	// validationFindingLimit caps how many validate findings one doctor note
 	// names before the rest are counted in a "+N more" tail.
 	validationFindingLimit = 5
@@ -60,15 +71,24 @@ func bundleRegisterCommands(host bundle.Host, dir string) [][]string {
 	switch host {
 	case bundle.Claude:
 		return [][]string{
-			{cliPlugin, "marketplace", "add", dir},
-			{cliPlugin, "install", bundle.PluginName + "@" + bundle.MarketplaceName},
+			{cliPlugin, cliMarketplace, "add", dir},
+			{cliPlugin, cliInstall, bundle.PluginName + "@" + bundle.MarketplaceName},
 		}
 	case bundle.Gemini:
 		return [][]string{{"extensions", "link", dir}}
 	case bundle.Antigravity:
 		return [][]string{
-			{cliPlugin, "install", dir},
+			{cliPlugin, cliInstall, dir},
 			{cliPlugin, "enable", bundle.PluginName},
+		}
+	case bundle.Omp:
+		// `omp plugin marketplace add` is not idempotent: a second add of the
+		// same marketplace exits 1. registerOmpBundle therefore drives the
+		// steps from omp's own registry; this list is the manual fallback the
+		// instructions print and the reference for the update path.
+		return [][]string{
+			{cliPlugin, cliMarketplace, "add", dir},
+			{cliPlugin, cliInstall, bundle.PluginName + "@" + bundle.MarketplaceName},
 		}
 	default:
 		return nil
@@ -76,27 +96,46 @@ func bundleRegisterCommands(host bundle.Host, dir string) [][]string {
 }
 
 func bundleUpdateCommands(host bundle.Host, dir string) [][]string {
-	if host == bundle.Claude {
+	switch host {
+	case bundle.Claude:
 		return [][]string{
-			{cliPlugin, "marketplace", "update", bundle.MarketplaceName},
-			{cliPlugin, "update", bundle.PluginName + "@" + bundle.MarketplaceName},
+			{cliPlugin, cliMarketplace, "update", bundle.MarketplaceName},
+			{cliPlugin, cliUpdate, bundle.PluginName + "@" + bundle.MarketplaceName},
 		}
+	case bundle.Omp:
+		// Reinstalling a plugin the host already recorded needs --force
+		// (live-verified: `omp plugin install` is a no-op without it), and the
+		// cached catalog is refreshed first so a changed bundle is picked up.
+		return [][]string{
+			{cliPlugin, cliMarketplace, "update", bundle.MarketplaceName},
+			{cliPlugin, cliInstall, "--force", bundle.PluginName + "@" + bundle.MarketplaceName},
+		}
+	case bundle.Gemini, bundle.Antigravity:
+		// Their registration is idempotent, so it doubles as the update.
+		return bundleRegisterCommands(host, dir)
+	default:
+		return bundleRegisterCommands(host, dir)
 	}
-
-	return bundleRegisterCommands(host, dir)
 }
 
 func bundleUnregisterCommands(host bundle.Host, dir string) [][]string {
 	switch host {
 	case bundle.Claude:
 		return [][]string{
-			{cliPlugin, "uninstall", bundle.PluginName + "@" + bundle.MarketplaceName},
-			{cliPlugin, "marketplace", "rm", bundle.MarketplaceName},
+			{cliPlugin, cliUninstall, bundle.PluginName + "@" + bundle.MarketplaceName},
+			{cliPlugin, cliMarketplace, "rm", bundle.MarketplaceName},
 		}
 	case bundle.Gemini:
 		return [][]string{{"extensions", "unlink", dir}}
 	case bundle.Antigravity:
-		return [][]string{{cliPlugin, "uninstall", bundle.PluginName}}
+		return [][]string{{cliPlugin, cliUninstall, bundle.PluginName}}
+	case bundle.Omp:
+		// Both steps are guarded by the registry read in unregisterOmpBundle;
+		// the CLI errors when the plugin or the marketplace is already gone.
+		return [][]string{
+			{cliPlugin, cliUninstall, bundle.PluginName + "@" + bundle.MarketplaceName},
+			{cliPlugin, cliMarketplace, "remove", bundle.MarketplaceName},
+		}
 	default:
 		return nil
 	}
@@ -108,6 +147,8 @@ func bundleInstructions(host bundle.Host, dir, home string) string {
 		return fmt.Sprintf("run: claude plugin marketplace add %s && claude plugin install %s@%s", dir, bundle.PluginName, bundle.MarketplaceName)
 	case bundle.Gemini:
 		return "run: gemini extensions link " + dir
+	case bundle.Omp:
+		return fmt.Sprintf("run: omp plugin marketplace add %s && omp plugin install %s@%s", dir, bundle.PluginName, bundle.MarketplaceName)
 	default:
 		return fmt.Sprintf("link the plugin into an antigravity customization root: ln -s %s %s (CLI) or %s (IDE/2.0)",
 			dir,
@@ -122,6 +163,9 @@ func bundleUnregisterInstructions(host bundle.Host, dir, home string) string {
 		return fmt.Sprintf("run: claude plugin uninstall %s@%s && claude plugin marketplace rm %s", bundle.PluginName, bundle.MarketplaceName, bundle.MarketplaceName)
 	case bundle.Gemini:
 		return "run: gemini extensions unlink " + dir
+	case bundle.Omp:
+		return fmt.Sprintf("run: omp plugin uninstall %s@%s && omp plugin marketplace remove %s",
+			bundle.PluginName, bundle.MarketplaceName, bundle.MarketplaceName)
 	default:
 		return fmt.Sprintf("remove the plugin link first: %s, %s, then run beadle bundles disable antigravity",
 			filepath.Join(home, ".gemini", "antigravity-cli", "plugins", bundle.PluginName),
@@ -423,6 +467,8 @@ func (e *Engine) registerBundle(host bundle.Host, dir string, entry *state.Bundl
 		report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: %s CLI not found; register the bundle manually", host.Binary()))
 
 		return bundleGenerated, bundleInstructions(host, dir, e.home)
+	case host == bundle.Omp:
+		return e.registerOmpBundle(host, dir, entry, version, report)
 	case entry.Registered && entry.Version == version:
 		return bundleNoop, ""
 	case entry.Registered:
@@ -449,6 +495,180 @@ func (e *Engine) registerBundle(host bundle.Host, dir string, entry *state.Bundl
 
 		return bundleEnabled, ""
 	}
+}
+
+// ompRegistry is the part of omp's own plugin state the bundle guard reads:
+// whether the marketplace and the plugin are registered, and the version omp
+// recorded for the plugin.
+type ompRegistry struct {
+	Marketplace bool
+	Plugin      bool
+	Version     string
+}
+
+// ompBundleRegistry reads omp's marketplace registry and installed-plugin
+// registry under <ompRoot>. A missing file means the record is absent; a
+// malformed one is an error, because acting on unreadable state is how the
+// non-idempotent `omp plugin marketplace add` breaks a second run. Beadle only
+// reads these files — writing omp's state root would race omp's own installer,
+// which holds no cross-process lock.
+func (e *Engine) ompBundleRegistry() (ompRegistry, error) {
+	var registry ompRegistry
+
+	root := plugin.OmpRoot(e.home)
+
+	marketplaces, err := os.ReadFile(filepath.Join(root, ompMarketplacesFile)) //nolint:gosec // G304: the path is under the caller-provided home
+	switch {
+	case err == nil:
+		var doc struct {
+			Marketplaces []struct {
+				Name string `json:"name"`
+			} `json:"marketplaces"`
+		}
+
+		if err := json.Unmarshal(marketplaces, &doc); err != nil {
+			return registry, fmt.Errorf("parse %s: %w", ompMarketplacesFile, err)
+		}
+
+		for _, entry := range doc.Marketplaces {
+			if entry.Name == bundle.MarketplaceName {
+				registry.Marketplace = true
+			}
+		}
+	case !errors.Is(err, fs.ErrNotExist):
+		return registry, fmt.Errorf("read %s: %w", ompMarketplacesFile, err)
+	}
+
+	installed, err := os.ReadFile(filepath.Join(root, "plugins", ompInstalledFile)) //nolint:gosec // G304: the path is under the caller-provided home
+	switch {
+	case err == nil:
+		var doc struct {
+			Plugins map[string][]struct {
+				Version string `json:"version"`
+			} `json:"plugins"`
+		}
+
+		if err := json.Unmarshal(installed, &doc); err != nil {
+			return registry, fmt.Errorf("parse installed_plugins.json: %w", err)
+		}
+
+		for _, record := range doc.Plugins[ompBundleKey()] {
+			registry.Plugin = true
+			registry.Version = record.Version
+		}
+	case !errors.Is(err, fs.ErrNotExist):
+		return registry, fmt.Errorf("read installed_plugins.json: %w", err)
+	}
+
+	return registry, nil
+}
+
+// ompBundleKey is the plugin id omp uses for the rendered bundle.
+func ompBundleKey() string {
+	return bundle.PluginName + "@" + bundle.MarketplaceName
+}
+
+// ompBundleCommands plans the omp steps for one registration. The marketplace
+// is added only when omp does not know it — a repeated add exits non-zero — and
+// reinstalling a plugin the host already recorded needs --force.
+func ompBundleCommands(dir string, registered ompRegistry) [][]string {
+	var commands [][]string
+
+	if registered.Marketplace {
+		commands = append(commands, []string{cliPlugin, cliMarketplace, "update", bundle.MarketplaceName})
+	} else {
+		commands = append(commands, []string{cliPlugin, cliMarketplace, "add", dir})
+	}
+
+	return append(commands, []string{cliPlugin, cliInstall, "--force", ompBundleKey()})
+}
+
+// registerOmpBundle registers the omp bundle from omp's own state instead of
+// replaying a blind command list, and confirms the result by re-reading that
+// state: omp's installer is not transactional, so the recorded version is the
+// only proof of what the host will serve.
+func (e *Engine) registerOmpBundle(host bundle.Host, dir string, entry *state.BundleState, version string, report *Report) (string, string) {
+	registered, err := e.ompBundleRegistry()
+	if err != nil {
+		report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: cannot read the omp plugin registry: %v", err))
+
+		return bundleGenerated, bundleInstructions(host, dir, e.home)
+	}
+
+	if registered.Plugin && registered.Version == version {
+		entry.Registered = true
+		entry.Version = version
+
+		return bundleNoop, ""
+	}
+
+	if err := e.runBundleCommands(host, ompBundleCommands(dir, registered)); err != nil {
+		report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: registering %s failed: %v", host, err))
+
+		return bundleGenerated, err.Error()
+	}
+
+	confirmed, err := e.ompBundleRegistry()
+	if err != nil {
+		report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: cannot re-read the omp plugin registry: %v", err))
+
+		return bundleGenerated, err.Error()
+	}
+
+	if !confirmed.Plugin {
+		report.Warnings = append(report.Warnings, "bundles: the omp registry does not record "+ompBundleKey()+" after install")
+
+		return bundleGenerated, "omp plugin install did not record " + ompBundleKey()
+	}
+
+	if confirmed.Version != version {
+		report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: omp records version %s while the bundle is %s", confirmed.Version, version))
+	}
+
+	entry.Registered = true
+	entry.Version = version
+
+	return bundleEnabled, ""
+}
+
+// unregisterOmpBundle removes the omp bundle, skipping the steps omp's state
+// shows as already done: the CLI errors on an uninstall or a marketplace
+// removal that has nothing to act on.
+func (e *Engine) unregisterOmpBundle(dir string, report *Report) (bool, string) {
+	registered, err := e.ompBundleRegistry()
+	if err != nil {
+		report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: cannot read the omp plugin registry: %v", err))
+
+		return false, bundleUnregisterInstructions(bundle.Omp, dir, e.home)
+	}
+
+	var commands [][]string
+
+	if registered.Plugin {
+		commands = append(commands, []string{cliPlugin, cliUninstall, ompBundleKey()})
+	}
+
+	if registered.Marketplace {
+		commands = append(commands, []string{cliPlugin, cliMarketplace, "remove", bundle.MarketplaceName})
+	}
+
+	if len(commands) == 0 {
+		return true, ""
+	}
+
+	if err := e.runBundleCommands(bundle.Omp, commands); err != nil {
+		report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: unregistering omp failed: %v", err))
+
+		return false, err.Error()
+	}
+
+	if confirmed, err := e.ompBundleRegistry(); err == nil && confirmed.Plugin {
+		report.Warnings = append(report.Warnings, "bundles: the omp registry still records "+ompBundleKey())
+
+		return false, bundleUnregisterInstructions(bundle.Omp, dir, e.home)
+	}
+
+	return true, ""
 }
 
 func (e *Engine) bundleVerification(host bundle.Host, dir, version string, registered bool) (string, string) {
@@ -589,6 +809,10 @@ func (e *Engine) unregisterBundle(host bundle.Host, dir string, entry state.Bund
 
 		return true, ""
 	case entry.Registered:
+		if host == bundle.Omp {
+			return e.unregisterOmpBundle(dir, report)
+		}
+
 		if err := e.runBundleCommands(host, bundleUnregisterCommands(host, dir)); err != nil {
 			report.Warnings = append(report.Warnings, fmt.Sprintf("bundles: unregistering %s failed: %v", host, err))
 

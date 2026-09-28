@@ -10,7 +10,7 @@ How beadle moves configuration.
                    pull      │                          │      push
                  agent → vault                    vault → agent
                              │                          ▼
-   Claude Code · OpenCode · Gemini CLI · Cursor · Antigravity CLI · Codex CLI · Pi · Kilo Code · DeepSeek Harness
+   Claude Code · OpenCode · Gemini CLI · Cursor · Antigravity CLI · Codex CLI · Pi · Kilo Code · DeepSeek Harness · oh-my-pi (omp)
 ```
 
 A sync pulls each agent's files into the vault, merges them against that
@@ -83,7 +83,8 @@ differs from the canon, `doctor` warns that the host still loads the stale copy
 ## Plugins are read from every host
 
 A plugin installed in any supported agent — Claude Code, Codex, Gemini CLI
-extensions, Antigravity, Cursor — is parked in the vault as
+extensions, Antigravity, Cursor, oh-my-pi (read-only: omp's installer keeps no
+cross-process lock, so beadle never writes `~/.omp/plugins`) — is parked in the vault as
 `plugins/<origin>/<name>/current`: a symlink into the host's own install
 directory plus an ownership ledger that records the source host. The pivot
 only accepts install paths from the roots of that host, and the farms resolve
