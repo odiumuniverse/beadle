@@ -11,9 +11,15 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/frontmatter"
 )
 
-// disableModelInvocationKey is the frontmatter key of the model-invocation
-// switch, shared by the command codecs and the DSH skill codec.
-const disableModelInvocationKey = "disable-model-invocation"
+// Frontmatter keys of the command codecs, shared with the DSH skill codec.
+const (
+	// disableModelInvocationKey is the model-invocation switch.
+	disableModelInvocationKey = "disable-model-invocation"
+	// argumentHintKey is the usage hint shown next to the command.
+	argumentHintKey = "argument-hint"
+	// argumentsKey declares the named arguments a template may use.
+	argumentsKey = "arguments"
+)
 
 // commandCodec reads and writes one markdown host's command files. The hosts
 // share the frontmatter schema and differ in the template dialect and in the
@@ -66,11 +72,11 @@ func (c commandCodec) managed() []string {
 	out := []string{descriptionKey}
 
 	if c.hint {
-		out = append(out, "argument-hint")
+		out = append(out, argumentHintKey)
 	}
 
 	if c.arguments {
-		out = append(out, "arguments")
+		out = append(out, argumentsKey)
 	}
 
 	if c.model {
@@ -150,11 +156,11 @@ func (c commandCodec) fields(doc command.Document, _ []byte) ([]frontmatter.Fiel
 	}
 
 	if c.hint && doc.ArgumentHint != "" {
-		fields = append(fields, frontmatter.Field{Key: "argument-hint", Value: doc.ArgumentHint})
+		fields = append(fields, frontmatter.Field{Key: argumentHintKey, Value: doc.ArgumentHint})
 	}
 
 	if c.arguments && len(doc.Arguments) > 0 {
-		fields = append(fields, frontmatter.Field{Key: "arguments", Value: doc.Arguments})
+		fields = append(fields, frontmatter.Field{Key: argumentsKey, Value: doc.Arguments})
 	}
 
 	if c.model && doc.Model != "" {
@@ -190,8 +196,8 @@ func (c commandCodec) audit(doc command.Document) []string {
 		set       bool
 		supported bool
 	}{
-		{"argument-hint", doc.ArgumentHint != "", c.hint},
-		{"arguments", len(doc.Arguments) > 0, c.arguments},
+		{argumentHintKey, doc.ArgumentHint != "", c.hint},
+		{argumentsKey, len(doc.Arguments) > 0, c.arguments},
 		{modelKey, doc.Model != "", c.model},
 		{disableModelInvocationKey, doc.DisableModelInvocation != nil, c.disable},
 	} {

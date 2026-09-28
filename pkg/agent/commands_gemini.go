@@ -144,8 +144,8 @@ func (geminiCommandCodec) audit(doc command.Document) []string {
 		key string
 		set bool
 	}{
-		{"argument-hint", doc.ArgumentHint != ""},
-		{"arguments", len(doc.Arguments) > 0},
+		{argumentHintKey, doc.ArgumentHint != ""},
+		{argumentsKey, len(doc.Arguments) > 0},
 		{modelKey, doc.Model != ""},
 		{disableModelInvocationKey, doc.DisableModelInvocation != nil},
 	} {

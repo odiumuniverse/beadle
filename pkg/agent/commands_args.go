@@ -95,6 +95,14 @@ var commandArgsOmp = commandArgs{
 	all: commandAllArgs, positional: true, shell: shellNone, file: fileNone,
 }
 
+// commandArgsCursor is the Cursor dialect, read out of the host's own
+// expander (cursor-agent 2026.06.15, `custom-commands.ts`): `$ARGUMENTS` and
+// 1-based `$1..$99` positionals, nothing else — no named arguments, no
+// defaults, no shell blocks, no file references.
+var commandArgsCursor = commandArgs{
+	all: commandAllArgs, positional: true, shell: shellNone, file: fileNone,
+}
+
 // commandArgsCodex is the Codex prompts dialect (pull-only): 1-based and
 // named, no shell or file expansion inside templates.
 var commandArgsCodex = commandArgs{

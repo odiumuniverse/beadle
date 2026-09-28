@@ -102,6 +102,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.farmPresentationIssues(active, ledger)...)
 	issues = append(issues, e.bundleIssues(ctx)...)
 	issues = append(issues, e.digestIssues(active, st)...)
+	issues = append(issues, e.surfaceOffIssues(ctx, st, active)...)
 	issues = append(issues, e.memorySecretIssues()...)
 	issues = append(issues, e.rulesSecretIssues()...)
 	issues = append(issues, e.permissionCanonIssues()...)
@@ -123,6 +124,61 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.OmpIssues()...)
 
 	return issues, nil
+}
+
+// surfaceOffIssues reports the surfaces a user turned off while the files
+// beadle synced earlier are still on disk. beadle never deletes on a mode flip
+// — nothing goes without the user's decision — so the doctor says what remains
+// and how to get back, once per agent and kind.
+//
+// The count comes from the state's base (the content beadle itself wrote at the
+// last sync) intersected with what the surface reads now: a foreign file the
+// user placed in the directory is never beadle's to report, and a file the user
+// already removed is not counted as remaining.
+func (e *Engine) surfaceOffIssues(ctx context.Context, st *state.State, active []*agent.Agent) []Issue {
+	var issues []Issue
+
+	for _, a := range active {
+		for _, surface := range a.Surfaces {
+			k := surface.Kind()
+
+			if e.config.ModeFor(a.ID, k, surface.Traits().DefaultMode) != config.ModeOff {
+				continue
+			}
+
+			base, ok := st.Base(k, a.ID)
+			if !ok || len(base) == 0 {
+				continue
+			}
+
+			snap, err := surface.Read(ctx)
+			if err != nil {
+				continue
+			}
+
+			remaining := 0
+
+			for key := range base {
+				if _, present := snap.Items[key]; present {
+					remaining++
+				}
+			}
+
+			if remaining == 0 {
+				continue
+			}
+
+			issues = append(issues, Issue{
+				Severity: SeverityInfo, Kind: k, Agent: a.ID,
+				Message: fmt.Sprintf(
+					"%s %s: surface is off; %d file(s) beadle synced earlier remain in %s "+
+						"(remove them by hand, or re-enable with `beadle agents mode %s %s sync`)",
+					a.ID, k, remaining, surface.Path(), a.ID, k),
+			})
+		}
+	}
+
+	return issues
 }
 
 var daemonStatusRunner secret.Runner = secret.ExecRunner{}
@@ -1658,8 +1714,8 @@ func (e *Engine) openCodeInlineAgentIssues() []Issue {
 }
 
 // commandIssues reports the canonical command diagnostics: host notes,
-// the Claude skill-over-command precedence, the deprecated Codex prompts,
-// the unmanaged Cursor directory and secret-like canon lines.
+// the Claude skill-over-command precedence, the deprecated Codex prompts
+// and secret-like canon lines.
 func (e *Engine) commandIssues(active []*agent.Agent) []Issue {
 	items, _, err := e.loadVault(kind.Commands)
 	if err != nil {
@@ -1680,7 +1736,6 @@ func (e *Engine) commandIssues(active []*agent.Agent) []Issue {
 
 	issues = append(issues, e.claudeCommandSkillIssues(items)...)
 	issues = append(issues, e.codexPromptIssues(active)...)
-	issues = append(issues, e.cursorCommandIssues()...)
 
 	for _, key := range slices.Sorted(maps.Keys(items)) {
 		if hits := secret.ScanText(items[key]); len(hits) > 0 {
@@ -1738,20 +1793,4 @@ func (e *Engine) codexPromptIssues(active []*agent.Agent) []Issue {
 	}
 
 	return issues
-}
-
-// cursorCommandIssues reports the unmanaged Cursor commands directory.
-func (e *Engine) cursorCommandIssues() []Issue {
-	if e.home == "" {
-		return nil
-	}
-
-	if _, err := os.Stat(filepath.Join(e.home, ".cursor", "commands")); err == nil {
-		return []Issue{{
-			Severity: SeverityInfo, Kind: kind.Commands, Agent: agent.CursorID,
-			Message: "~/.cursor/commands exists; cursor file commands are not supported yet and are left untouched",
-		}}
-	}
-
-	return nil
 }
