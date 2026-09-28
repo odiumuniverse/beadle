@@ -201,3 +201,85 @@ func TestOrphanPivotRetiredWithTheOptInAndTheHomeIsAdopted(t *testing.T) {
 		})
 	})
 }
+
+// farmLinkIntoRetired plants a farm-shaped host link into a retired plugin key
+// and returns the link path.
+func farmLinkIntoRetired(t *testing.T, f *fixture, skill string) string {
+	t.Helper()
+
+	link := filepath.Join(claudeSkillsDir(f.home), skill)
+
+	So(os.MkdirAll(filepath.Dir(link), 0o750), ShouldBeNil)
+	So(os.Symlink(filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current", "skills", skill), link), ShouldBeNil)
+
+	write(t, f.vault.PluginsLedgerPath(),
+		`{"version":1,"plugins":{"acme/tool":{"version":"1.0.0","target":"acme/tool","retired_at":"2026-01-01T00:00:00Z"}}}`)
+
+	return link
+}
+
+func TestOrphanFarmLinkKeptOnAForeignHome(t *testing.T) {
+	Convey("Given a link into a retired key in a vault from another home", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		link := farmLinkIntoRetired(t, f, "alpha")
+
+		st, err := state.Load(f.vault.StatePath())
+		So(err, ShouldBeNil)
+
+		st.Home = "/somewhere/else"
+		So(st.Save(f.vault.StatePath()), ShouldBeNil)
+
+		f.sync(t)
+
+		Convey("Then the link survives", func() {
+			_, err := os.Lstat(link)
+			So(err, ShouldBeNil)
+		})
+	})
+}
+
+func TestOrphanFarmLinkPrunedOnTheRecordedHome(t *testing.T) {
+	Convey("Given a link into a retired key in a vault from this home", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		link := farmLinkIntoRetired(t, f, "alpha")
+
+		f.sync(t)
+
+		Convey("Then it is pruned as before", func() {
+			_, err := os.Lstat(link)
+			So(os.IsNotExist(err), ShouldBeTrue)
+		})
+	})
+}
+
+func TestUnreadableLedgerKeepsLinks(t *testing.T) {
+	Convey("Given an unreadable plugin ledger and a dangling pivot link", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+		enableAgents(t, f, agent.ClaudeCodeID)
+
+		link := filepath.Join(claudeSkillsDir(f.home), "alpha")
+		So(os.MkdirAll(filepath.Dir(link), 0o750), ShouldBeNil)
+		So(os.Symlink(filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current", "skills", "alpha"), link), ShouldBeNil)
+
+		write(t, f.vault.PluginsLedgerPath(), "{ this is not json")
+
+		report := f.sync(t)
+
+		Convey("Then nothing is removed: an unreadable ledger proves nothing is gone", func() {
+			_, err := os.Lstat(link)
+			So(err, ShouldBeNil)
+			So(strings.Join(report.Warnings, "\n"), ShouldContainSubstring, "cannot read the plugin ledger")
+		})
+	})
+}

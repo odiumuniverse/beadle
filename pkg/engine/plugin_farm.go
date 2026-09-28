@@ -155,7 +155,7 @@ func (e *Engine) syncPluginSurfaces(ctx context.Context, report *Report, active 
 	// for the links its own plan owns) and covers what the plan never visits:
 	// a pull-mode host's skills dir and the shared agents home. It is
 	// state-based, so it also repairs what an earlier retire left behind.
-	if removed, linkWarns := e.repairPluginLinks(active); removed > 0 || len(linkWarns) > 0 {
+	if removed, linkWarns := e.repairPluginLinks(active, orphansSafe); removed > 0 || len(linkWarns) > 0 {
 		report.Warnings = append(report.Warnings, linkWarns...)
 
 		if removed > 0 {
@@ -168,6 +168,13 @@ func (e *Engine) syncPluginSurfaces(ctx context.Context, report *Report, active 
 // that writes agents, regardless of the skill modes.
 func (e *Engine) pruneLegacyOrphanLinks(orphansSafe bool) ([]FarmResult, []string) {
 	if e.home == "" || !orphansSafe {
+		return nil, nil
+	}
+
+	// This pass removes host links too, so the home guard covers it exactly
+	// like the sweep: a vault that belongs to another home is left alone.
+	// The sync already reported why (retireableRemoved), so no second warning.
+	if !e.pluginHomeGuard().Retireable() {
 		return nil, nil
 	}
 

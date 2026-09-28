@@ -27,11 +27,18 @@ var pluginLinkKinds = []kind.ID{kind.Skills, kind.Subagents, kind.Commands}
 // or heal converges. Only symlinks under the vault's own plugin tree are
 // touched, and only when their target is gone; every other entry, including
 // foreign files and live links, is left alone.
-func (e *Engine) repairPluginLinks(active []*agent.Agent) (int, []string) {
+func (e *Engine) repairPluginLinks(active []*agent.Agent, ledgerTrusted bool) (int, []string) {
 	root := e.vault.PluginsDir()
 
 	if root == "" {
 		return 0, nil
+	}
+
+	if !ledgerTrusted {
+		// The ledger was unreadable this pass and only rebuilt from the
+		// registry: an empty ledger is not proof that a plugin is gone, and
+		// removing links against it would delete every farmed skill.
+		return 0, []string{"plugins: cannot read the plugin ledger; no stale link is removed"}
 	}
 
 	// A vault that belongs to another home is not repaired: the sweep only
@@ -46,8 +53,8 @@ func (e *Engine) repairPluginLinks(active []*agent.Agent) (int, []string) {
 	// its links even when the pivot is not on disk at this instant.
 	live, ok := e.livePluginKeys()
 	if !ok {
-		// An unreadable ledger proves nothing is gone: removing links against
-		// it could delete the only working copy of a skill.
+		// The same rule one step later: a ledger that fails to load between
+		// the passes proves nothing is gone either.
 		return 0, []string{"plugins: cannot read the plugin ledger; no stale link is removed"}
 	}
 
