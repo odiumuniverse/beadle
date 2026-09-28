@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
@@ -187,7 +188,7 @@ func TestReadAllOMPMissingInstallPathWarns(t *testing.T) {
 	})
 }
 
-func TestReadAllOMPHooksAreReportedNotParsed(t *testing.T) {
+func TestReadAllOMPHookModulesAreASeparateSurface(t *testing.T) {
 	Convey("Given an omp plugin that ships hook code modules", t, func() {
 		t.Setenv("PI_CONFIG_DIR", "")
 
@@ -202,12 +203,57 @@ func TestReadAllOMPHooksAreReportedNotParsed(t *testing.T) {
 		Convey("When every host is read", func() {
 			manifest, err := plugin.ReadAll(home)
 
-			Convey("Then the modules are named and the Claude hook file is not read", func() {
+			Convey("Then the modules resolve and the Claude hook file is not read", func() {
 				So(err, ShouldBeNil)
 				So(manifest.Plugins, ShouldHaveLength, 1)
 				So(manifest.Plugins[0].Hooks, ShouldBeEmpty)
-				So(manifest.Warnings, ShouldHaveLength, 1)
-				So(manifest.Warnings[0], ShouldContainSubstring, "code modules, not a command-hook file")
+				So(manifest.Warnings, ShouldBeEmpty)
+
+				modules, warns := plugin.HookModules(plugin.SourceOMP, dir)
+				So(warns, ShouldBeEmpty)
+				So(modules, ShouldHaveLength, 1)
+				So(modules[0].Phase, ShouldEqual, "pre")
+				So(modules[0].Name, ShouldEqual, "guard.ts")
+			})
+		})
+	})
+}
+
+func TestOMPHookModulesFilterExtensions(t *testing.T) {
+	Convey("Given hook directories with a module, a stray extension and a nested dir", t, func() {
+		dir := t.TempDir()
+
+		writeFile(t, filepath.Join(dir, "hooks", "pre", "a.ts"), "a")
+		writeFile(t, filepath.Join(dir, "hooks", "post", "b.js"), "b")
+		writeFile(t, filepath.Join(dir, "hooks", "pre", "readme.md"), "nope")
+		writeFile(t, filepath.Join(dir, "hooks", "pre", "nested", "c.ts"), "nope")
+
+		Convey("When the modules are listed", func() {
+			modules, warns := plugin.HookModules(plugin.SourceOMP, dir)
+
+			Convey("Then only the .ts/.js files load and the rest is reported", func() {
+				So(modules, ShouldHaveLength, 2)
+				So(modules[0].Phase, ShouldEqual, "pre")
+				So(modules[0].Name, ShouldEqual, "a.ts")
+				So(modules[1].Phase, ShouldEqual, "post")
+				So(modules[1].Name, ShouldEqual, "b.js")
+
+				joined := strings.Join(warns, "\n")
+				So(joined, ShouldContainSubstring, "readme.md")
+				So(joined, ShouldContainSubstring, "nested")
+			})
+		})
+	})
+}
+
+func TestHookModulesOnlyForOMP(t *testing.T) {
+	Convey("Given a Claude plugin directory", t, func() {
+		Convey("When hook modules are listed for it", func() {
+			modules, warns := plugin.HookModules(plugin.SourceClaudeCode, t.TempDir())
+
+			Convey("Then there is no module surface", func() {
+				So(modules, ShouldBeEmpty)
+				So(warns, ShouldBeEmpty)
 			})
 		})
 	})

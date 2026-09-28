@@ -195,6 +195,15 @@ type SkillTree struct {
 	Stamp       time.Time `json:"stamp"`
 }
 
+// HookModule is one hook module beadle copied into a host's module directory:
+// the digest of the bytes it wrote and the plugin key they came from.
+type HookModule struct {
+	Digest cas.Hash `json:"digest"`
+	Source string   `json:"source,omitempty"`
+	Phase  string   `json:"phase,omitempty"`
+	Name   string   `json:"name,omitempty"`
+}
+
 type State struct {
 	Version   int                         `json:"version"`
 	Bases     map[kind.ID]map[string]Base `json:"bases,omitempty"`
@@ -214,6 +223,12 @@ type State struct {
 	// user-level hooks file, so a later sync replaces or removes exactly its
 	// own entries and leaves foreign hooks alone.
 	HookRenders map[string][]string `json:"hook_renders,omitempty"`
+	// HookModules records the hook module files beadle copied into each host's
+	// module directory, keyed by the absolute target path: the digest of the
+	// bytes it wrote and the plugin key they came from. A file whose digest no
+	// longer matches the record is foreign: it is never overwritten or removed,
+	// and a withdrawal removes exactly the recorded modules.
+	HookModules map[string]HookModule `json:"hook_modules,omitempty"`
 	// BundleOptOut lists hosts the user disabled explicitly: the unattended
 	// attempt leaves them alone until `beadle bundles enable <host>`.
 	BundleOptOut []string `json:"bundle_opt_out,omitempty"`

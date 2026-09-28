@@ -23,6 +23,16 @@ type artifactFile struct {
 	Path string
 }
 
+// HookModuleFile is one host hook module a plugin carries: a code file the
+// host imports at session start (omp's hooks/{pre,post}/*.{ts,js}). A hook
+// module is not a canon kind — the bytes are copied verbatim — so the reader
+// records only which phase it belongs to, its file name and where it lives.
+type HookModuleFile struct {
+	Phase string // pre|post
+	Name  string // file name with its extension
+	Path  string // absolute source path
+}
+
 // pluginArtifacts is the resolved payload of one installed plugin: what the
 // readers report in the unified model and what the dedup digest hashes. The
 // Dir fields are plugin-relative directories the payload lives in: a manifest
@@ -34,6 +44,9 @@ type pluginArtifacts struct {
 	Commands []artifactFile
 	MCP      []string
 	Hooks    []string
+	// HookModules are the host hook modules the payload carries (omp only):
+	// code beadle copies byte-for-byte into the host's module directory.
+	HookModules []HookModuleFile
 
 	SkillDir   string
 	AgentDir   string
@@ -324,6 +337,12 @@ func ArtifactDigest(source, installPath string) (string, error) {
 
 	for _, name := range artifacts.Hooks {
 		lines = append(lines, "hook "+name)
+	}
+
+	// The module bytes join the digest: two plugins whose hook modules differ
+	// are not duplicates.
+	for _, module := range artifacts.HookModules {
+		lines = append(lines, "hook-module "+module.Phase+"/"+module.Name+" "+fileDigest(module.Path))
 	}
 
 	// Names alone would call two plugins identical while their hook commands

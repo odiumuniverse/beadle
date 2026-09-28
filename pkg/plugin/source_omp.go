@@ -1,7 +1,11 @@
 package plugin
 
 import (
+	"cmp"
+	"errors"
+	"io/fs"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -201,20 +205,30 @@ func readOMPNodeModules(root string, covered map[string]struct{}) ([]Plugin, []s
 	return plugins, warns
 }
 
+// ompHookPhases are the two module directories omp discovers under hooks/: a
+// file directly in hooks/ is ignored, and so is anything nested deeper.
+var ompHookPhases = []string{"pre", "post"}
+
+// ompHookModuleExts are the module extensions omp auto-discovers.
+var ompHookModuleExts = []string{".ts", ".js"}
+
 // ompArtifacts resolves an omp plugin payload: skills/<name>/SKILL.md,
 // agents/*.md, commands/*.md (omp loads a non-recursive *.md glob), the
 // Claude-compatible .mcp.json, and the hook modules. omp has no command-hook
-// file, so the hooks are reported rather than presented; rules/, tools/ and
-// package.json#omp.extensions carry no unified kind and are not presented
-// either.
+// file, so the declarative Hooks list stays empty and the modules are the
+// separate surface below. rules/, tools/ and package.json#omp.extensions carry
+// no unified kind and are not presented either.
 func ompArtifacts(installPath string) (pluginArtifacts, []string) {
+	modules, moduleWarns := HookModules(SourceOMP, installPath)
+
 	out := pluginArtifacts{
-		Skills:   scanSkillDirs(filepath.Join(installPath, skillsDir)),
-		Agents:   scanNamedFiles(filepath.Join(installPath, agentsDir), []string{markdownExt}, false),
-		Commands: scanNamedFiles(filepath.Join(installPath, commandsDir), []string{markdownExt}, false),
+		Skills:      scanSkillDirs(filepath.Join(installPath, skillsDir)),
+		Agents:      scanNamedFiles(filepath.Join(installPath, agentsDir), []string{markdownExt}, false),
+		Commands:    scanNamedFiles(filepath.Join(installPath, commandsDir), []string{markdownExt}, false),
+		HookModules: modules,
 	}
 
-	var warns []string
+	warns := slices.Clone(moduleWarns)
 
 	hooks, hookWarns, err := ReadHooksFor(SourceOMP, installPath)
 	if err != nil {
@@ -231,6 +245,60 @@ func ompArtifacts(installPath string) (pluginArtifacts, []string) {
 	out.MCP = mcp
 
 	return out, warns
+}
+
+// HookModules lists the hook module files one installed plugin carries for its
+// host: omp's hooks/{pre,post}/*.{ts,js}. Every other host has no module
+// surface, so the result is empty. The files are the deliverable artifacts of
+// the module surface: beadle copies them byte-for-byte, so the caller reads
+// each Path and hashes the bytes.
+func HookModules(source, installPath string) ([]HookModuleFile, []string) {
+	if source != SourceOMP {
+		return nil, nil
+	}
+
+	var (
+		modules []HookModuleFile
+		warns   []string
+	)
+
+	for _, phase := range ompHookPhases {
+		dir := filepath.Join(installPath, hooksDir, phase)
+
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+
+			warns = append(warns, warnf(SourceOMP, "plugin %s: cannot read hooks/%s: %v", installPath, phase, err))
+
+			continue
+		}
+
+		for _, entry := range entries {
+			name := entry.Name()
+
+			switch {
+			case entry.IsDir():
+				warns = append(warns, warnf(SourceOMP,
+					"plugin %s: hooks/%s/%s is a directory; omp loads files only", installPath, phase, name))
+			case !slices.Contains(ompHookModuleExts, filepath.Ext(name)):
+				warns = append(warns, warnf(SourceOMP,
+					"plugin %s: hooks/%s/%s is not a .ts/.js module omp discovers; not delivered", installPath, phase, name))
+			default:
+				modules = append(modules, HookModuleFile{Phase: phase, Name: name, Path: filepath.Join(dir, name)})
+			}
+		}
+	}
+
+	// pre loads before post, so it sorts first; within a phase the names sort.
+	slices.SortFunc(modules, func(a, b HookModuleFile) int {
+		return cmp.Or(cmp.Compare(slices.Index(ompHookPhases, a.Phase), slices.Index(ompHookPhases, b.Phase)),
+			strings.Compare(a.Name, b.Name))
+	})
+
+	return modules, warns
 }
 
 // ompPluginMetaCandidate is the position of .omp-plugin/plugin.json in the

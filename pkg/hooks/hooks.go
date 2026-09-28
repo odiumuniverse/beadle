@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/odiumuniverse/beadle/pkg/cas"
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
 )
@@ -21,6 +22,35 @@ const MaxTimeout = 600
 // SourcePluginPrefix marks a canon hook approved from an installed plugin;
 // the rest of the value is the plugin key (<marketplace>/<name>).
 const SourcePluginPrefix = "plugin:"
+
+// HookModulePrefix marks an approval entry for a host hook module. A module is
+// code with no declarative entry, so it shares the hooks approval list but
+// keys its consent by the module identity and the digest of its bytes: a
+// changed module is a new key and asks for consent again. The value after the
+// prefix is "<phase>/<file>@<digest>#<plugin key>".
+const HookModulePrefix = "hook-module:"
+
+// HookModuleKey builds the consent key of one hook module: its plugin key, the
+// phase and file name, and the digest of the bytes a delivery would write.
+func HookModuleKey(pluginKey, phase, file string, digest cas.Hash) string {
+	return HookModulePrefix + phase + "/" + file + "@" + string(digest) + "#" + pluginKey
+}
+
+// HookModulePlugin returns the plugin key an approved hook module belongs to,
+// or false when the entry is not a hook module approval.
+func HookModulePlugin(entry string) (string, bool) {
+	body, ok := strings.CutPrefix(entry, HookModulePrefix)
+	if !ok {
+		return "", false
+	}
+
+	_, key, ok := strings.Cut(body, "#")
+	if !ok || key == "" {
+		return "", false
+	}
+
+	return key, true
+}
 
 type Hook struct {
 	Event   string `json:"event"`

@@ -196,35 +196,15 @@ func manifestHookField(path string) (json.RawMessage, bool, error) {
 	return manifest.Hooks, len(manifest.Hooks) > 0, nil
 }
 
-// readOmpHooks reports omp's hook surface: it has no declarative command-hook
-// file. omp hooks are TypeScript/JavaScript modules that default-export a
-// factory (hooks/pre/*.ts and hooks/post/*.ts, one level under hooks/; omp
-// loads them as extension modules), so a command hook has nowhere to live and
-// the canon's approved hooks cannot be delivered to a plugin. A plugin that
-// ships such modules is named instead of silently losing them.
-func readOmpHooks(installPath string) (Hooks, []string, error) {
-	var phases []string
-
-	for _, phase := range []string{"pre", "post"} {
-		if dirHasEntries(filepath.Join(installPath, hooksDir, phase)) {
-			phases = append(phases, phase)
-		}
-	}
-
-	if len(phases) == 0 {
-		return nil, nil, nil
-	}
-
-	return nil, []string{warnf(SourceOMP, "plugin %s: hooks/%s holds code modules, not a command-hook file; its hooks are not presented",
-		installPath, strings.Join(phases, ", hooks/"))}, nil
-}
-
-// dirHasEntries reports whether path holds at least one entry. Hook modules
-// are files (hooks/pre/*.ts), so a directory check is not enough.
-func dirHasEntries(path string) bool {
-	entries, err := os.ReadDir(path)
-
-	return err == nil && len(entries) > 0
+// readOmpHooks reports omp's declarative hook surface: omp has none. Its hooks
+// are TypeScript/JavaScript modules that default-export a factory
+// (hooks/pre/*.ts and hooks/post/*.ts, one level under hooks/), so a command
+// hook has nowhere to live and the canon's approved hooks cannot be delivered
+// to an omp plugin. The modules are a separate surface of their own — the
+// plugin reader lists them through HookModules and the engine copies them —
+// so nothing is silently lost here and no warning is owed.
+func readOmpHooks(_ string) (Hooks, []string, error) {
+	return nil, nil, nil
 }
 
 // readCursorHooks reads the Cursor hook locations: the .cursor-plugin
