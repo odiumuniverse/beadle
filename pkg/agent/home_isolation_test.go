@@ -3,6 +3,7 @@ package agent_test
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,8 +11,13 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
-// isolatedHome is the temp home TestMain pins the environment to.
-var isolatedHome string
+// isolatedHome is the temp home TestMain pins the environment to, and
+// isolatedBinDir the PATH it pins: a bin directory of the suite's own holding
+// git and no agent CLI.
+var (
+	isolatedHome   string
+	isolatedBinDir string
+)
 
 // isolateTestHome pins HOME, BEADLE_HOME, DSH_HOME, an empty
 // DSH_AGENTS_HOME and the omp root/profile environment to a temp directory
@@ -40,6 +46,15 @@ func isolateTestHome(m *testing.M) int {
 
 	defer func() { _ = os.RemoveAll(home) }()
 
+	dir, path, err := isolatedTestBinDir()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "create test bin dir:", err)
+
+		return 1
+	}
+
+	defer func() { _ = os.RemoveAll(dir) }()
+
 	for name, value := range map[string]string{
 		"HOME":                home,
 		"BEADLE_HOME":         filepath.Join(home, ".beadle"),
@@ -50,6 +65,7 @@ func isolateTestHome(m *testing.M) int {
 		"PI_CODING_AGENT_DIR": "",
 		"OMP_PROFILE":         "",
 		"PI_PROFILE":          "",
+		"PATH":                path,
 	} {
 		//nolint:usetesting // TestMain cannot use t.Setenv; tests override per test
 		if err := os.Setenv(name, value); err != nil {
@@ -60,12 +76,42 @@ func isolateTestHome(m *testing.M) int {
 	}
 
 	isolatedHome = home
+	isolatedBinDir = path
 
 	return m.Run()
 }
 
 func TestMain(m *testing.M) {
 	os.Exit(isolateTestHome(m))
+}
+
+// isolatedTestBinDir builds the PATH the suite runs with: the suite's own bin
+// directory — holding git and no agent CLI — followed by the two directories the
+// POSIX tools live in. This package's Detect functions fall back to
+// exec.LookPath when a host's home directory is missing, so without the pin a
+// host CLI installed on the machine running the suite would change what Detect
+// answers (and, with it, every test that calls it). The system directories stay
+// because the stubs the tests install are shell scripts that call
+// grep/cut/head themselves.
+//
+// It returns the directory to remove and the PATH value to pin.
+func isolatedTestBinDir() (dir, path string, err error) {
+	dir, err = os.MkdirTemp("", "beadle-agent-test-bin") //nolint:usetesting // TestMain has no *testing.T to hang t.TempDir on
+	if err != nil {
+		return "", "", err
+	}
+
+	path = dir + ":/usr/bin:/bin"
+
+	// git is linked in when the machine has one; a box without git simply runs
+	// the suite with no history, which the tests already tolerate.
+	if git, lookErr := exec.LookPath("git"); lookErr == nil {
+		if err := os.Symlink(git, filepath.Join(dir, "git")); err != nil {
+			return "", "", err
+		}
+	}
+
+	return dir, path, nil
 }
 
 func TestSuiteHomeIsolation(t *testing.T) {
@@ -99,6 +145,21 @@ func TestSuiteHomeIsolation(t *testing.T) {
 				// (a Linux CI runner exports one) would redirect the suite
 				// into a real config tree.
 				So(os.Getenv("XDG_CONFIG_HOME"), ShouldBeEmpty)
+
+				// PATH is pinned to a bin directory of the suite's own: the
+				// Detect functions fall back to exec.LookPath, so a host CLI
+				// installed on the machine running the suite would otherwise
+				// change what Detect answers.
+				So(os.Getenv("PATH"), ShouldEqual, isolatedBinDir)
+
+				// dshBinary and ompBinary (pkg/agent/dsh.go, omp.go) are
+				// unexported, so the names the Detect fallbacks probe are
+				// spelled here.
+				for _, binary := range []string{"dsh", "omp"} {
+					path, lookErr := exec.LookPath(binary)
+					So(lookErr, ShouldNotBeNil)
+					So(path, ShouldBeEmpty)
+				}
 			})
 		})
 	})

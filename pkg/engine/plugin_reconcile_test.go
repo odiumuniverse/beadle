@@ -215,6 +215,20 @@ func startWorker(t *testing.T, worker func(stop <-chan struct{})) func() {
 	return stopWorker
 }
 
+// waitForReader blocks until the concurrent pivot reader has completed one
+// observation, so the writer cannot outrun it and leave the test asserting over
+// an empty sample. A reader that dies before its first read would hang here, so
+// the wait is bounded and the failure is the test's own.
+func waitForReader(t *testing.T, ready <-chan struct{}) {
+	t.Helper()
+
+	select {
+	case <-ready:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the concurrent pivot reader never completed an observation")
+	}
+}
+
 func countPath(paths []string, path string) int {
 	count := 0
 
@@ -316,6 +330,15 @@ func TestPluginReconcileReadersSeeOldOrNew(t *testing.T) {
 			mu.Unlock()
 		}
 
+		// The reader proves it has completed a whole observation before the
+		// upgrade starts. Without that handshake the assertion below races the
+		// scheduler: on a loaded Linux box the writer can finish both syncs
+		// before the reader is scheduled once, and the test then fails on an
+		// empty `seen` even though nothing about the pivot was wrong.
+		ready := make(chan struct{})
+
+		var reading sync.Once
+
 		stopReader := startWorker(t, func(stop <-chan struct{}) {
 			for {
 				select {
@@ -338,8 +361,11 @@ func TestPluginReconcileReadersSeeOldOrNew(t *testing.T) {
 				}
 
 				record(link)
+				reading.Do(func() { close(ready) })
 			}
 		})
+
+		waitForReader(t, ready)
 
 		v2 := pluginTree(t, f.home, "acme", "tool", "2.0.0")
 
