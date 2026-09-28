@@ -173,8 +173,8 @@ func TestInitAutoEnablesBundles(t *testing.T) {
 			Convey("And the file kinds stay on", func() {
 				cfg, err := config.Load(filepath.Join(home, ".beadle", "config.json"))
 				So(err, ShouldBeNil)
-				So(cfg.ModeFor("claude-code", kind.Skills, config.ModeSync), ShouldEqual, config.ModeSync)
-				So(cfg.ModeFor("claude-code", kind.MCP, config.ModeSync), ShouldEqual, config.ModeSync)
+				So(cfg.ModeFor("claude", kind.Skills, config.ModeSync), ShouldEqual, config.ModeSync)
+				So(cfg.ModeFor("claude", kind.MCP, config.ModeSync), ShouldEqual, config.ModeSync)
 			})
 		})
 	})
@@ -203,8 +203,8 @@ func TestInitAutoEnableVerifiedFlipsModesInTable(t *testing.T) {
 
 				cfg, err := config.Load(filepath.Join(home, ".beadle", "config.json"))
 				So(err, ShouldBeNil)
-				So(cfg.ModeFor("claude-code", kind.Skills, config.ModeSync), ShouldEqual, config.ModeOff)
-				So(cfg.ModeFor("claude-code", kind.MCP, config.ModeSync), ShouldEqual, config.ModeOff)
+				So(cfg.ModeFor("claude", kind.Skills, config.ModeSync), ShouldEqual, config.ModeOff)
+				So(cfg.ModeFor("claude", kind.MCP, config.ModeSync), ShouldEqual, config.ModeOff)
 			})
 		})
 	})

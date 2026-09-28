@@ -4,25 +4,41 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/odiumuniverse/beadle/pkg/agentid"
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/project"
 )
 
+// The canonical agent ids, shared with verger. They are also the keys every
+// vault document stores an agent under, so they are spelled once in
+// pkg/agentid and re-exported here.
 const (
 	agentsMarkdown = "AGENTS.md"
 
-	ClaudeCodeID     = "claude-code"
-	OpenCodeID       = "opencode"
-	GeminiCLIID      = "gemini-cli"
-	AntigravityCLIID = "antigravity-cli"
-	CursorID         = "cursor"
-	CodexID          = "codex"
-	PiID             = "pi"
-	KiloID           = "kilo"
+	ClaudeCodeID     = agentid.Claude
+	OpenCodeID       = agentid.OpenCode
+	GeminiCLIID      = agentid.Gemini
+	AntigravityCLIID = agentid.Antigravity
+	CursorID         = agentid.Cursor
+	CodexID          = agentid.Codex
+	PiID             = agentid.Pi
+	KiloID           = agentid.Kilo
 	SharedID         = config.SharedAgentID
 )
+
+// Canonical returns the canonical id for a value a user typed: a historical
+// id resolves to the id the vault is keyed by, anything else is returned
+// unchanged so an unknown id is still reported as unknown.
+func Canonical(id string) string {
+	return agentid.Canonical(id)
+}
+
+// antigravityHomeDir is the directory Antigravity CLI installs into under
+// ~/.gemini. It is the host's own name and not the beadle agent id
+// (AntigravityCLIID, "agy"); renaming the id must not move this directory.
+const antigravityHomeDir = "antigravity-cli"
 
 func ClaudeCode(home, cwd string) *Agent {
 	dir := filepath.Join(home, ".claude")
@@ -270,7 +286,7 @@ func GeminiCLI(home, cwd string) *Agent {
 }
 
 func AntigravityCLI(home, cwd string) *Agent {
-	dir := filepath.Join(home, ".gemini", "antigravity-cli")
+	dir := filepath.Join(home, ".gemini", antigravityHomeDir)
 	mcpConfig := filepath.Join(home, ".gemini", "config", "mcp_config.json")
 	id := project.Resolve(cwd).ID
 
@@ -352,6 +368,33 @@ func Cursor(home, cwd string) *Agent {
 					DefaultMode: config.ModeSync,
 					Creatable:   true,
 					ReloadHint:  "Cursor reads agents at startup: restart Cursor to load the changes",
+				},
+			},
+			// cursor-agent loads <project>/.claude/commands,
+			// <project>/.cursor/commands, ~/.claude/commands and then
+			// ~/.cursor/commands into one map keyed by id, last write wins
+			// (its own loader, 2026.06.15 and 2026.09.26), with no duplicate
+			// warning. The surface therefore writes — and reads — its own
+			// directory only: listing another host's write target here would
+			// make `locate` write the command into Claude's file instead of
+			// Cursor's, and turning Claude's surface off would then take
+			// Cursor's copy with it. Cursor's own copy always wins in the
+			// host's map, so no dedupe against ~/.claude/commands is needed.
+			&commandSurface{
+				kind:     kind.Commands,
+				label:    commandLabel,
+				model:    commandModel{},
+				readDirs: []string{filepath.Join(dir, "commands")},
+				writeDir: filepath.Join(dir, "commands"),
+				codec:    cursorCommandCodec{},
+				traits: Traits{
+					DefaultMode: config.ModeSync,
+					Creatable:   true,
+					ReloadHint:  "Cursor reads commands at startup: restart Cursor to load the changes",
+					Note: "plain markdown: Cursor takes the title from the first line and expands only " +
+						"$ARGUMENTS and $1..; Cursor also loads ~/.claude/commands, and its own copy of a " +
+						"command wins there. This surface reads and writes only its own directory: a " +
+						"frontmatter command file is not Cursor's and is left alone",
 				},
 			},
 			&projectMCPSurface{dir: cwd, rel: ".cursor/mcp.json", id: id},

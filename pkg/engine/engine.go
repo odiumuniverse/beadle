@@ -210,6 +210,7 @@ func (e *Engine) sync(ctx context.Context, opts SyncOptions) (*Report, error) {
 	report := &Report{DryRun: opts.DryRun}
 	e.warnKeyring(report)
 	e.noteConfigMigration(report, opts)
+	e.migrateAgentIDs(report, opts)
 	e.beginRulings(opts)
 
 	if !opts.DryRun {
@@ -270,6 +271,10 @@ func (e *Engine) commitSync(ctx context.Context, st *state.State, report *Report
 
 	if err := st.Save(e.vault.StatePath()); err != nil {
 		return report, err
+	}
+
+	for _, note := range st.TakeMigrationNotes() {
+		report.Warnings = append(report.Warnings, "state: "+note)
 	}
 
 	if err := e.finishRulings(report); err != nil {

@@ -152,7 +152,7 @@ func TestBundleComplementFollowsTheCanon(t *testing.T) {
 
 			Convey("Then the edit is kept and reported, never overwritten", func() {
 				So(hostMCPServers(t, f.claudeConfig(), "mcpServers")["secret"]["url"], ShouldEqual, "https://edited.example.com/mcp")
-				So(countMCPWarnings(report, "mcp secret: the claude-code copy differs from the canon"), ShouldEqual, 1)
+				So(countMCPWarnings(report, "mcp secret: the claude copy differs from the canon"), ShouldEqual, 1)
 			})
 		})
 

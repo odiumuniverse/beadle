@@ -91,10 +91,10 @@ func TestA47DoctorReportsPluginSources(t *testing.T) {
 		Convey("When doctor runs", func() {
 			Convey("Then every source reports its state", func() {
 				So(hasIssue(issues, engine.SeverityInfo, "plugin source codex: 1 plugin(s) found"), ShouldBeTrue)
-				So(hasIssue(issues, engine.SeverityInfo, "plugin source claude-code: not installed"), ShouldBeTrue)
+				So(hasIssue(issues, engine.SeverityInfo, "plugin source claude: not installed"), ShouldBeTrue)
 				So(hasIssue(issues, engine.SeverityInfo, "plugin source cursor: not installed"), ShouldBeTrue)
-				So(hasIssue(issues, engine.SeverityInfo, "plugin source gemini-cli: not installed"), ShouldBeTrue)
-				So(hasIssue(issues, engine.SeverityInfo, "plugin source antigravity-cli: not installed"), ShouldBeTrue)
+				So(hasIssue(issues, engine.SeverityInfo, "plugin source gemini: not installed"), ShouldBeTrue)
+				So(hasIssue(issues, engine.SeverityInfo, "plugin source agy: not installed"), ShouldBeTrue)
 			})
 		})
 	})
@@ -115,7 +115,7 @@ func TestA47DoctorShowsReaderWarnings(t *testing.T) {
 
 		Convey("When doctor runs", func() {
 			Convey("Then the reader warning surfaces", func() {
-				So(hasIssue(issues, engine.SeverityWarn, "plugin source gemini-cli: cannot parse"), ShouldBeTrue)
+				So(hasIssue(issues, engine.SeverityWarn, "plugin source gemini: cannot parse"), ShouldBeTrue)
 			})
 		})
 	})
@@ -165,7 +165,7 @@ func TestA47SameKeyFromTwoSourcesPresentsOnce(t *testing.T) {
 			Convey("Then the first source wins with a note", func() {
 				So(pivotLink(t, f, "acme", "tool"), ShouldEqual, claude)
 				So(ledgerRecord(t, f, "acme/tool").Source, ShouldEqual, plugin.SourceClaudeCode)
-				So(containsWarning(report.Notes, "presenting the claude-code copy"), ShouldBeTrue)
+				So(containsWarning(report.Notes, "presenting the claude copy"), ShouldBeTrue)
 				So(containsWarning(report.Warnings, "different content"), ShouldBeFalse)
 			})
 		})

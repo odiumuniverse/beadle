@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 
+	"github.com/odiumuniverse/beadle/pkg/agentid"
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/permission"
@@ -22,12 +24,14 @@ const FileName = "config.json"
 // CurrentVersion is the schema version this build reads and writes. Version 3
 // migrated the default-on experience: permissions are synchronized and the
 // shared skills surface is enabled unless the user opted out explicitly.
-const CurrentVersion = 3
+// Version 4 gave every agent the canonical id beadle and verger share, so the
+// agents map is keyed by them.
+const CurrentVersion = 4
 
 // SharedAgentID is the agent that owns the shared skills surface
 // (~/.agents/skills); the migration enables it because it is the delivery
 // channel for hosts that read the shared directory natively.
-const SharedAgentID = "shared"
+const SharedAgentID = agentid.Shared
 
 type Mode string
 
@@ -220,10 +224,10 @@ func (c *Config) Normalize() {
 	}
 }
 
-// migrate applies the one-time default flips introduced by config v3 and
-// reports every flip. It returns changed=true whenever the stored schema
-// version is older, even when no flip happened. The caller decides when the
-// migrated config is persisted: a read-only command must not write the vault.
+// migrate applies the one-time flips of every older config schema and reports
+// each one. It returns changed=true whenever the stored schema version is
+// older, even when no flip happened. The caller decides when the migrated
+// config is persisted: a read-only command must not write the vault.
 func (c *Config) migrate(storedVersion int) ([]string, bool) {
 	if storedVersion >= CurrentVersion {
 		return nil, false
@@ -231,23 +235,60 @@ func (c *Config) migrate(storedVersion int) ([]string, bool) {
 
 	var notes []string
 
-	if _, ok := c.Kinds[kind.Permissions]; !ok {
-		c.SetKind(kind.Permissions, ModeSync)
+	if storedVersion < 3 {
+		if _, ok := c.Kinds[kind.Permissions]; !ok {
+			c.SetKind(kind.Permissions, ModeSync)
 
-		c.Permissions = permission.ModeSync
+			c.Permissions = permission.ModeSync
 
-		notes = append(notes, "permissions are synchronized by default now; run `beadle kinds disable permissions` to opt out")
+			notes = append(notes, "permissions are synchronized by default now; run `beadle kinds disable permissions` to opt out")
+		}
+
+		if _, ok := c.Agents[SharedAgentID]; !ok {
+			c.Enable(SharedAgentID)
+
+			notes = append(notes, "the shared skills surface (~/.agents/skills) is enabled by default now; run `beadle agents disable shared` to opt out")
+		}
 	}
 
-	if _, ok := c.Agents[SharedAgentID]; !ok {
-		c.Enable(SharedAgentID)
-
-		notes = append(notes, "the shared skills surface (~/.agents/skills) is enabled by default now; run `beadle agents disable shared` to opt out")
-	}
+	notes = append(notes, c.renameAgentIDs()...)
 
 	c.Version = CurrentVersion
 
 	return notes, true
+}
+
+// renameAgentIDs rekeys the agents map by the canonical id each historical id
+// was renamed to, and reports one note per rename. An entry whose canonical
+// id is already taken is left under its old key and reported: two entries
+// cannot be merged without guessing which settings the user kept.
+func (c *Config) renameAgentIDs() []string {
+	if len(c.Agents) == 0 {
+		return nil
+	}
+
+	var notes []string
+
+	for _, old := range slices.Sorted(maps.Keys(agentid.Aliases())) {
+		agent, ok := c.Agents[old]
+		if !ok {
+			continue
+		}
+
+		canonical := agentid.Canonical(old)
+		if _, taken := c.Agents[canonical]; taken {
+			notes = append(notes, fmt.Sprintf("agent %s could not be renamed to %s: %s is already configured; review `beadle agents`", old, canonical, canonical))
+
+			continue
+		}
+
+		delete(c.Agents, old)
+		c.Agents[canonical] = agent
+
+		notes = append(notes, fmt.Sprintf("agent %s is now named %s", old, canonical))
+	}
+
+	return notes
 }
 
 func Load(path string) (*Config, error) {

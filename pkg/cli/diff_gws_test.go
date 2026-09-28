@@ -34,7 +34,7 @@ func TestDiffMarksUncreatableSurface(t *testing.T) {
 		})
 
 		Convey("When diff is asked for an agent with no changes", func() {
-			stdout, _, err := gwsRunSplit(t, "diff", "--agent", "claude-code")
+			stdout, _, err := gwsRunSplit(t, "diff", "--agent", "claude")
 
 			Convey("Then it says there are no differences", func() {
 				So(err, ShouldBeNil)

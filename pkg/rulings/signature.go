@@ -32,6 +32,9 @@ const (
 	DivTextFormatting = "text:formatting-only"
 
 	ScopeGlobal = "global"
+	// ScopeHost is the scope prefix that binds a ruling to one agent; the
+	// value after the colon is a canonical agent id.
+	ScopeHost = "host"
 )
 
 func ComputeSignature(k kind.ID, reason, key, vaultKey, scope string, base, vault, local []byte) (Signature, error) {
@@ -195,7 +198,7 @@ func ValidateScope(scope string) error {
 	switch {
 	case trimmed == ScopeGlobal:
 		return nil
-	case strings.HasPrefix(trimmed, "host:"), strings.HasPrefix(trimmed, "project:"):
+	case strings.HasPrefix(trimmed, ScopeHost+":"), strings.HasPrefix(trimmed, "project:"):
 		if strings.TrimSpace(strings.SplitN(trimmed, ":", 2)[1]) == "" {
 			return fmt.Errorf("scope %q has an empty value", scope)
 		}

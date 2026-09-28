@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/engine"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/state"
@@ -315,6 +316,8 @@ func resolution(stdin io.Reader, take, from string, useStdin bool, exp expectati
 }
 
 func selectConflicts(e *engine.Engine, args []string, all bool, kindName, agentID string) ([]string, error) {
+	agentID = agent.Canonical(agentID)
+
 	if !all {
 		return args, nil
 	}

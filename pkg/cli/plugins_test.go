@@ -71,7 +71,7 @@ func TestPluginsPinCommands(t *testing.T) {
 					So(err, ShouldBeNil)
 					So(out, ShouldContainSubstring, "ok")
 
-					out, err = runCLI(t, "plugins", "pins", "--agent", "claude-code")
+					out, err = runCLI(t, "plugins", "pins", "--agent", "claude")
 					So(err, ShouldBeNil)
 					So(out, ShouldContainSubstring, "no plugin pins")
 

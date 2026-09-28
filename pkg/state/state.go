@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/odiumuniverse/beadle/pkg/agentid"
 	"github.com/odiumuniverse/beadle/pkg/cas"
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
@@ -22,7 +23,10 @@ import (
 
 const FileName = "state.json"
 
-const CurrentVersion = 2
+// CurrentVersion is the schema version this build reads and writes. Version 3
+// gave every agent the canonical id beadle and verger share, so the per-agent
+// bases, the conflicts, the refusals and the adoptions are keyed by them.
+const CurrentVersion = 3
 
 const MaxSnapshots = 30
 
@@ -239,6 +243,34 @@ type State struct {
 	// another machine. The record is written on the first sync and only
 	// compared afterwards.
 	Home string `json:"home,omitempty"`
+	// migration carries the one-time renames Load applied, so the caller can
+	// report them; it is never serialized.
+	migration []string
+	// migrated records that Load applied the renames in memory only. Save
+	// clears it, so a mutating command can persist the migrated state even
+	// after the notes have already been rendered.
+	migrated bool
+}
+
+// MigrationNotes lists the one-time renames Load applied. It is empty for a
+// state that was already current.
+func (s *State) MigrationNotes() []string {
+	return slices.Clone(s.migration)
+}
+
+// Migrated reports that the state was migrated in memory and not yet
+// persisted; the next Save writes the renamed state to the vault.
+func (s *State) Migrated() bool {
+	return s.migrated
+}
+
+// TakeMigrationNotes returns the pending migration notes and clears them, so
+// every rename is reported exactly once.
+func (s *State) TakeMigrationNotes() []string {
+	notes := s.migration
+	s.migration = nil
+
+	return notes
 }
 
 // BundleOptedOut reports that the user disabled this host's bundle by hand.
@@ -292,7 +324,7 @@ func Load(path string) (*State, error) {
 		return nil, fmt.Errorf("parse state: %w", err)
 	}
 
-	if st.Version != CurrentVersion {
+	if st.Version > CurrentVersion {
 		return nil, fmt.Errorf("unsupported state version %d in %s (expected %d)", st.Version, path, CurrentVersion)
 	}
 
@@ -316,10 +348,100 @@ func Load(path string) (*State, error) {
 		st.Drift = map[string]Drift{}
 	}
 
+	// The migration stays in memory: a read-only command must not write the
+	// vault. The first command that saves the state persists it and reports
+	// every rename.
+	notes, changed := st.migrate()
+	st.migration = notes
+	st.migrated = changed
+
 	return st, nil
 }
 
+// migrate applies the one-time flips of every older state schema and reports
+// each one. It returns changed=true whenever the stored schema version is
+// older, even when no flip happened.
+func (s *State) migrate() ([]string, bool) {
+	if s.Version >= CurrentVersion {
+		return nil, false
+	}
+
+	notes := s.renameAgentIDs()
+	s.Version = CurrentVersion
+
+	return notes, true
+}
+
+// renameAgentIDs rewrites every per-agent key and field by the canonical id
+// the historical id was renamed to, and reports one note per id. A canonical
+// id that is already taken wins: two entries cannot be merged without guessing
+// which base the user kept.
+func (s *State) renameAgentIDs() []string {
+	renamed := map[string]bool{}
+
+	for k, perAgent := range s.Bases {
+		for old, canonical := range agentid.Aliases() {
+			base, ok := perAgent[old]
+			if !ok {
+				continue
+			}
+
+			if _, taken := perAgent[canonical]; !taken {
+				delete(perAgent, old)
+				perAgent[canonical] = base
+			}
+
+			renamed[old] = true
+		}
+
+		s.Bases[k] = perAgent
+	}
+
+	for i := range s.Conflicts {
+		recordRename(renamed, &s.Conflicts[i].Agent)
+	}
+
+	for i := range s.Refusals {
+		recordRename(renamed, &s.Refusals[i].Agent)
+	}
+
+	for i := range s.Adoptions {
+		recordRename(renamed, &s.Adoptions[i].Host)
+	}
+
+	return renameNotes(renamed)
+}
+
+// recordRename rewrites one agent-id field in place and records the historical
+// id it held, so the user is told about the rename once.
+func recordRename(renamed map[string]bool, field *string) {
+	old := *field
+	*field = agentid.Canonical(old)
+
+	if old != *field {
+		renamed[old] = true
+	}
+}
+
+// renameNotes reports one flip per renamed id, once each: a vault holds a base
+// for the same agent in several kinds, and the user sees one rename.
+func renameNotes(renamed map[string]bool) []string {
+	if len(renamed) == 0 {
+		return nil
+	}
+
+	notes := make([]string, 0, len(renamed))
+	for _, old := range slices.Sorted(maps.Keys(renamed)) {
+		notes = append(notes, fmt.Sprintf("agent %s is now named %s", old, agentid.Canonical(old)))
+	}
+
+	return notes
+}
+
 func (s *State) Save(path string) error {
+	s.Version = CurrentVersion
+	s.migrated = false
+
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode state: %w", err)

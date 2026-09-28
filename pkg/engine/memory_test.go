@@ -232,8 +232,8 @@ func TestMemoryConflictResolvedInEditor(t *testing.T) {
 		file, err := f.engine.ConflictFile(c)
 		So(err, ShouldBeNil)
 		So(filepath.Ext(file), ShouldEqual, ".md")
-		So(filepath.Base(file), ShouldContainSubstring, "memory-claude-code-")
-		So(read(t, file), ShouldContainSubstring, ">>>>>>> agent:claude-code")
+		So(filepath.Base(file), ShouldContainSubstring, "memory-claude-")
+		So(read(t, file), ShouldContainSubstring, ">>>>>>> agent:claude")
 
 		write(t, file, "# resolved\n")
 

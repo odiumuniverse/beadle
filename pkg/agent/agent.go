@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/odiumuniverse/beadle/pkg/agentid"
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 )
@@ -145,7 +146,12 @@ func All(home, cwd string) []*Agent {
 	}
 }
 
+// ByID returns the agent with the given id. A historical id resolves to the
+// agent it was renamed to, so a command invoked with the name beadle used
+// before the rename reaches the same agent as the canonical one.
 func ByID(agents []*Agent, id string) *Agent {
+	id = agentid.Canonical(id)
+
 	for _, a := range agents {
 		if a.ID == id {
 			return a

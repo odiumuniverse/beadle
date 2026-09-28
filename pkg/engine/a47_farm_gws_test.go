@@ -187,9 +187,9 @@ func TestA47DedupWinnerSkipsLoserHost(t *testing.T) {
 				So(report.Errors(), ShouldBeEmpty)
 
 				// Gemini wins: its copy is presented to the other hosts.
-				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, pluginFarmLink(f, "gemini-cli", "tool", "skills", "alpha"))
+				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, pluginFarmLink(f, "gemini", "tool", "skills", "alpha"))
 				So(farmLink(t, filepath.Join(f.home, ".claude", "agents"), "tool--helper.md"),
-					ShouldEqual, pluginFarmLink(f, "gemini-cli", "tool", "agents", "helper.md"))
+					ShouldEqual, pluginFarmLink(f, "gemini", "tool", "agents", "helper.md"))
 				So(hostMCPServers(t, f.claudeConfig(), "mcpServers"), ShouldContainKey, "srv")
 
 				// The winner host reads its own extension natively: the farm
@@ -213,7 +213,7 @@ func TestA47DedupWinnerSkipsLoserHost(t *testing.T) {
 
 				for _, result := range report.Farm {
 					if result.Agent == agent.CodexID {
-						So(result.Plugin, ShouldNotEqual, "gemini-cli/tool")
+						So(result.Plugin, ShouldNotEqual, "gemini/tool")
 					}
 				}
 			})
@@ -322,7 +322,7 @@ func TestA47GeminiCommandsReachMarkdownHosts(t *testing.T) {
 		Convey("When the farm runs", func() {
 			Convey("Then the TOML command is lifted for markdown hosts", func() {
 				link := farmLink(t, openCodeCommandsDir(f.home), "ext--deploy.md")
-				So(link, ShouldContainSubstring, filepath.Join("farm", "gemini-cli", "ext", "commands"))
+				So(link, ShouldContainSubstring, filepath.Join("farm", "gemini", "ext", "commands"))
 
 				lifted := read(t, link)
 				So(lifted, ShouldContainSubstring, "description: Deploy")
@@ -336,7 +336,7 @@ func TestA47GeminiCommandsReachMarkdownHosts(t *testing.T) {
 				})
 
 				Convey("And the extension skills reach Claude", func() {
-					So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, pluginFarmLink(f, "gemini-cli", "ext", "skills", "alpha"))
+					So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, pluginFarmLink(f, "gemini", "ext", "skills", "alpha"))
 				})
 			})
 		})
@@ -404,7 +404,7 @@ func TestA47DuplicatePluginPresentedOnce(t *testing.T) {
 				f.sync(t)
 
 				Convey("Then the surviving copy takes over", func() {
-					want := pluginFarmLink(f, "gemini-cli", "caveman", "skills", "alpha")
+					want := pluginFarmLink(f, "gemini", "caveman", "skills", "alpha")
 					So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, want)
 
 					// Gemini installed the survivor: it reads its own extension
@@ -412,7 +412,7 @@ func TestA47DuplicatePluginPresentedOnce(t *testing.T) {
 					_, geminiSkillErr := os.Lstat(filepath.Join(f.home, ".gemini", "skills", "alpha"))
 					So(errors.Is(geminiSkillErr, fs.ErrNotExist), ShouldBeTrue)
 
-					So(farmLink(t, a47OpenCodeAgentsDir(f.home), "caveman--helper.md"), ShouldEqual, pluginFarmLink(f, "gemini-cli", "caveman", "agents", "helper.md"))
+					So(farmLink(t, a47OpenCodeAgentsDir(f.home), "caveman--helper.md"), ShouldEqual, pluginFarmLink(f, "gemini", "caveman", "agents", "helper.md"))
 				})
 			})
 
@@ -484,7 +484,7 @@ func TestA47DottedPluginNameArtifactsAreStable(t *testing.T) {
 
 		f.sync(t)
 
-		artifact := filepath.Join(f.vault.PluginsDir(), "farm", "gemini-cli", "project.ext", "commands", "project.ext--deploy.md")
+		artifact := filepath.Join(f.vault.PluginsDir(), "farm", "gemini", "project.ext", "commands", "project.ext--deploy.md")
 
 		before, err := os.Stat(artifact)
 		So(err, ShouldBeNil)
@@ -753,7 +753,7 @@ func TestA47NativeSourceHostSkillIsNotFarmed(t *testing.T) {
 				So(errors.Is(geminiErr, fs.ErrNotExist), ShouldBeTrue)
 
 				So(farmLink(t, claudeSkillsDir(f.home), "alpha"),
-					ShouldEqual, pluginFarmLink(f, "gemini-cli", "ext", "skills", "alpha"))
+					ShouldEqual, pluginFarmLink(f, "gemini", "ext", "skills", "alpha"))
 			})
 		})
 	})

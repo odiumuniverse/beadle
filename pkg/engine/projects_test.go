@@ -255,8 +255,8 @@ func TestProjectsConflictResolvedInEditor(t *testing.T) {
 		file, err := f.engine.ConflictFile(c)
 		So(err, ShouldBeNil)
 		So(filepath.Ext(file), ShouldEqual, ".md")
-		So(filepath.Base(file), ShouldContainSubstring, "projects-claude-code-")
-		So(read(t, file), ShouldContainSubstring, ">>>>>>> agent:claude-code")
+		So(filepath.Base(file), ShouldContainSubstring, "projects-claude-")
+		So(read(t, file), ShouldContainSubstring, ">>>>>>> agent:claude")
 
 		write(t, file, "# resolved\n")
 

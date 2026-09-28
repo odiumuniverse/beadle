@@ -454,7 +454,7 @@ func TestConflictsRefusalRedaction(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		for _, agentID := range []string{"claude-code", "opencode"} {
+		for _, agentID := range []string{"claude", "opencode"} {
 			if _, err := gwsRun(t, "agents", "mode", agentID, "permissions", "sync"); err != nil {
 				t.Fatal(err)
 			}
@@ -553,7 +553,7 @@ func TestResolveAllSkipsPermissions(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		for _, agentID := range []string{"claude-code", "opencode"} {
+		for _, agentID := range []string{"claude", "opencode"} {
 			if _, err := gwsRun(t, "agents", "mode", agentID, "permissions", "sync"); err != nil {
 				t.Fatal(err)
 			}

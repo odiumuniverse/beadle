@@ -79,7 +79,7 @@ func (e *Engine) conflictScope(c state.Conflict) string {
 		}
 	}
 
-	return "host:" + c.Agent
+	return rulings.ScopeHost + ":" + c.Agent
 }
 
 func (e *Engine) signatureFor(c state.Conflict, base, vault, local []byte) (rulings.Signature, error) {

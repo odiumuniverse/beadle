@@ -10,6 +10,7 @@ import (
 	"github.com/pmezard/go-difflib/difflib"
 	"github.com/spf13/cobra"
 
+	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/engine"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 )
@@ -39,7 +40,7 @@ func (a *app) newDiffCmd() *cobra.Command {
 				return err
 			}
 
-			printDiff(cmd.OutOrStdout(), report, agentID)
+			printDiff(cmd.OutOrStdout(), report, agent.Canonical(agentID))
 
 			return nil
 		},

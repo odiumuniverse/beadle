@@ -6,13 +6,14 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/odiumuniverse/beadle/pkg/agentid"
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/project"
 )
 
 const (
 	// DSHID identifies the DeepSeek Harness adapter.
-	DSHID = "deepseek-harness"
+	DSHID = agentid.DSH
 
 	dshHomeEnv       = "DSH_HOME"
 	dshAgentsHomeEnv = "DSH_AGENTS_HOME"

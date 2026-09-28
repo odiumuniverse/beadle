@@ -130,7 +130,7 @@ func TestClaudeUserRulesDoctor(t *testing.T) {
 			})
 		})
 
-		Convey("When claude-code is disabled", func() {
+		Convey("When claude is disabled", func() {
 			f.config.Disable(agent.ClaudeCodeID)
 			So(f.config.Save(f.vault.ConfigPath()), ShouldBeNil)
 

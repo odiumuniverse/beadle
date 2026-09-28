@@ -3,17 +3,20 @@ package plugin
 import (
 	"errors"
 	"fmt"
+
+	"github.com/odiumuniverse/beadle/pkg/agentid"
 )
 
-// Source IDs name the plugin hosts beadle reads. They match the agent IDs of
-// pkg/agent; a test keeps the two lists in sync.
+// Source IDs name the plugin hosts beadle reads. They are the canonical agent
+// ids of pkg/agent (which are re-exported from pkg/agentid); a test keeps the
+// two lists in sync.
 const (
-	SourceClaudeCode     = "claude-code"
-	SourceCodex          = "codex"
-	SourceGeminiCLI      = "gemini-cli"
-	SourceAntigravityCLI = "antigravity-cli"
-	SourceCursor         = "cursor"
-	SourceOMP            = "omp"
+	SourceClaudeCode     = agentid.Claude
+	SourceCodex          = agentid.Codex
+	SourceGeminiCLI      = agentid.Gemini
+	SourceAntigravityCLI = agentid.Antigravity
+	SourceCursor         = agentid.Cursor
+	SourceOMP            = agentid.Omp
 )
 
 // sourceOrder lists the plugin hosts in host-registration order. The order

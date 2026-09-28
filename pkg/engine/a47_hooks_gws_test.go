@@ -55,7 +55,7 @@ func TestA47HooksApproveFromCodexSource(t *testing.T) {
 
 			f.sync(t)
 
-			report, err := f.engine.ApprovePluginHooks("gemini-cli/tool")
+			report, err := f.engine.ApprovePluginHooks("gemini/tool")
 			So(err, ShouldBeNil)
 
 			canon, err := hooks.Load(f.vault.HooksPath())

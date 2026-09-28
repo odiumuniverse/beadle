@@ -65,11 +65,12 @@ func (a *app) newAgentsToggleCmd(enable bool) *cobra.Command {
 				return err
 			}
 
-			if err := validateAgentIDs(agents, args); err != nil {
+			ids, err := resolveAgentIDs(agents, args)
+			if err != nil {
 				return err
 			}
 
-			for _, id := range args {
+			for _, id := range ids {
 				if enable {
 					cfg.Enable(id)
 				} else {

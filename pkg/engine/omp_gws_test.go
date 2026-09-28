@@ -262,7 +262,7 @@ func TestOmpPluginSourceInDoctor(t *testing.T) {
 			Convey("Then omp is reported as a plugin source with its count", func() {
 				So(err, ShouldBeNil)
 				So(hasIssue(issues, engine.SeverityInfo, "plugin source omp: 1 plugin(s) found"), ShouldBeTrue)
-				So(hasIssue(issues, engine.SeverityInfo, "plugin source claude-code: not installed"), ShouldBeTrue)
+				So(hasIssue(issues, engine.SeverityInfo, "plugin source claude: not installed"), ShouldBeTrue)
 			})
 		})
 	})

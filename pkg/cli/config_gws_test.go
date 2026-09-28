@@ -42,7 +42,7 @@ const legacyV2Config = `{
   "permissions": "off",
   "history": "git",
   "secrets": "literal",
-  "agents": {"claude-code": {"enabled": true}}
+  "agents": {"claude": {"enabled": true}}
 }
 `
 
@@ -81,7 +81,7 @@ func TestInitWritesExplicitConfig(t *testing.T) {
 				So(text, ShouldContainSubstring, `"permissions": "sync"`)
 				So(text, ShouldContainSubstring, `"history": "git"`)
 				So(text, ShouldContainSubstring, `"secrets": "literal"`)
-				So(text, ShouldContainSubstring, `"claude-code"`)
+				So(text, ShouldContainSubstring, `"claude"`)
 			})
 		})
 	})
@@ -156,7 +156,7 @@ func TestStatusMigrationStaysInMemory(t *testing.T) {
 
 				data, readErr := os.ReadFile(configFilePath(home)) //nolint:gosec // G304: test reads its own temp file
 				So(readErr, ShouldBeNil)
-				So(string(data), ShouldContainSubstring, `"version": 3`)
+				So(string(data), ShouldContainSubstring, `"version": 4`)
 			})
 		})
 	})
@@ -177,13 +177,13 @@ func TestInitRendersMigrationNotes(t *testing.T) {
 			out, err := gwsRun(t, "init")
 			So(err, ShouldBeNil)
 
-			Convey("Then the flips are rendered and the file carries v3", func() {
+			Convey("Then the flips are rendered and the file carries the current version", func() {
 				So(out, ShouldContainSubstring, "config: permissions are synchronized by default now")
 				So(out, ShouldContainSubstring, "config: the shared skills surface")
 
 				data, readErr := os.ReadFile(configFilePath(home)) //nolint:gosec // G304: test reads its own temp file
 				So(readErr, ShouldBeNil)
-				So(string(data), ShouldContainSubstring, `"version": 3`)
+				So(string(data), ShouldContainSubstring, `"version": 4`)
 			})
 		})
 	})

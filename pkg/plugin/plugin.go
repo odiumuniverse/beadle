@@ -27,11 +27,14 @@ const (
 	marketplaceFile  = "marketplace.json"
 	extensionsDir    = "extensions"
 	extensionsFile   = "gemini-extension.json"
-	antigravityDir   = "antigravity-cli"
-	localPluginsDir  = "local"
-	portableMCPFile  = "mcp.json"
-	agyMCPFile       = "mcp_config.json"
-	markdownExt      = ".md"
+	// antigravityDir is the directory Antigravity CLI installs into under
+	// ~/.gemini. It is the host's own name, not the beadle agent id
+	// (SourceAntigravityCLI, "agy").
+	antigravityDir  = "antigravity-cli"
+	localPluginsDir = "local"
+	portableMCPFile = "mcp.json"
+	agyMCPFile      = "mcp_config.json"
+	markdownExt     = ".md"
 	// scopeUser is the install scope reported for every host: plugin installs
 	// are per-user (Claude Code records the same token for its user scope).
 	scopeUser     = "user"

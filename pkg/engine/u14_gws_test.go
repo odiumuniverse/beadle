@@ -29,7 +29,7 @@ func TestSyncApprovesCanonHooksOnMigration(t *testing.T) {
   "permissions": "off",
   "history": "git",
   "secrets": "literal",
-  "agents": {"claude-code": {"enabled": true}}
+  "agents": {"claude": {"enabled": true}}
 }
 `)
 
@@ -90,7 +90,7 @@ func TestSyncReportsConfigMigration(t *testing.T) {
   "permissions": "off",
   "history": "git",
   "secrets": "literal",
-  "agents": {"claude-code": {"enabled": true}}
+  "agents": {"claude": {"enabled": true}}
 }
 `
 		write(t, f.vault.ConfigPath(), legacy)
@@ -105,7 +105,7 @@ func TestSyncReportsConfigMigration(t *testing.T) {
 			dry, err := migrated.Sync(t.Context(), engine.SyncOptions{DryRun: true})
 			So(err, ShouldBeNil)
 			So(strings.Join(dry.Warnings, "\n"), ShouldNotContainSubstring, "config: ")
-			So(read(t, f.vault.ConfigPath()), ShouldNotContainSubstring, `"version": 3`)
+			So(read(t, f.vault.ConfigPath()), ShouldNotContainSubstring, `"version": 4`)
 
 			Convey("When the first real sync runs", func() {
 				report, err := migrated.Sync(t.Context(), engine.SyncOptions{})
@@ -116,7 +116,7 @@ func TestSyncReportsConfigMigration(t *testing.T) {
 					log := strings.Join(report.Warnings, "\n")
 					So(log, ShouldContainSubstring, "config: permissions are synchronized by default now")
 					So(log, ShouldContainSubstring, "config: the shared skills surface")
-					So(read(t, f.vault.ConfigPath()), ShouldContainSubstring, `"version": 3`)
+					So(read(t, f.vault.ConfigPath()), ShouldContainSubstring, `"version": 4`)
 
 					Convey("And the second sync is silent", func() {
 						second, err := migrated.Sync(t.Context(), engine.SyncOptions{})

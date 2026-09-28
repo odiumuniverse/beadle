@@ -46,7 +46,8 @@ func (a *app) newPluginPinsCmd() *cobra.Command {
 			}
 
 			if agentID != "" {
-				if err := validatePinAgent(agentID); err != nil {
+				agentID, err = resolvePinAgent(agentID)
+				if err != nil {
 					return err
 				}
 			}
@@ -147,7 +148,8 @@ func (a *app) newPluginPinCmd() *cobra.Command {
 				return err
 			}
 
-			if err := validatePinAgent(agentID); err != nil {
+			agentID, err = resolvePinAgent(agentID)
+			if err != nil {
 				return err
 			}
 
@@ -183,7 +185,8 @@ func (a *app) newPluginUnpinCmd() *cobra.Command {
 				return err
 			}
 
-			if err := validatePinAgent(agentID); err != nil {
+			agentID, err = resolvePinAgent(agentID)
+			if err != nil {
 				return err
 			}
 
@@ -204,19 +207,23 @@ func (a *app) newPluginUnpinCmd() *cobra.Command {
 	return cmd
 }
 
-func validatePinAgent(agentID string) error {
+// resolvePinAgent validates the agent a plugin pin is stored for and returns
+// its canonical id, so a historical id pins under the id the config is keyed
+// by.
+func resolvePinAgent(agentID string) (string, error) {
 	if agentID == "" {
-		return errors.New("--agent is required")
+		return "", errors.New("--agent is required")
 	}
 
 	agents, err := allAgents()
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	if agent.ByID(agents, agentID) == nil {
-		return fmt.Errorf("unknown agent %q", agentID)
+	ag := agent.ByID(agents, agentID)
+	if ag == nil {
+		return "", fmt.Errorf("unknown agent %q", agentID)
 	}
 
-	return nil
+	return ag.ID, nil
 }

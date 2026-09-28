@@ -205,8 +205,9 @@ func TestDoctorCommandIssues(t *testing.T) {
 		issues, err := f.engine.Doctor(t.Context())
 		So(err, ShouldBeNil)
 
-		Convey("Then it is reported as unmanaged", func() {
-			So(hasIssue(issues, engine.SeverityInfo, "~/.cursor/commands exists"), ShouldBeTrue)
+		Convey("Then it is a managed surface: an empty directory is not a finding", func() {
+			So(hasIssue(issues, engine.SeverityInfo, "~/.cursor/commands exists"), ShouldBeFalse)
+			So(hasIssue(issues, engine.SeverityInfo, "not supported yet"), ShouldBeFalse)
 		})
 	})
 }

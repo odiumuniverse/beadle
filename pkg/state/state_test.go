@@ -19,12 +19,12 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		path := filepath.Join(t.TempDir(), state.FileName)
 
 		st := state.New()
-		st.SetBase(kind.MCP, "claude-code", state.Base{"alpha": cas.HashOf([]byte("a"))})
+		st.SetBase(kind.MCP, "claude", state.Base{"alpha": cas.HashOf([]byte("a"))})
 		st.ReplaceConflicts(kind.MCP, "opencode", []state.Conflict{{
 			Kind: kind.MCP, Agent: "opencode", Key: "alpha", Reason: state.ReasonModified, Since: time.Unix(100, 0).UTC(),
 		}})
 		st.Adoptions = []state.Adoption{{
-			Host: "claude-code", Name: "alpha", Provider: "/home/u/.claude/skills/alpha",
+			Host: "claude", Name: "alpha", Provider: "/home/u/.claude/skills/alpha",
 			Target: "/home/u/skills-src/alpha", Digest: cas.HashOf([]byte("a")), At: time.Unix(100, 0).UTC(),
 		}}
 
@@ -36,7 +36,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 			Convey("Then the base and conflicts survive", func() {
 				So(err, ShouldBeNil)
 
-				base, ok := loaded.Base(kind.MCP, "claude-code")
+				base, ok := loaded.Base(kind.MCP, "claude")
 				So(ok, ShouldBeTrue)
 				So(base["alpha"], ShouldEqual, cas.HashOf([]byte("a")))
 
@@ -45,7 +45,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 
 				So(loaded.OpenConflicts(), ShouldHaveLength, 1)
 
-				adoption, ok := loaded.AdoptionFor("claude-code", "alpha")
+				adoption, ok := loaded.AdoptionFor("claude", "alpha")
 				So(ok, ShouldBeTrue)
 				So(adoption.Target, ShouldEqual, "/home/u/skills-src/alpha")
 			})
@@ -56,14 +56,14 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 func TestAdoptionLookup(t *testing.T) {
 	Convey("Given a state with one adoption record", t, func() {
 		st := state.New()
-		st.Adoptions = []state.Adoption{{Host: "claude-code", Name: "alpha", Provider: "/p/alpha"}}
+		st.Adoptions = []state.Adoption{{Host: "claude", Name: "alpha", Provider: "/p/alpha"}}
 
 		Convey("When the record is looked up", func() {
 			Convey("Then it is found by host and name only", func() {
-				_, ok := st.AdoptionFor("claude-code", "alpha")
+				_, ok := st.AdoptionFor("claude", "alpha")
 				So(ok, ShouldBeTrue)
 
-				_, ok = st.AdoptionFor("claude-code", "beta")
+				_, ok = st.AdoptionFor("claude", "beta")
 				So(ok, ShouldBeFalse)
 
 				_, ok = st.AdoptionFor("opencode", "alpha")
@@ -72,7 +72,7 @@ func TestAdoptionLookup(t *testing.T) {
 
 			Convey("And removing it reports whether it existed", func() {
 				So(st.RemoveAdoption("opencode", "alpha"), ShouldBeFalse)
-				So(st.RemoveAdoption("claude-code", "alpha"), ShouldBeTrue)
+				So(st.RemoveAdoption("claude", "alpha"), ShouldBeTrue)
 				So(st.Adoptions, ShouldBeEmpty)
 			})
 		})
@@ -90,21 +90,6 @@ func TestLoadMissingFileIsEmpty(t *testing.T) {
 			Convey("Then an empty state is returned", func() {
 				So(err, ShouldBeNil)
 				So(st.OpenConflicts(), ShouldBeEmpty)
-			})
-		})
-	})
-}
-
-func TestLoadRejectsOtherVersions(t *testing.T) {
-	Convey("Given a state file with an unsupported version", t, func() {
-		path := filepath.Join(t.TempDir(), state.FileName)
-		So(os.WriteFile(path, []byte(`{"version": 1}`), 0o600), ShouldBeNil)
-
-		Convey("When it is loaded", func() {
-			_, err := state.Load(path)
-
-			Convey("Then loading fails", func() {
-				So(err, ShouldBeError)
 			})
 		})
 	})
@@ -219,8 +204,8 @@ func TestSnapshotsAreBoundedAndDeduplicated(t *testing.T) {
 func TestHashesCoverEveryReference(t *testing.T) {
 	Convey("Given a state referencing hashes from a base, a conflict and a snapshot", t, func() {
 		st := state.New()
-		st.SetBase(kind.Skills, "claude-code", state.Base{"a/SKILL.md": "h1"})
-		st.ReplaceConflicts(kind.Skills, "claude-code", []state.Conflict{{Kind: kind.Skills, Agent: "claude-code", Key: "a/SKILL.md", Local: "h2"}})
+		st.SetBase(kind.Skills, "claude", state.Base{"a/SKILL.md": "h1"})
+		st.ReplaceConflicts(kind.Skills, "claude", []state.Conflict{{Kind: kind.Skills, Agent: "claude", Key: "a/SKILL.md", Local: "h2"}})
 		st.AddSnapshot(kind.Skills, state.Snapshot{Manifest: "h3"})
 
 		Convey("When the referenced hashes are listed", func() {

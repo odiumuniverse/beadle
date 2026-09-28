@@ -144,7 +144,7 @@ func printBundleDelivery(out interface{ Write([]byte) (int, error) }, cfg *confi
 			continue
 		}
 
-		ag := agentByID(agents, host.AgentID())
+		ag := agent.ByID(agents, host.AgentID())
 		if ag == nil {
 			continue
 		}
@@ -165,16 +165,6 @@ func printBundleDelivery(out interface{ Write([]byte) (int, error) }, cfg *confi
 				host.AgentID(), k, strings.Join(sortedNames(names), ", "))
 		}
 	}
-}
-
-func agentByID(agents []*agent.Agent, id string) *agent.Agent {
-	for _, ag := range agents {
-		if ag.ID == id {
-			return ag
-		}
-	}
-
-	return nil
 }
 
 // sortedNames orders the recorded complement names so the report does not

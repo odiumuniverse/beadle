@@ -76,13 +76,14 @@ func (a *app) runInit(cmd *cobra.Command, agentIDs []string, forceDaemon, instal
 		return err
 	}
 
-	if err := validateAgentIDs(agents, agentIDs); err != nil {
+	requested, err := resolveAgentIDs(agents, agentIDs)
+	if err != nil {
 		return err
 	}
 
 	out := cmd.OutOrStdout()
 
-	if err := a.enableAgentsOnInit(out, v, cfg, agents, agentIDs); err != nil {
+	if err := a.enableAgentsOnInit(out, v, cfg, agents, requested); err != nil {
 		return err
 	}
 
@@ -308,14 +309,22 @@ func enableOnInit(out io.Writer, cfg *config.Config, ag *agent.Agent, requested 
 	return nil
 }
 
-func validateAgentIDs(agents []*agent.Agent, ids []string) error {
+// resolveAgentIDs validates the agent ids a user typed and returns their
+// canonical form, so a historical id selects the same agent as the id the
+// vault is keyed by and is stored under that id.
+func resolveAgentIDs(agents []*agent.Agent, ids []string) ([]string, error) {
+	canonical := make([]string, 0, len(ids))
+
 	for _, id := range ids {
-		if agent.ByID(agents, id) == nil {
-			return fmt.Errorf("unknown agent %q (see beadle agents)", id)
+		ag := agent.ByID(agents, id)
+		if ag == nil {
+			return nil, fmt.Errorf("unknown agent %q (see beadle agents)", id)
 		}
+
+		canonical = append(canonical, ag.ID)
 	}
 
-	return nil
+	return canonical, nil
 }
 
 func printModes(out io.Writer, cfg *config.Config, agents []*agent.Agent) {

@@ -194,7 +194,7 @@ func TestA51GeminiPluginHookStaysOutOfGeminiBundle(t *testing.T) {
 
 		f.sync(t)
 
-		_, err := f.engine.ApprovePluginHooks("gemini-cli/tool")
+		_, err := f.engine.ApprovePluginHooks("gemini/tool")
 		So(err, ShouldBeNil)
 
 		_, err = f.engine.ApprovePluginHooks("acme/codex-tool")
@@ -285,7 +285,7 @@ func TestA51HookPlaceholdersAcrossSources(t *testing.T) {
 			_, err := f.engine.ApprovePluginHooks("cursor/ctool")
 			So(err, ShouldBeNil)
 
-			report, err := f.engine.ApprovePluginHooks("gemini-cli/gtool")
+			report, err := f.engine.ApprovePluginHooks("gemini/gtool")
 			So(err, ShouldBeNil)
 
 			canon, err := hooks.Load(f.vault.HooksPath())
@@ -293,7 +293,7 @@ func TestA51HookPlaceholdersAcrossSources(t *testing.T) {
 
 			Convey("Then the roots resolve to the pivots and the workspace path is refused", func() {
 				cursorPivot := filepath.Join(f.vault.PluginsDir(), "cursor", "ctool", "current")
-				geminiPivot := filepath.Join(f.vault.PluginsDir(), "gemini-cli", "gtool", "current")
+				geminiPivot := filepath.Join(f.vault.PluginsDir(), "gemini", "gtool", "current")
 
 				So(canon["ctool--pre-tool-1"].Command, ShouldContainSubstring, cursorPivot)
 				So(canon["gtool--pre-tool-1"].Command, ShouldContainSubstring, geminiPivot)
@@ -357,7 +357,7 @@ func TestA51AgyPluginHookStaysOutOfAgyBundle(t *testing.T) {
 
 		f.sync(t)
 
-		_, err := f.engine.ApprovePluginHooks("antigravity-cli/tool")
+		_, err := f.engine.ApprovePluginHooks("agy/tool")
 		So(err, ShouldBeNil)
 
 		canon, err := hooks.Load(f.vault.HooksPath())

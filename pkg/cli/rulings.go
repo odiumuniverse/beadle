@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/rulings"
 )
 
@@ -105,6 +106,8 @@ func (a *app) newRulingsTrustCmd() *cobra.Command {
 		Short: "Promote a signature so it can be applied automatically",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			scope = canonicalScope(scope)
+
 			if err := rulings.ValidateScope(scope); err != nil {
 				return err
 			}
@@ -309,6 +312,18 @@ func printRuling(w io.Writer, ruling rulings.Ruling) {
 	if !ruling.LastAppliedAt.IsZero() {
 		fmt.Fprintf(w, "last applied %s\n", ruling.LastAppliedAt.Format("2006-01-02 15:04:05"))
 	}
+}
+
+// canonicalScope resolves a historical agent id inside a host scope, so
+// `--scope host:claude-code` trusts the same agent as `host:claude` and the
+// stored scope matches the one the engine looks up.
+func canonicalScope(scope string) string {
+	host, ok := strings.CutPrefix(scope, rulings.ScopeHost+":")
+	if !ok {
+		return scope
+	}
+
+	return rulings.ScopeHost + ":" + agent.Canonical(host)
 }
 
 func printRulingsJSON(w io.Writer, all []rulings.Ruling) error {

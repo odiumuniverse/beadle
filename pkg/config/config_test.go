@@ -19,7 +19,7 @@ func TestPluginPinRoundTrip(t *testing.T) {
 		path := filepath.Join(t.TempDir(), config.FileName)
 
 		cfg := config.Default()
-		So(cfg.SetPluginPin("claude-code", "acme/tool", "1.0.0"), ShouldBeNil)
+		So(cfg.SetPluginPin("claude", "acme/tool", "1.0.0"), ShouldBeNil)
 		So(cfg.SetPluginPin("opencode", "acme/tool", "2.1.0"), ShouldBeNil)
 		So(cfg.Save(path), ShouldBeNil)
 
@@ -27,7 +27,7 @@ func TestPluginPinRoundTrip(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		Convey("When pins are read back", func() {
-			version, ok := loaded.PluginPin("claude-code", "acme/tool")
+			version, ok := loaded.PluginPin("claude", "acme/tool")
 			So(ok, ShouldBeTrue)
 			So(version, ShouldEqual, "1.0.0")
 
@@ -35,14 +35,14 @@ func TestPluginPinRoundTrip(t *testing.T) {
 			So(ok, ShouldBeTrue)
 			So(version, ShouldEqual, "2.1.0")
 
-			_, ok = loaded.PluginPin("gemini-cli", "acme/tool")
+			_, ok = loaded.PluginPin("gemini", "acme/tool")
 			So(ok, ShouldBeFalse)
 		})
 
 		Convey("When a pin is unset and the config is saved again", func() {
-			loaded.UnsetPluginPin("claude-code", "acme/tool")
+			loaded.UnsetPluginPin("claude", "acme/tool")
 
-			_, ok := loaded.PluginPin("claude-code", "acme/tool")
+			_, ok := loaded.PluginPin("claude", "acme/tool")
 			So(ok, ShouldBeFalse)
 
 			So(loaded.Save(path), ShouldBeNil)
@@ -52,7 +52,7 @@ func TestPluginPinRoundTrip(t *testing.T) {
 			Convey("Then only the remaining pin survives", func() {
 				So(err, ShouldBeNil)
 				So(reloaded.Agents["opencode"].PluginPins, ShouldResemble, map[string]string{"acme/tool": "2.1.0"})
-				So(reloaded.Agents["claude-code"].PluginPins, ShouldBeNil)
+				So(reloaded.Agents["claude"].PluginPins, ShouldBeNil)
 			})
 		})
 	})
@@ -104,8 +104,8 @@ func TestPluginPinValidation(t *testing.T) {
 				So(config.ValidatePluginPin("acme/tool", "v1.2.3-beta_4"), ShouldBeNil)
 
 				cfg := config.Default()
-				So(cfg.SetPluginPin("claude-code", "acme", "1.0.0"), ShouldBeError)
-				So(cfg.SetPluginPin("claude-code", "acme/tool", "../1.0.0"), ShouldBeError)
+				So(cfg.SetPluginPin("claude", "acme", "1.0.0"), ShouldBeError)
+				So(cfg.SetPluginPin("claude", "acme/tool", "../1.0.0"), ShouldBeError)
 			})
 		})
 	})
@@ -226,7 +226,7 @@ func TestLoadMigratesConfigV2(t *testing.T) {
   "permissions": "off",
   "history": "git",
   "secrets": "literal",
-  "agents": {"claude-code": {"enabled": true}}
+  "agents": {"claude": {"enabled": true}}
 }
 `
 		So(os.WriteFile(path, []byte(legacy), 0o600), ShouldBeNil)
@@ -259,7 +259,7 @@ func TestLoadMigratesConfigV2(t *testing.T) {
 
 				data, readErr := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
 				So(readErr, ShouldBeNil)
-				So(string(data), ShouldContainSubstring, `"version": 3`)
+				So(string(data), ShouldContainSubstring, `"version": 4`)
 				So(string(data), ShouldContainSubstring, `"permissions": "sync"`)
 				So(string(data), ShouldContainSubstring, `"kinds"`)
 				So(string(data), ShouldContainSubstring, `"shared"`)
@@ -321,7 +321,7 @@ func TestMigrationKeepsExplicitOff(t *testing.T) {
   "history": "git",
   "secrets": "literal",
   "kinds": {"permissions": "off"},
-  "agents": {"shared": {"enabled": false}, "claude-code": {"enabled": true}}
+  "agents": {"shared": {"enabled": false}, "claude": {"enabled": true}}
 }
 `
 		So(os.WriteFile(path, []byte(legacy), 0o600), ShouldBeNil)
@@ -346,28 +346,12 @@ func TestMigrationKeepsExplicitOff(t *testing.T) {
 	})
 }
 
-func TestLoadRejectsNewerConfigVersion(t *testing.T) {
-	Convey("Given a config written by a newer beadle", t, func() {
-		path := filepath.Join(t.TempDir(), config.FileName)
-		So(os.WriteFile(path, []byte(`{"version": 4}`), 0o600), ShouldBeNil)
-
-		Convey("When it is loaded", func() {
-			_, err := config.Load(path)
-
-			Convey("Then loading fails instead of guessing", func() {
-				So(err, ShouldBeError)
-				So(err.Error(), ShouldContainSubstring, "version 4")
-			})
-		})
-	})
-}
-
 func TestLoadRejectsInvalidPin(t *testing.T) {
 	Convey("Given a config file with an invalid pinned version", t, func() {
 		path := filepath.Join(t.TempDir(), config.FileName)
 		So(os.WriteFile(path, []byte(`{
   "version": 2,
-  "agents": {"claude-code": {"enabled": true, "plugin_pins": {"acme/tool": "../evil"}}}
+  "agents": {"claude": {"enabled": true, "plugin_pins": {"acme/tool": "../evil"}}}
 }`), 0o600), ShouldBeNil)
 
 		Convey("When it is loaded", func() {

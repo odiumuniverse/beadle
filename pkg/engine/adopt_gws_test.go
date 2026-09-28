@@ -111,7 +111,7 @@ func TestAdoptRefusesForksAndMissingCopies(t *testing.T) {
 		link := filepath.Join(f.home, ".claude", "skills", "alpha")
 
 		Convey("When adopt runs", func() {
-			_, err := f.engine.Adopt(t.Context(), "alpha", "claude-code", false)
+			_, err := f.engine.Adopt(t.Context(), "alpha", "claude", false)
 			So(err, ShouldNotBeNil)
 			So(err.Error(), ShouldContainSubstring, "differs between the canon")
 
@@ -126,7 +126,7 @@ func TestAdoptRefusesForksAndMissingCopies(t *testing.T) {
 		Convey("When the copy is gone", func() {
 			So(os.Remove(link), ShouldBeNil)
 
-			_, err := f.engine.Adopt(t.Context(), "alpha", "claude-code", false)
+			_, err := f.engine.Adopt(t.Context(), "alpha", "claude", false)
 			So(err, ShouldNotBeNil)
 			So(err.Error(), ShouldContainSubstring, "no readable copy")
 		})
@@ -142,7 +142,7 @@ func TestAdoptRefusesForksAndMissingCopies(t *testing.T) {
 		foreignSkill(t, f, "beta", "# beta\n")
 
 		Convey("When adopt runs", func() {
-			_, err := f.engine.Adopt(t.Context(), "beta", "claude-code", false)
+			_, err := f.engine.Adopt(t.Context(), "beta", "claude", false)
 			So(err, ShouldNotBeNil)
 			So(err.Error(), ShouldContainSubstring, "not in the canon")
 		})
@@ -179,7 +179,7 @@ func TestAdoptRefusesForksAndMissingCopies(t *testing.T) {
 		})
 
 		Convey("When the host is inactive", func() {
-			_, err := f.engine.Adopt(t.Context(), "alpha", "gemini-cli", false)
+			_, err := f.engine.Adopt(t.Context(), "alpha", "gemini", false)
 			So(err, ShouldNotBeNil)
 			So(err.Error(), ShouldContainSubstring, "not active")
 		})
@@ -206,7 +206,7 @@ func TestAdoptDryRunWritesNothing(t *testing.T) {
 		stash := filepath.Join(f.vault.AdoptionsDir(), agent.ClaudeCodeID, "alpha")
 
 		Convey("When adopt runs dry", func() {
-			report, err := f.engine.Adopt(t.Context(), "alpha", "claude-code", true)
+			report, err := f.engine.Adopt(t.Context(), "alpha", "claude", true)
 			So(err, ShouldBeNil)
 
 			Convey("Then nothing moved", func() {
@@ -222,11 +222,11 @@ func TestAdoptDryRunWritesNothing(t *testing.T) {
 			})
 
 			Convey("When the adoption is real", func() {
-				_, err := f.engine.Adopt(t.Context(), "alpha", "claude-code", false)
+				_, err := f.engine.Adopt(t.Context(), "alpha", "claude", false)
 				So(err, ShouldBeNil)
 
 				Convey("Then unadopt dry does not restore either", func() {
-					report, err := f.engine.Unadopt(t.Context(), "alpha", "claude-code", true)
+					report, err := f.engine.Unadopt(t.Context(), "alpha", "claude", true)
 					So(err, ShouldBeNil)
 					So(report.Adoptions, ShouldHaveLength, 1)
 					So(report.Adoptions[0].Action, ShouldEqual, "would-restore")
@@ -255,7 +255,7 @@ func TestUnadoptFallbacks(t *testing.T) {
 		src := foreignSkill(t, f, "alpha", "# alpha\n")
 		link := filepath.Join(f.home, ".claude", "skills", "alpha")
 
-		if _, err := f.engine.Adopt(t.Context(), "alpha", "claude-code", false); err != nil {
+		if _, err := f.engine.Adopt(t.Context(), "alpha", "claude", false); err != nil {
 			t.Fatalf("adopt: %v", err)
 		}
 
@@ -271,7 +271,7 @@ func TestUnadoptFallbacks(t *testing.T) {
 		So(os.Remove(stash), ShouldBeNil)
 
 		Convey("When unadopt runs", func() {
-			report, err := f.engine.Unadopt(t.Context(), "alpha", "claude-code", false)
+			report, err := f.engine.Unadopt(t.Context(), "alpha", "claude", false)
 			So(err, ShouldBeNil)
 
 			Convey("Then the symlink is recreated from the recorded target", func() {
@@ -295,7 +295,7 @@ func TestUnadoptFallbacks(t *testing.T) {
 		So(os.RemoveAll(src), ShouldBeNil)
 
 		Convey("When unadopt runs", func() {
-			report, err := f.engine.Unadopt(t.Context(), "alpha", "claude-code", false)
+			report, err := f.engine.Unadopt(t.Context(), "alpha", "claude", false)
 			So(err, ShouldBeNil)
 
 			Convey("Then the record stays with a warning", func() {
@@ -326,7 +326,7 @@ func TestUnadoptFallbacks(t *testing.T) {
 		write(t, filepath.Join(link, "SKILL.md"), "# somebody else\n")
 
 		Convey("When unadopt runs", func() {
-			report, err := f.engine.Unadopt(t.Context(), "alpha", "claude-code", false)
+			report, err := f.engine.Unadopt(t.Context(), "alpha", "claude", false)
 			So(err, ShouldBeNil)
 
 			Convey("Then the record stays and the foreign tree is untouched", func() {
@@ -358,7 +358,7 @@ func TestAdoptTreeCopyAndUnadopt(t *testing.T) {
 		stash := filepath.Join(f.vault.AdoptionsDir(), agent.ClaudeCodeID, "alpha")
 
 		Convey("When adopt runs", func() {
-			report, err := f.engine.Adopt(t.Context(), "alpha", "claude-code", false)
+			report, err := f.engine.Adopt(t.Context(), "alpha", "claude", false)
 			So(err, ShouldBeNil)
 
 			Convey("Then the tree is stashed and the record has no symlink target", func() {
@@ -375,7 +375,7 @@ func TestAdoptTreeCopyAndUnadopt(t *testing.T) {
 			})
 
 			Convey("When unadopt runs", func() {
-				report, err := f.engine.Unadopt(t.Context(), "alpha", "claude-code", false)
+				report, err := f.engine.Unadopt(t.Context(), "alpha", "claude", false)
 				So(err, ShouldBeNil)
 
 				Convey("Then the whole tree comes back", func() {
