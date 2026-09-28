@@ -41,6 +41,19 @@ func withoutOmpEnv(t *testing.T) {
 	t.Setenv("PATH", "/usr/bin:/bin")
 }
 
+// TestOmpHomeAndAgentDir pins the four combinations a live probe of omp
+// 18.4.1 resolved through `omp config path` (isolated HOME, and each one
+// cross-checked by which profile's skill `omp read skill://` can see):
+//
+//	no variables                  -> <home>/.omp/agent
+//	OMP_PROFILE=default           -> <home>/.omp/agent
+//	OMP_PROFILE= (empty) +
+//	  PI_PROFILE=work             -> <home>/.omp/agent  (the legacy key is
+//	                                 ignored while OMP_PROFILE is defined)
+//	OMP_PROFILE=work              -> <home>/.omp/profiles/work/agent
+//
+// The legacy fallback matters only when OMP_PROFILE is unset entirely, which
+// the "PI_PROFILE only" case below pins.
 func TestOmpHomeAndAgentDir(t *testing.T) {
 	Convey("Given a home without omp environment", t, func() {
 		home := t.TempDir()

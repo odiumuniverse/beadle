@@ -214,7 +214,7 @@ func Omp(home, cwd string) *Agent {
 				traits: Traits{
 					DefaultMode: config.ModeSync,
 					ReloadHint:  "omp reads MCP config at startup: restart omp or run /mcp reload",
-					Note:        "~/.omp/agent/.mcp.json is read by omp but not written; disabledServers/enabledServers are not managed",
+					Note:        "~/.omp/agent/.mcp.json is read by omp but not written; disabledServers/enabledServers are not managed; another tool (verger) writes this same file: beadle merges the server keys it owns and reports conflicts, but two writers inside one sync window are last-writer-wins — a shared lock would be needed to serialize them",
 				},
 			},
 			&skillsSurface{
