@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -182,8 +183,11 @@ func TestRegisterSystemdRestartsOnReinstall(t *testing.T) {
 	})
 }
 
-func TestUnitEnvFromFile(t *testing.T) {
-	spec := daemon.Spec{
+// envSpec is the unit both platform renderers pin the same environment for.
+func envSpec(t *testing.T) daemon.Spec {
+	t.Helper()
+
+	return daemon.Spec{
 		Binary: "/usr/local/bin/beadle",
 		Args:   []string{"watch"},
 		Home:   t.TempDir(),
@@ -193,26 +197,111 @@ func TestUnitEnvFromFile(t *testing.T) {
 			"PATH":        "/usr/bin:/bin",
 		},
 	}
+}
 
-	Convey("Given a rendered launchd unit", t, func() {
-		path, content, err := daemon.RenderLaunchd(spec)
+// writeRenderedUnit materializes a rendered unit so the parsers can read it back.
+func writeRenderedUnit(t *testing.T, path, content string) string {
+	t.Helper()
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+
+	return path
+}
+
+// TestUnitEnvParsersReadBothFormats pins each parser to its own format: which
+// one UnitEnvFromFile dispatches to depends on the host OS, so the parsers are
+// exercised directly instead of through that dispatch.
+func TestUnitEnvParsersReadBothFormats(t *testing.T) {
+	spec := envSpec(t)
+
+	const launchdUnit = `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>com.beadle.watch</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key><string>/Users/test</string>
+		<key>BEADLE_HOME</key><string>/vault</string>
+		<key>PATH</key><string>/usr/bin:/bin</string>
+	</dict>
+</dict>
+</plist>
+`
+
+	const systemdUnit = `[Unit]
+Description=beadle watch
+
+[Service]
+ExecStart="/usr/local/bin/beadle" "watch"
+Environment="BEADLE_HOME=/vault"
+Environment="HOME=/Users/test"
+Environment="PATH=/usr/bin:/bin"
+`
+
+	Convey("Given a launchd plist and a systemd unit pinning the same environment", t, func() {
+		Convey("Then the plist parser yields the three variables", func() {
+			So(daemon.LaunchdEnvForTest(launchdUnit), ShouldResemble, spec.Env)
+		})
+
+		Convey("Then the unit-file parser yields the three variables", func() {
+			So(daemon.SystemdEnvFromUnitForTest(systemdUnit), ShouldResemble, spec.Env)
+		})
+
+		Convey("When the launchd renderer writes a plist", func() {
+			_, content, err := daemon.RenderLaunchd(spec)
+
+			Convey("Then the plist parser reads the pinned environment back", func() {
+				So(err, ShouldBeNil)
+				So(daemon.LaunchdEnvForTest(content), ShouldResemble, spec.Env)
+			})
+		})
+
+		Convey("When the systemd renderer writes a unit file", func() {
+			_, content, err := daemon.RenderSystemd(spec)
+
+			Convey("Then the unit-file parser reads the pinned environment back", func() {
+				So(err, ShouldBeNil)
+				So(daemon.SystemdEnvFromUnitForTest(content), ShouldResemble, spec.Env)
+			})
+		})
+	})
+}
+
+func TestUnitEnvFromFile(t *testing.T) {
+	// UnitEnvFromFile picks the parser by host OS and Render picks the matching
+	// format, so the round-trip below only exists where a renderer does.
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skipf("daemon: no service unit renderer for %s", runtime.GOOS)
+	}
+
+	spec := envSpec(t)
+
+	Convey("Given a unit rendered by this platform's renderer", t, func() {
+		path, content, err := daemon.Render(spec)
 		So(err, ShouldBeNil)
-		So(os.MkdirAll(filepath.Dir(path), 0o750), ShouldBeNil)
-		So(os.WriteFile(path, []byte(content), 0o600), ShouldBeNil)
 
 		Convey("Then the pinned environment round-trips", func() {
-			env, err := daemon.UnitEnvFromFile(path)
+			env, err := daemon.UnitEnvFromFile(writeRenderedUnit(t, path, content))
 			So(err, ShouldBeNil)
 			So(env, ShouldResemble, spec.Env)
 		})
 	})
 
-	Convey("Given a unit without pinned values", t, func() {
-		path := filepath.Join(t.TempDir(), "unit")
-		So(os.WriteFile(path, []byte("[Service]\nExecStart=/bin/true\n"), 0o600), ShouldBeNil)
+	Convey("Given a unit rendered without pinned values", t, func() {
+		unpinned := spec
+		unpinned.Env = nil
+
+		path, content, err := daemon.Render(unpinned)
+		So(err, ShouldBeNil)
 
 		Convey("Then the environment is empty", func() {
-			env, err := daemon.UnitEnvFromFile(path)
+			env, err := daemon.UnitEnvFromFile(writeRenderedUnit(t, path, content))
 			So(err, ShouldBeNil)
 			So(env, ShouldBeEmpty)
 		})
