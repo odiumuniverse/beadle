@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/project"
 )
@@ -35,10 +36,19 @@ const (
 	ompProjectMCPRel   = ".omp/mcp.json"
 )
 
+// OmpHomeNote explains the empty PI_CONFIG_DIR case: omp ignores the empty
+// value instead of resolving it against the working directory.
+const OmpHomeNote = "PI_CONFIG_DIR is empty; omp ignores it and falls back to ~/.omp (it is not resolved to cwd)"
+
 // OmpHome resolves the omp user root the way omp does: PI_CONFIG_DIR names
 // the root directory under $HOME (normally .omp), and an empty value is
 // ignored so the default ~/.omp applies. The second result reports whether
 // PI_CONFIG_DIR was set to an empty value.
+//
+// The value is taken as a name under HOME, never as a root of its own: with
+// PI_CONFIG_DIR=/abs/path omp reads $HOME/abs/path (live-verified on
+// 18.4.1 — a skill placed in the absolute path is invisible, one in
+// $HOME/abs/path/agent/skills is discovered).
 func OmpHome(home string) (string, bool) {
 	value, ok := os.LookupEnv(ompHomeEnv)
 	if ok && value != "" {
@@ -102,6 +112,31 @@ func OmpDetected(home string) (bool, error) {
 	return false, nil
 }
 
+// OmpConfigured reports whether omp has been set up for this home: its agent
+// config.yml exists. OmpDetected is broader on purpose — the binary alone
+// means beadle can deliver into a fresh home — so the doctor and status
+// distinguish "installed with a config" from "binary on PATH only".
+func OmpConfigured(home string) bool {
+	return fsutil.Exists(filepath.Join(OmpAgentDir(home), ompConfigFile))
+}
+
+// OmpPluginsDir returns the directory holding omp's plugin state
+// (installed_plugins.json, marketplaces.json, node_modules, caches): a named
+// profile relocates it next to the profile's agent dir, exactly like
+// OmpAgentDir (live-verified on 18.4.1: a registry planted under
+// ~/.omp/profiles/work/plugins is the one `OMP_PROFILE=work omp plugin list`
+// reads). PI_CODING_AGENT_DIR does not move it — the plugin state is a
+// sibling of agent/, not a child.
+func OmpPluginsDir(home string) string {
+	root, _ := OmpHome(home)
+
+	if profile, ok := OmpProfile(); ok {
+		return filepath.Join(root, ompProfilesDirName, profile, "plugins")
+	}
+
+	return filepath.Join(root, "plugins")
+}
+
 // OmpProfiles lists the profile directories under <home>/profiles; it feeds
 // the doctor only.
 func OmpProfiles(home string) []string {
@@ -160,7 +195,7 @@ func Omp(home, cwd string) *Agent {
 				traits: Traits{
 					DefaultMode: config.ModeSync,
 					Creatable:   true,
-					Note:        "the only user-level context file omp loads: it shadows ~/.claude/CLAUDE.md and ~/.agents/AGENTS.md; RULES.md and rules/ are not managed; the approval policy lives in config.yml and is not managed",
+					Note:        "the only user-level context file omp loads: it shadows ~/.claude/CLAUDE.md and ~/.agents/AGENTS.md; the rulebook zone (RULES.md and rules/*.md) is a separate omp mechanism and is left to the tools that own it; the approval policy lives in config.yml and is not managed",
 				},
 			},
 			&mcpSurface{

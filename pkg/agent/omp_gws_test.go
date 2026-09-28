@@ -78,6 +78,21 @@ func TestOmpHomeAndAgentDir(t *testing.T) {
 			})
 		})
 
+		Convey("When PI_CONFIG_DIR is an absolute path", func() {
+			// omp joins the value under HOME instead of resolving it as a
+			// root of its own (live-verified on 18.4.1: a skill in
+			// /abs/agent/skills is invisible, the one in
+			// $HOME/abs/agent/skills is discovered).
+			t.Setenv("PI_CONFIG_DIR", filepath.Join(string(filepath.Separator), "abs", "root"))
+
+			Convey("Then it is joined under HOME, not resolved", func() {
+				dir, _ := agent.OmpHome(home)
+				So(dir, ShouldEqual, filepath.Join(home, "abs", "root"))
+				So(dir, ShouldNotEqual, filepath.Join(string(filepath.Separator), "abs", "root"))
+				So(agent.OmpAgentDir(home), ShouldEqual, filepath.Join(home, "abs", "root", "agent"))
+			})
+		})
+
 		Convey("When PI_CODING_AGENT_DIR overrides the agent dir", func() {
 			target := filepath.Join(home, "custom-agent")
 
@@ -94,6 +109,18 @@ func TestOmpHomeAndAgentDir(t *testing.T) {
 
 			Convey("Then the profile dir wins and PI_CODING_AGENT_DIR is ignored", func() {
 				So(agent.OmpAgentDir(home), ShouldEqual, filepath.Join(home, ".omp", "profiles", "work", "agent"))
+			})
+		})
+
+		Convey("When OMP_PROFILE is empty and PI_PROFILE names a profile", func() {
+			// omp ignores the legacy key when OMP_PROFILE is defined at all,
+			// even empty (live-verified on 18.4.1: the profile skill stays
+			// invisible).
+			t.Setenv("OMP_PROFILE", "")
+			t.Setenv("PI_PROFILE", "legacy")
+
+			Convey("Then the default profile applies", func() {
+				So(agent.OmpAgentDir(home), ShouldEqual, filepath.Join(home, ".omp", "agent"))
 			})
 		})
 
@@ -186,6 +213,39 @@ func TestOmpDetect(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(detected, ShouldBeTrue)
 			})
+		})
+	})
+}
+
+func TestOmpConfiguredAndPluginsDir(t *testing.T) {
+	Convey("Given a home with an omp agent config", t, func() {
+		home := t.TempDir()
+
+		withoutOmpEnv(t)
+
+		Convey("Then the configured signal needs the config file", func() {
+			So(agent.OmpConfigured(home), ShouldBeFalse)
+
+			writeFile(t, filepath.Join(home, ".omp", "agent", "config.yml"), "setupVersion: 2\n")
+
+			So(agent.OmpConfigured(home), ShouldBeTrue)
+
+			// The plugin state is a sibling of agent/, not a child.
+			So(agent.OmpPluginsDir(home), ShouldEqual, filepath.Join(home, ".omp", "plugins"))
+		})
+	})
+
+	Convey("Given a named omp profile", t, func() {
+		home := t.TempDir()
+
+		withoutOmpEnv(t)
+		t.Setenv("OMP_PROFILE", "work")
+
+		Convey("Then the plugin state moves next to the profile agent dir", func() {
+			// Live-verified on 18.4.1: OMP_PROFILE=work omp plugin list
+			// reads ~/.omp/profiles/work/plugins/installed_plugins.json.
+			So(agent.OmpPluginsDir(home), ShouldEqual, filepath.Join(home, ".omp", "profiles", "work", "plugins"))
+			So(agent.OmpConfigured(home), ShouldBeFalse)
 		})
 	})
 }

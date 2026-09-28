@@ -21,7 +21,8 @@ var isolatedHome string
 // instead of a developer's value; a test that wants another location
 // overrides it with t.Setenv, which wins. The omp keys are pinned empty for
 // the same reason: the omp adapter resolves its root from each test's own
-// home unless a test sets PI_CONFIG_DIR/PI_CODING_AGENT_DIR/OMP_PROFILE.
+// home unless a test sets PI_CONFIG_DIR/PI_CODING_AGENT_DIR/OMP_PROFILE or
+// the legacy PI_PROFILE.
 // XDG_CONFIG_HOME is deliberately left alone here: most of this package's
 // tests override HOME per test and rely on the code falling back to
 // <home>/.config, so pinning XDG would send the code into the isolation
@@ -44,6 +45,7 @@ func isolateTestHome(m *testing.M) int {
 		"PI_CONFIG_DIR":       "",
 		"PI_CODING_AGENT_DIR": "",
 		"OMP_PROFILE":         "",
+		"PI_PROFILE":          "",
 	} {
 		//nolint:usetesting // TestMain cannot use t.Setenv; tests override per test
 		if err := os.Setenv(name, value); err != nil {
@@ -84,7 +86,7 @@ func TestSuiteHomeIsolation(t *testing.T) {
 				// The omp root/profile keys are pinned empty for the same
 				// reason: the omp adapter resolves its root from each test's
 				// own home.
-				for _, name := range []string{"PI_CONFIG_DIR", "PI_CODING_AGENT_DIR", "OMP_PROFILE"} {
+				for _, name := range []string{"PI_CONFIG_DIR", "PI_CODING_AGENT_DIR", "OMP_PROFILE", "PI_PROFILE"} {
 					So(os.Getenv(name), ShouldBeEmpty)
 				}
 			})

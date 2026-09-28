@@ -2,16 +2,16 @@ package agent
 
 import (
 	"cmp"
-	"errors"
 	"slices"
 	"strconv"
 	"strings"
 )
 
-// errCommandInexpressible marks a canonical command a host cannot render: the
-// template uses a placeholder the host has no syntax for. The surface hides
-// the item from that host instead of failing the sync.
-var errCommandInexpressible = errors.New("the host cannot express this command")
+// errCommandInexpressible is the command-facing name of the
+// host-inexpressible sentinel (file_surface.go): a template uses a
+// placeholder the host has no syntax for, so the surface hides the item from
+// that host instead of failing the sync.
+var errCommandInexpressible = errItemInexpressible
 
 // commandShell lists the shell-block syntaxes of the command hosts.
 type commandShell int

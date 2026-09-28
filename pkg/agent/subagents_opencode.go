@@ -42,11 +42,11 @@ const (
 
 // OpenCode v2 action names.
 const (
-	ocRead      = "read"
-	ocEdit      = "edit"
+	ocRead      = toolNameRead
+	ocEdit      = toolNameEdit
 	ocShell     = "shell"
-	ocGrep      = "grep"
-	ocGlob      = "glob"
+	ocGrep      = toolNameGrep
+	ocGlob      = toolNameGlob
 	ocWebFetch  = "webfetch"
 	ocWebSearch = "websearch"
 	ocSubagent  = "subagent"
@@ -89,10 +89,10 @@ var ocActionTools = map[string][]string{
 
 // ocV1Actions maps OpenCode v1 tool keys to the v2 action names.
 var ocV1Actions = map[string]string{
-	"write": ocEdit,
-	"patch": ocEdit,
-	"bash":  ocShell,
-	"task":  ocSubagent,
+	"write":        ocEdit,
+	"patch":        ocEdit,
+	"bash":         ocShell,
+	openCodeV2Task: ocSubagent,
 }
 
 // ocWriteClass lists the canonical tools that the edit action covers.

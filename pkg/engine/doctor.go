@@ -119,6 +119,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.FarmCommandIssues()...)
 	issues = append(issues, e.DSHIssues()...)
 	issues = append(issues, e.dshMCPIssues(active)...)
+	issues = append(issues, e.OmpIssues()...)
 
 	return issues, nil
 }

@@ -35,6 +35,74 @@ func isOmpSubagentUnsupported(key string) bool {
 	return slices.Contains(ompSubagentUnsupported, key)
 }
 
+// ompToolVocab maps the canonical subagent tool names to the omp tools and
+// back. The omp spellings come from the bundled agent frontmatter
+// (`omp agents unpack --dir <dir>`): read, write, edit, notebook, bash, grep,
+// glob, web_search, task, ask. The canonical names alone are not enough:
+// omp lowercases a name it knows (Write and write both count as a write tool,
+// live-verified through the task-agent READ-ONLY annotation), but it has no
+// WebFetch, Skill or Agent tool, so an unmapped name would be written and
+// ignored in silence.
+var ompToolVocab = newToolVocab(map[string]string{
+	toolRead:            toolNameRead,
+	toolWrite:           "write",
+	toolEdit:            toolNameEdit,
+	toolNotebookEdit:    "notebook",
+	toolBash:            "bash",
+	toolGrep:            toolNameGrep,
+	toolGlob:            toolNameGlob,
+	toolWebSearch:       "web_search",
+	toolTask:            toolNameTask,
+	toolAgent:           "task",
+	toolAskUserQuestion: "ask",
+})
+
+// ompTool maps a canonical tool name to the omp spelling.
+func ompTool(tool string) (string, bool) {
+	return ompToolVocab.host(tool)
+}
+
+// ompCanonicalTool maps an omp tool spelling back to the canonical name.
+func ompCanonicalTool(name string) (string, bool) {
+	return ompToolVocab.canonical(name)
+}
+
+// ompCanonicalTools maps the tool list of an omp agent file back into the
+// canon: the entries omp has no canonical equivalent for are dropped from the
+// canon and stay in the file as host extras.
+func ompCanonicalTools(names []string) []string {
+	var out []string
+
+	for _, name := range names {
+		if tool, ok := ompCanonicalTool(name); ok {
+			out = append(out, tool)
+		}
+	}
+
+	return sortToolList(out)
+}
+
+// ompSubagentTools renders the tool allowlist: the canonical tools in their
+// omp spelling, followed by the host entries the codec cannot canonicalize,
+// so a rewrite never drops an omp-only tool.
+func ompSubagentTools(doc subagent.Document, existing []byte) []string {
+	var out []string
+
+	for _, tool := range doc.Tools {
+		if name, ok := ompTool(tool); ok {
+			out = append(out, name)
+		}
+	}
+
+	extra := preserveToolExtras(existing, func(name string) bool {
+		_, ok := ompCanonicalTool(name)
+
+		return ok
+	})
+
+	return append(out, extra...)
+}
+
 // ompSubagentCodec reads and writes oh-my-pi task-agent files. omp requires a
 // name and a description (a file missing either is skipped) and knows tools,
 // spawns, model, thinking-level, output, blocking, autoloadSkills and the
@@ -63,27 +131,43 @@ func (ompSubagentCodec) parse(_ string, data []byte) (subagent.Document, bool, e
 	doc.Isolation = ""
 	doc.Color = ""
 	doc.Hidden = nil
+	doc.Tools = ompCanonicalTools(doc.Tools)
 
 	return doc, true, nil
 }
 
-func (ompSubagentCodec) fields(doc subagent.Document, _ []byte) ([]subagent.Field, string, error) {
+func (ompSubagentCodec) fields(doc subagent.Document, existing []byte) ([]subagent.Field, string, error) {
 	if !subagent.ValidName(doc.Name) {
 		return nil, "", errors.New("subagent name is required")
+	}
+
+	if doc.Description == "" {
+		// omp skips a task agent without a description, so a file would be
+		// written and silently ignored: the item is hidden from the host
+		// instead (the doctor reports a stale copy of one already on disk).
+		return nil, "", fmt.Errorf("subagent %s: omp requires a description: %w", doc.Name, errItemInexpressible)
 	}
 
 	fields := make([]subagent.Field, 0, len(ompSubagentManaged()))
 
 	for _, field := range subagent.Fields(doc) {
-		if !ompSubagentFieldValid(field.Key, doc) {
-			continue
-		}
+		switch field.Key {
+		case toolsKey:
+			tools := ompSubagentTools(doc, existing)
+			if len(tools) == 0 {
+				continue
+			}
 
-		if field.Key == modelKey {
+			field.Value = tools
+		case modelKey:
 			field.Value = ompSubagentModel(doc.Model)
 			if field.Value == "" {
 				continue
 			}
+		}
+
+		if !ompSubagentFieldValid(field.Key, doc) {
+			continue
 		}
 
 		fields = append(fields, field)
@@ -127,6 +211,16 @@ func (ompSubagentCodec) strayKeys([]byte) []string { return nil }
 func (ompSubagentCodec) audit(doc subagent.Document) []string {
 	var notes []string
 
+	for _, tool := range doc.Tools {
+		if _, ok := ompTool(tool); !ok {
+			notes = append(notes, fmt.Sprintf("tool %q has no omp equivalent; it is not written", tool))
+		}
+	}
+
+	if ompToolsLost(doc) {
+		notes = append(notes, "no canonical tool has an omp equivalent; the host keeps all tools (fail-open)")
+	}
+
 	for _, key := range ompSubagentUnsupported {
 		if ompSubagentFieldSet(key, doc) {
 			notes = append(notes, key+" is not expressible for omp; the vault value stays")
@@ -143,6 +237,22 @@ func (ompSubagentCodec) audit(doc subagent.Document) []string {
 	}
 
 	return dedupStrings(notes)
+}
+
+// ompToolsLost reports an allowlist with no omp equivalent: the codec writes
+// no tools key, and the host then keeps every tool.
+func ompToolsLost(doc subagent.Document) bool {
+	if doc.Tools == nil {
+		return false
+	}
+
+	for _, tool := range doc.Tools {
+		if _, ok := ompTool(tool); ok {
+			return false
+		}
+	}
+
+	return true
 }
 
 // ompSubagentFieldSet reports whether a canonical document carries the key.

@@ -36,6 +36,12 @@ type fileCodec[T any] interface {
 	audit(doc T) []string
 }
 
+// errItemInexpressible marks a canonical item a host has no form for: the
+// surface hides the item from that host instead of writing a file the host
+// would discard. Commands (a placeholder the host cannot expand) and
+// subagents (a required host field the canon does not carry) both use it.
+var errItemInexpressible = errors.New("the host cannot express this item")
+
 // filePullNoticer is implemented by codecs that report host-side hazards
 // while reading a file: constructs the host does not expand but that become
 // active on hosts that do.

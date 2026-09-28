@@ -551,7 +551,7 @@ func SharedSkills(home string) *Agent {
 				traits: Traits{
 					DefaultMode: config.ModeSync,
 					Creatable:   true,
-					Note:        "read natively by OpenCode, Gemini CLI, Cursor, Codex and Copilot",
+					Note:        "the shared skills hub: beadle is its writer, the hosts that read it natively (OpenCode, Gemini CLI, Cursor, Codex, Copilot, oh-my-pi) keep their own copy read-only and win by name; a file another tool wrote here is adopted into the canon instead of being deleted",
 				},
 			},
 		},

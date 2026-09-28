@@ -28,7 +28,7 @@ const (
 // of the installing shell rather than an identity, so doctor ignores it.
 var IdentityEnvKeys = []string{
 	"HOME", "BEADLE_HOME", "XDG_CONFIG_HOME", "DSH_HOME",
-	"PI_CONFIG_DIR", "PI_CODING_AGENT_DIR", "OMP_PROFILE",
+	"PI_CONFIG_DIR", "PI_CODING_AGENT_DIR", "OMP_PROFILE", "PI_PROFILE",
 }
 
 type Spec struct {
@@ -49,11 +49,14 @@ type Spec struct {
 // environment: HOME and the vault are always explicit (BEADLE_HOME only when
 // it differs from the default), the agent-specific roots
 // (XDG_CONFIG_HOME/DSH_HOME and omp's PI_CONFIG_DIR/PI_CODING_AGENT_DIR/
-// OMP_PROFILE) and PATH travel when set.
+// OMP_PROFILE/PI_PROFILE) and PATH travel when set.
 func UnitEnv(home, vaultRoot string) map[string]string {
 	env := map[string]string{"HOME": home}
 
-	for _, key := range []string{"XDG_CONFIG_HOME", "DSH_HOME", "PI_CONFIG_DIR", "PI_CODING_AGENT_DIR", "OMP_PROFILE"} {
+	for _, key := range []string{
+		"XDG_CONFIG_HOME", "DSH_HOME",
+		"PI_CONFIG_DIR", "PI_CODING_AGENT_DIR", "OMP_PROFILE", "PI_PROFILE",
+	} {
 		if value := os.Getenv(key); value != "" {
 			env[key] = value
 		}

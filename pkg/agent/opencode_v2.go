@@ -16,15 +16,15 @@ const (
 	openCodeV2Shell    = "shell"
 	openCodeV2Local    = "local"
 	openCodeV2Remote   = "remote"
-	openCodeV2Task     = "task"
+	openCodeV2Task     = toolNameTask
 	openCodeV2Subagent = "subagent"
 )
 
 var openCodeV2Actions = map[string]struct{}{
-	"read":               {},
-	"edit":               {},
-	"glob":               {},
-	"grep":               {},
+	ocRead:               {},
+	ocEdit:               {},
+	ocGlob:               {},
+	ocGrep:               {},
 	"skill":              {},
 	"question":           {},
 	"webfetch":           {},

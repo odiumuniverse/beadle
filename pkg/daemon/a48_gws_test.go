@@ -19,6 +19,7 @@ func TestUnitEnvPinsIdentity(t *testing.T) {
 		t.Setenv("PI_CONFIG_DIR", ".omp-alt")
 		t.Setenv("PI_CODING_AGENT_DIR", "/omp/agent")
 		t.Setenv("OMP_PROFILE", "work")
+		t.Setenv("PI_PROFILE", "legacy")
 		t.Setenv("PATH", "/usr/bin:/bin")
 
 		Convey("When the unit environment is built for a custom vault", func() {
@@ -32,6 +33,7 @@ func TestUnitEnvPinsIdentity(t *testing.T) {
 				So(env["PI_CONFIG_DIR"], ShouldEqual, ".omp-alt")
 				So(env["PI_CODING_AGENT_DIR"], ShouldEqual, "/omp/agent")
 				So(env["OMP_PROFILE"], ShouldEqual, "work")
+				So(env["PI_PROFILE"], ShouldEqual, "legacy")
 				So(env["PATH"], ShouldEqual, "/usr/bin:/bin")
 			})
 		})
@@ -51,6 +53,7 @@ func TestUnitEnvPinsIdentity(t *testing.T) {
 			t.Setenv("PI_CONFIG_DIR", "")
 			t.Setenv("PI_CODING_AGENT_DIR", "")
 			t.Setenv("OMP_PROFILE", "")
+			t.Setenv("PI_PROFILE", "")
 
 			env := daemon.UnitEnv("/home/u", "")
 
@@ -60,6 +63,7 @@ func TestUnitEnvPinsIdentity(t *testing.T) {
 				So(env, ShouldNotContainKey, "PI_CONFIG_DIR")
 				So(env, ShouldNotContainKey, "PI_CODING_AGENT_DIR")
 				So(env, ShouldNotContainKey, "OMP_PROFILE")
+				So(env, ShouldNotContainKey, "PI_PROFILE")
 				So(env, ShouldNotContainKey, "BEADLE_HOME")
 				So(env["HOME"], ShouldEqual, "/home/u")
 			})

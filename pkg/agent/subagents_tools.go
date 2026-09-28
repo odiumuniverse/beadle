@@ -10,6 +10,16 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/subagent"
 )
 
+// Lowercase tool spellings shared by the host dialect tables: OpenCode's
+// action names, its V2 tool keys and the omp tool names are the same words.
+const (
+	toolNameRead = "read"
+	toolNameEdit = "edit"
+	toolNameGrep = "grep"
+	toolNameGlob = "glob"
+	toolNameTask = "task"
+)
+
 // Host schema literals shared by the subagent codecs.
 const (
 	nameKey        = "name"

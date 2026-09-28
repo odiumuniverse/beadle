@@ -10,15 +10,15 @@ import (
 )
 
 var claudeTools = map[string]string{
-	"edit":      "Edit",
-	"glob":      "Glob",
-	"grep":      "Grep",
-	"read":      "Read",
-	"skill":     "Skill",
-	"task":      "Task",
-	"todowrite": "TodoWrite",
-	"webfetch":  "WebFetch",
-	"websearch": "WebSearch",
+	ocEdit:         "Edit",
+	ocGlob:         "Glob",
+	ocGrep:         "Grep",
+	ocRead:         "Read",
+	"skill":        "Skill",
+	openCodeV2Task: "Task",
+	"todowrite":    "TodoWrite",
+	"webfetch":     "WebFetch",
+	"websearch":    "WebSearch",
 }
 
 var claudePerms = listCodec{

@@ -1,6 +1,7 @@
 package agent_test
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -103,15 +104,74 @@ func TestOmpSubagents(t *testing.T) {
 		Convey("When a canon subagent has no description", func() {
 			value := subagent.Render(subagent.Document{Name: "alpha", Body: "Body.\n"})
 
-			Convey("Then the write does not abort, the file stays incomplete and the doctor reports it", func() {
+			Convey("Then nothing is written and the doctor reports the refusal", func() {
 				So(surface.Write(t.Context(), kind.Items{"alpha.md": value}), ShouldBeNil)
 
-				out := readFile(t, filepath.Join(dir, "alpha.md"))
-				So(out, ShouldContainSubstring, "name: alpha")
-				So(out, ShouldNotContainSubstring, "description")
+				_, statErr := os.Stat(filepath.Join(dir, "alpha.md"))
+				So(os.IsNotExist(statErr), ShouldBeTrue)
 
 				notice := noticeText(noticesFor(a, "alpha.md", value))
 				So(notice, ShouldContainSubstring, "omp requires a description")
+			})
+		})
+	})
+}
+
+func TestOmpSubagentTools(t *testing.T) {
+	Convey("Given an omp adapter", t, func() {
+		home := t.TempDir()
+
+		withoutOmpEnv(t)
+
+		a := agent.Omp(home, t.TempDir())
+		dir := filepath.Join(home, ".omp", "agent", "agents")
+		path := filepath.Join(dir, "alpha.md")
+		surface := surfaceOf(t, a, kind.Subagents)
+
+		Convey("When the canon lists canonical tools", func() {
+			value := subagent.Render(subagent.Document{
+				Name: "alpha", Description: "d", Tools: []string{"Read", "Bash", "AskUserQuestion"}, Body: "b\n",
+			})
+
+			Convey("Then they are written in their omp spelling", func() {
+				So(surface.Write(t.Context(), kind.Items{"alpha.md": value}), ShouldBeNil)
+
+				out := readFile(t, path)
+				So(out, ShouldContainSubstring, "tools: [read, bash, ask]")
+				So(out, ShouldNotContainSubstring, "Read")
+				So(noticeText(noticesFor(a, "alpha.md", value)), ShouldBeEmpty)
+			})
+		})
+
+		Convey("When an omp file carries a tool with no canonical equivalent", func() {
+			writeFile(t, path, "---\nname: alpha\ndescription: d\ntools:\n  - read\n  - find\n---\nb\n")
+
+			Convey("Then the canon takes the known tool and a rewrite keeps the host one", func() {
+				snap := snapshot(t, a, kind.Subagents)
+
+				doc, err := subagent.Parse(snap.Items["alpha.md"])
+				So(err, ShouldBeNil)
+				So(doc.Tools, ShouldResemble, []string{"Read"})
+
+				So(surface.Write(t.Context(), kind.Items{"alpha.md": snap.Items["alpha.md"]}), ShouldBeNil)
+
+				out := readFile(t, path)
+				So(out, ShouldContainSubstring, "tools: [read, find]")
+			})
+		})
+
+		Convey("When the canon lists a tool omp has no equivalent for", func() {
+			value := subagent.Render(subagent.Document{
+				Name: "alpha", Description: "d", Tools: []string{"WebFetch"}, Body: "b\n",
+			})
+
+			Convey("Then no tool key is written and the doctor reports the loss", func() {
+				So(surface.Write(t.Context(), kind.Items{"alpha.md": value}), ShouldBeNil)
+				So(readFile(t, path), ShouldNotContainSubstring, "tools")
+
+				notice := noticeText(noticesFor(a, "alpha.md", value))
+				So(notice, ShouldContainSubstring, `tool "WebFetch" has no omp equivalent`)
+				So(notice, ShouldContainSubstring, "the host keeps all tools (fail-open)")
 			})
 		})
 	})

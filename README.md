@@ -145,11 +145,16 @@ manage** alone.
   stays silent when the two files are identical.
 
 ⁹ oh-my-pi (`omp`) is not Pi: its user root is `~/.omp` (`PI_CONFIG_DIR`
-  relocates it, `PI_CODING_AGENT_DIR` the agent dir, `OMP_PROFILE`/`PI_PROFILE`
-  a named profile) and it does not read `~/.pi`. Rules: the user context file
+  names the root under `$HOME` — an absolute value is joined, not resolved —
+  `PI_CODING_AGENT_DIR` the agent dir, `OMP_PROFILE` a named profile and the
+  legacy `PI_PROFILE` only when `OMP_PROFILE` is not defined at all: an empty
+  or `default` `OMP_PROFILE` selects the default profile) and it does not read
+  `~/.pi`. Rules: the user context file
   `~/.omp/agent/AGENTS.md` — the only user-level context file omp loads, it
-  shadows `~/.claude/CLAUDE.md` and `~/.agents/AGENTS.md`; `RULES.md` and
-  `rules/` are not managed. The project scope is `<cwd>/.omp/AGENTS.md` and
+  shadows `~/.claude/CLAUDE.md` and `~/.agents/AGENTS.md`. `RULES.md` and
+  `rules/*.md` are a separate omp mechanism — the frontmatter rulebook with
+  its own matching pipeline — and stay with the tool that owns that zone;
+  beadle writes only `AGENTS.md`. The project scope is `<cwd>/.omp/AGENTS.md` and
   `<cwd>/.omp/mcp.json` (omp's native project root is the nearest non-empty
   `.omp/`, not the checkout root — creating it also makes omp stop looking at
   farther `.omp` directories up the tree). MCP: the `mcp.json` Claude dialect;
