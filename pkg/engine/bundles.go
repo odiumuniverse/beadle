@@ -43,6 +43,12 @@ const (
 	bundleNoop      = "noop"
 	cliPlugin       = "plugin"
 	bundleNoteLimit = 400
+	// validationFindingLimit caps how many validate findings one doctor note
+	// names before the rest are counted in a "+N more" tail.
+	validationFindingLimit = 5
+	// validationMessageLimit caps one finding's message so a single verbose
+	// explanation cannot push the remaining findings out of the note.
+	validationMessageLimit = 280
 )
 
 var (
@@ -654,12 +660,18 @@ func runOutput(err error, stdout []byte) string {
 }
 
 func truncateNote(note string) string {
+	return truncateTo(note, bundleNoteLimit)
+}
+
+// truncateTo trims a note to limit bytes without splitting a rune, marking the
+// cut so the reader knows more was said.
+func truncateTo(note string, limit int) string {
 	note = strings.TrimSpace(note)
-	if len(note) <= bundleNoteLimit {
+	if len(note) <= limit {
 		return note
 	}
 
-	cut := bundleNoteLimit
+	cut := limit
 	for cut > 0 && !utf8.RuneStart(note[cut]) {
 		cut--
 	}
@@ -1050,21 +1062,29 @@ func (e *Engine) surfaceDefaultMode(agentID string, k kind.ID) config.Mode {
 	return config.ModeSync
 }
 
+// validationIssue is one entry the host reports inside a subject's errors,
+// warnings, or notes. Path names the field the finding points at and is empty
+// when the finding describes the subject as a whole.
 type validationIssue struct {
+	Path    string `json:"path"`
 	Message string `json:"message"`
 }
 
-type validationContent struct {
-	Type   string            `json:"type"`
-	Errors []validationIssue `json:"errors"`
+// validationSubject is the manifest or one content file the host inspected;
+// both carry the same three buckets of findings. Under --strict the host
+// reports its findings in the warnings bucket and still returns success:false
+// with an empty errors array, so warnings and notes must be read as well.
+type validationSubject struct {
+	Type     string            `json:"type"`
+	Errors   []validationIssue `json:"errors"`
+	Warnings []validationIssue `json:"warnings"`
+	Notes    []validationIssue `json:"notes"`
 }
 
 type validationReport struct {
-	Success  bool `json:"success"`
-	Manifest struct {
-		Errors []validationIssue `json:"errors"`
-	} `json:"manifest"`
-	Contents []validationContent `json:"contents"`
+	Success  bool                `json:"success"`
+	Manifest validationSubject   `json:"manifest"`
+	Contents []validationSubject `json:"contents"`
 }
 
 func (e *Engine) validateBundle(host bundle.Host, dir string) (string, bool) {
@@ -1086,10 +1106,6 @@ func (e *Engine) validateClaudeBundle(dir string) (string, bool) {
 
 		switch {
 		case !valid:
-			if message == "" {
-				message = "claude plugin validate reported a failure"
-			}
-
 			return message, false
 		case err != nil || code != 0:
 			return runOutput(err, stdout), false
@@ -1110,23 +1126,121 @@ func parseClaudeValidation(stdout []byte) (string, bool) {
 		return "", true
 	}
 
-	var messages []string
-
-	for _, issue := range report.Manifest.Errors {
-		messages = append(messages, issue.Message)
+	findings := report.findings()
+	if len(findings) == 0 {
+		// The host rejected the plugin without saying why; the payload itself
+		// is then the only clue left.
+		return truncateNote("claude plugin validate reported a failure without naming a finding: " + strings.TrimSpace(string(stdout))), false
 	}
 
-	for _, content := range report.Contents {
-		for _, issue := range content.Errors {
-			messages = append(messages, fmt.Sprintf("%s: %s", content.Type, issue.Message))
+	return truncateNote(renderValidationFindings(findings)), false
+}
+
+// validationFinding is one reported issue flattened with the place it came
+// from, so a failure can name a subject and field instead of a generic string.
+type validationFinding struct {
+	Place   string
+	Path    string
+	Message string
+}
+
+func (r validationReport) findings() []validationFinding {
+	findings := r.Manifest.findings("manifest")
+
+	for _, content := range r.Contents {
+		place := content.Type
+		if place == "" {
+			place = "content"
+		}
+
+		findings = append(findings, content.findings(place)...)
+	}
+
+	return findings
+}
+
+// findings flattens a subject's buckets in the order worth reading: errors
+// first, then the warnings and notes --strict reports them in.
+func (s validationSubject) findings(place string) []validationFinding {
+	var findings []validationFinding
+
+	for _, bucket := range [][]validationIssue{s.Errors, s.Warnings, s.Notes} {
+		for _, issue := range bucket {
+			findings = append(findings, validationFinding{Place: place, Path: issue.Path, Message: issue.Message})
 		}
 	}
 
-	if len(messages) == 0 {
-		messages = append(messages, "claude plugin validate reported a failure")
+	return findings
+}
+
+// renderValidationFindings names the findings the host reported. Claude repeats
+// one explanation per field it objects to, so findings that share a message are
+// grouped: the message is printed once, followed by every path it applies to.
+// At most validationFindingLimit findings are named; the rest become a "+N
+// more" tail.
+func renderValidationFindings(findings []validationFinding) string {
+	type group struct {
+		place   string
+		labels  []string
+		message string
 	}
 
-	return truncateNote(strings.Join(messages, "; ")), false
+	var (
+		groups    []*group
+		byMessage = make(map[string]*group, len(findings))
+		named     int
+	)
+
+	for _, finding := range findings {
+		if named == validationFindingLimit {
+			break
+		}
+
+		g, ok := byMessage[finding.Message]
+		if !ok {
+			g = &group{place: finding.Place, message: finding.Message}
+			byMessage[finding.Message] = g
+			groups = append(groups, g)
+		}
+
+		label := finding.Place
+		if finding.Path != "" {
+			label += " " + finding.Path
+		}
+
+		g.labels = append(g.labels, label)
+		named++
+	}
+
+	parts := make([]string, 0, len(groups)+1)
+
+	for _, g := range groups {
+		// The group's subject is announced by its first label; the labels that
+		// share it drop the repetition.
+		head := g.labels[0]
+		if len(g.labels) > 1 {
+			rest := make([]string, 0, len(g.labels)-1)
+
+			for _, label := range g.labels[1:] {
+				rest = append(rest, strings.TrimPrefix(label, g.place+" "))
+			}
+
+			head += ", " + strings.Join(rest, ", ")
+		}
+
+		note := head
+		if g.message != "" {
+			note += ": " + truncateTo(g.message, validationMessageLimit)
+		}
+
+		parts = append(parts, note)
+	}
+
+	if len(findings) > named {
+		parts = append(parts, fmt.Sprintf("+%d more", len(findings)-named))
+	}
+
+	return strings.Join(parts, "; ")
 }
 
 func (e *Engine) bundleIssues(ctx context.Context) []Issue {
@@ -1427,7 +1541,9 @@ func (e *Engine) validateActiveClaudeBundle(st *state.State) []Issue {
 	}
 
 	if output, ok := e.validateClaudeBundle(dir); !ok {
-		return []Issue{{Severity: SeverityError, Message: "claude plugin validate failed: " + output}}
+		// --strict promotes the host's warnings to failures, so the note has to
+		// say which mode rejected the bundle.
+		return []Issue{{Severity: SeverityError, Message: "claude plugin validate failed (--strict): " + output}}
 	}
 
 	return nil

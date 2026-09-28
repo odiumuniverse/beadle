@@ -62,6 +62,9 @@ type claudeHost struct {
 	Disabled bool
 	Errors   []string
 	Validate []string
+	// ValidateRaw, when set, is returned verbatim for `plugin validate`
+	// instead of the report built from Validate.
+	ValidateRaw []byte
 }
 
 func (h *claudeHost) respond(name string, args []string) ([]byte, bool) {
@@ -80,6 +83,10 @@ func (h *claudeHost) respond(name string, args []string) ([]byte, bool) {
 }
 
 func (h *claudeHost) validateReport() ([]byte, bool) {
+	if len(h.ValidateRaw) > 0 {
+		return h.ValidateRaw, true
+	}
+
 	if len(h.Validate) == 0 {
 		return []byte(`{"success": true}`), true
 	}
@@ -1601,8 +1608,196 @@ func TestBundleIssuesValidateFailure(t *testing.T) {
 				So(cli.calls[0][2], ShouldEqual, "validate")
 				So(cli.calls[0][len(cli.calls[0])-1], ShouldEqual, filepath.Join(f.vault.BundlesDir(), "claude", "plugins", "beadle-canon"))
 			})
+
+			Convey("Then the report names the finding instead of a generic failure", func() {
+				So(hasIssue(issues, engine.SeverityError, "hooks: manifest error"), ShouldBeTrue)
+			})
 		})
 	})
+}
+
+// liveStrictValidatePayload is the captured `claude plugin validate --strict`
+// report kept in docs/pending/v5-live/06-live-bundle-validate.json: the host
+// reports its findings in the warnings buckets while returning success:false
+// with empty errors arrays. That capture lives in an ignored directory, so the
+// payload is embedded here and the file is preferred when it is present.
+const liveStrictValidatePayload = `{
+  "success": false,
+  "strict": true,
+  "target": "/Users/universe/.beadle/bundles/claude/plugins/beadle-canon/.claude-plugin/plugin.json",
+  "manifest": {
+    "file": "/Users/universe/.beadle/bundles/claude/plugins/beadle-canon/.claude-plugin/plugin.json",
+    "type": "plugin",
+    "errors": [],
+    "warnings": [],
+    "notes": []
+  },
+  "contents": [
+    {
+      "file": "/Users/universe/.beadle/bundles/claude/plugins/beadle-canon/.mcp.json",
+      "type": "mcp",
+      "errors": [],
+      "warnings": [
+        {
+          "path": "mcpServers.context7.headers.CONTEXT7_API_KEY",
+          "message": "header value looks like a literal credential. Everything shipped in a plugin is readable by everyone who installs it; reference a sensitive userConfig option (${user_config.KEY}) or an environment variable (${VAR}) instead of committing the value.",
+          "code": null
+        },
+        {
+          "path": "mcpServers.web-reader.headers.Authorization",
+          "message": "header value looks like a literal credential. Everything shipped in a plugin is readable by everyone who installs it; reference a sensitive userConfig option (${user_config.KEY}) or an environment variable (${VAR}) instead of committing the value.",
+          "code": null
+        },
+        {
+          "path": "mcpServers.web-search-prime.headers.Authorization",
+          "message": "header value looks like a literal credential. Everything shipped in a plugin is readable by everyone who installs it; reference a sensitive userConfig option (${user_config.KEY}) or an environment variable (${VAR}) instead of committing the value.",
+          "code": null
+        }
+      ],
+      "notes": []
+    }
+  ]
+}`
+
+func liveValidatePayload(t *testing.T) []byte {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "pending", "v5-live", "06-live-bundle-validate.json"))
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("read the live validate payload: %v", err)
+		}
+
+		return []byte(liveStrictValidatePayload)
+	}
+
+	return data
+}
+
+// TestBundleValidateNamesStrictWarnings replays the live `claude plugin
+// validate --strict` payload, which reports its findings in the warnings
+// buckets while returning success:false with empty errors arrays.
+func TestBundleValidateNamesStrictWarnings(t *testing.T) {
+	Convey("Given the live strict validate payload", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		cli, host := claudeBundleCLI(t, f)
+		fakeRunner(t, cli)
+		foundCLI(t)
+
+		if _, err := f.engine.BundlesEnable(t.Context(), "claude"); err != nil {
+			t.Fatalf("enable: %v", err)
+		}
+
+		host.ValidateRaw = liveValidatePayload(t)
+		cli.calls = nil
+
+		issues, err := f.engine.Doctor(t.Context())
+		So(err, ShouldBeNil)
+
+		Convey("When doctor validates", func() {
+			message := ""
+
+			for _, issue := range issues {
+				if strings.Contains(issue.Message, "claude plugin validate failed") {
+					message = issue.Message
+				}
+			}
+
+			t.Logf("doctor message: %s", message)
+
+			Convey("Then every strict warning field is named", func() {
+				So(message, ShouldContainSubstring, "mcpServers.context7.headers.CONTEXT7_API_KEY")
+				So(message, ShouldContainSubstring, "mcpServers.web-reader.headers.Authorization")
+				So(message, ShouldContainSubstring, "mcpServers.web-search-prime.headers.Authorization")
+				So(message, ShouldContainSubstring, "header value looks like a literal credential")
+				So(message, ShouldContainSubstring, "${user_config.KEY}")
+			})
+
+			Convey("Then the generic failure is gone", func() {
+				So(message, ShouldNotContainSubstring, "reported a failure")
+			})
+
+			Convey("Then the strict call is still the one made", func() {
+				So(cli.calls, ShouldHaveLength, 1)
+				So(cli.calls[0], ShouldContain, "--strict")
+				So(cli.calls[0][len(cli.calls[0])-1], ShouldEqual, filepath.Join(f.vault.BundlesDir(), "claude", "plugins", "beadle-canon"))
+			})
+		})
+	})
+}
+
+// TestBundleValidateReportsManifestFindings covers the manifest buckets and the
+// cap on how many findings one note names.
+func TestBundleValidateReportsManifestFindings(t *testing.T) {
+	Convey("Given a validate report whose findings live in the manifest", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := bundleFixture(t)
+		cli, host := claudeBundleCLI(t, f)
+		fakeRunner(t, cli)
+		foundCLI(t)
+
+		if _, err := f.engine.BundlesEnable(t.Context(), "claude"); err != nil {
+			t.Fatalf("enable: %v", err)
+		}
+
+		var warnings []map[string]string
+		for i := range 7 {
+			warnings = append(warnings, map[string]string{
+				"path":    fmt.Sprintf("commands.cmd%d.description", i),
+				"message": fmt.Sprintf("warning %d: the description is empty", i),
+			})
+		}
+
+		host.ValidateRaw = marshalJSON(t, map[string]any{
+			"success": false,
+			"manifest": map[string]any{
+				"errors":   []map[string]string{{"path": "name", "message": "name is required"}},
+				"warnings": warnings,
+				"notes":    []map[string]string{},
+			},
+			"contents": []map[string]any{},
+		})
+		cli.calls = nil
+
+		issues, err := f.engine.Doctor(t.Context())
+		So(err, ShouldBeNil)
+
+		Convey("When doctor validates", func() {
+			message := ""
+
+			for _, issue := range issues {
+				if strings.Contains(issue.Message, "claude plugin validate failed") {
+					message = issue.Message
+				}
+			}
+
+			t.Logf("doctor message: %s", message)
+
+			Convey("Then the manifest error is named with its field", func() {
+				So(message, ShouldContainSubstring, "manifest name: name is required")
+			})
+
+			Convey("Then the cap keeps the note short and counts the rest", func() {
+				So(message, ShouldContainSubstring, "manifest commands.cmd0.description: warning 0")
+				So(message, ShouldContainSubstring, "+3 more")
+				So(message, ShouldNotContainSubstring, "warning 5")
+			})
+		})
+	})
+}
+
+func marshalJSON(t *testing.T, value any) []byte {
+	t.Helper()
+
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	return data
 }
 
 func TestBundlesEnableGeminiOnlyDedupsMCP(t *testing.T) {
