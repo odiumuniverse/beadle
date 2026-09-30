@@ -323,16 +323,23 @@ func (e *Engine) adoptable(a *agent.Agent, name string, digest cas.Hash, st *sta
 
 	link, symlink := skillLinkTarget(prov.dir, name, prov.file)
 
+	// The record names two PLACES — the slot the foreign copy occupied, and the
+	// copy behind it — and a vault travels between machines while a home
+	// directory does not. Stored as paths, both are facts about the filesystem
+	// that adopted them, and `unadopt` on the next machine would put the user's
+	// own skill back at a path that belongs to somebody else's disk. A path
+	// outside the home has no portable name and keeps its absolute form, which
+	// is what makes it honestly un-restorable elsewhere.
 	record := state.Adoption{
 		Host:     a.ID,
 		Name:     name,
-		Provider: prov.path,
+		Provider: state.HomeKey(prov.path, e.home),
 		Digest:   digest,
 		At:       e.now().UTC(),
 	}
 
 	if symlink {
-		record.Target = link
+		record.Target = state.HomeKey(link, e.home)
 	}
 
 	return record, ""
@@ -387,7 +394,7 @@ func (e *Engine) stashAdoption(record state.Adoption) error {
 		return fmt.Errorf("create the adoption stash: %w", err)
 	}
 
-	if err := os.Rename(record.Provider, stash); err != nil {
+	if err := os.Rename(state.HomePath(record.Provider, e.home), stash); err != nil {
 		return fmt.Errorf("move %s into the vault stash (the vault and the surface must share a filesystem): %w", record.Provider, err)
 	}
 
@@ -397,7 +404,7 @@ func (e *Engine) stashAdoption(record state.Adoption) error {
 // unstashAdoptions rolls the moves back in reverse order (best effort).
 func (e *Engine) unstashAdoptions(records []state.Adoption) {
 	for _, record := range slices.Backward(records) {
-		if err := e.stashBack(record); err != nil {
+		if err := e.stashBack(record, state.HomePath(record.Provider, e.home), state.HomePath(record.Target, e.home)); err != nil {
 			e.log.Error(context.Background(), "roll back an adoption", "provider", record.Provider, "err", err)
 		}
 	}
@@ -414,11 +421,30 @@ func (e *Engine) restashAdoptions(records []state.Adoption) {
 }
 
 // stashBack moves a stashed original back to its surface.
-func (e *Engine) stashBack(record state.Adoption) error {
+//
+// A stashed symlink is re-pointed rather than moved when its destination is not
+// where this machine keeps that copy — which is exactly the cross-machine case,
+// and only that: the record names the place, the stash still holds the link the
+// first machine made, and the two differ only when the homes differ. When they
+// agree the entry is moved as it stands, so a link somebody re-pointed inside the
+// stash is still theirs.
+func (e *Engine) stashBack(record state.Adoption, provider, target string) error {
 	from := e.adoptionStashPath(record.Host, record.Name)
 
-	if err := os.Rename(from, record.Provider); err != nil {
-		return fmt.Errorf("move %s back to %s: %w", from, record.Provider, err)
+	if link, isLink := stashSymlinkTarget(from); isLink && target != "" && link != target {
+		if err := os.Remove(from); err != nil {
+			return fmt.Errorf("remove the stashed symlink %s: %w", from, err)
+		}
+
+		if err := os.Symlink(target, provider); err != nil {
+			return fmt.Errorf("recreate the symlink %s: %w", provider, err)
+		}
+
+		return nil
+	}
+
+	if err := os.Rename(from, provider); err != nil {
+		return fmt.Errorf("move %s back to %s: %w", from, provider, err)
 	}
 
 	return nil
@@ -451,63 +477,101 @@ func (e *Engine) adoptionRecords(st *state.State, name, hostID string) []state.A
 }
 
 // restorePlan is one adopted original ready to go back: the record, the
-// beadle-owned copy to clear first, and the symlink to recreate when the
-// stash is gone.
+// beadle-owned copy to clear first, the symlink to recreate when the stash is
+// gone, and this machine's reading of the two places the record names. The
+// record keeps the portable names, because it is the record that travels.
 type restorePlan struct {
-	record  state.Adoption
-	remove  string
-	symlink string
+	record    state.Adoption
+	provider  string
+	target    string
+	remove    string
+	symlink   string
+	stashLink string
 }
 
 // restorable validates one rollback: the slot may be cleared only when it
 // holds beadle's own unmodified delivery, and the original must still exist
 // either in the stash or at its recorded symlink target.
+//
+// A stashed symlink is the case that needs care: it is a link INTO a directory,
+// and on a second machine that directory is either this machine's own copy or
+// nothing at all. Restoring the link as it stands would hand the user a dangling
+// pointer into the first machine's disk, so a link whose destination is not here
+// is refused and the record is kept for a human to look at.
 func (e *Engine) restorable(record state.Adoption, st *state.State) (restorePlan, string, bool) {
 	plan := restorePlan{record: record}
+	plan.provider = state.HomePath(record.Provider, e.home)
+	plan.target = state.HomePath(record.Target, e.home)
 
-	if entryExists(record.Provider) {
-		ok, note := e.clearBeadleCopy(record, st)
+	if entryExists(plan.provider) {
+		ok, note := e.clearBeadleCopy(record, plan.provider, st)
 		if !ok {
 			return plan, note, false
 		}
 
-		plan.remove = record.Provider
+		plan.remove = plan.provider
 	}
 
 	stash := e.adoptionStashPath(record.Host, record.Name)
 
 	switch {
 	case entryExists(stash):
-		return plan, "", true
-	case record.Target != "" && entryExists(record.Target):
-		plan.symlink = record.Target
+		link, isLink := stashSymlinkTarget(stash)
+		if isLink && !entryExists(link) {
+			return plan, fmt.Sprintf(
+				"the original of %s is a symlink to %s, which is not on this machine; the record stays for manual review",
+				record.Name, displayHomePath(link, e.home)), false
+		}
 
-		return plan, "the vault stash is gone; recreating the symlink to " + record.Target, true
+		plan.stashLink = link
+
+		return plan, "", true
+	case plan.target != "" && entryExists(plan.target):
+		plan.symlink = plan.target
+
+		return plan, "the vault stash is gone; recreating the symlink to " + plan.target, true
 	default:
 		return plan, fmt.Sprintf("the original copy of %s is gone (no stash at %s and no live target); the record stays for manual review", record.Name, stash), false
 	}
 }
 
+// stashSymlinkTarget reports where a stashed entry points, and whether it is a
+// symlink at all. A stashed tree is a directory and needs no target.
+func stashSymlinkTarget(stash string) (string, bool) {
+	info, err := os.Lstat(stash)
+	if err != nil || info.Mode()&fs.ModeSymlink == 0 {
+		return "", false
+	}
+
+	link, err := os.Readlink(stash)
+	if err != nil {
+		return "", false
+	}
+
+	return link, true
+}
+
 // clearBeadleCopy reports whether the slot can be cleared before the original
 // goes back: only beadle's own unmodified delivery is removed, anything else
-// is somebody's work and stays.
-func (e *Engine) clearBeadleCopy(record state.Adoption, st *state.State) (bool, string) {
+// is somebody's work and stays. The slot arrives as a path, because the record
+// holds the portable name of the place and this is where it is read.
+func (e *Engine) clearBeadleCopy(record state.Adoption, provider string, st *state.State) (bool, string) {
 	a := agent.ByID(e.agents, record.Host)
 	if a == nil {
 		return false, fmt.Sprintf("unknown host %s; restore the copy manually", record.Host)
 	}
 
-	info, err := os.Lstat(record.Provider)
+	info, err := os.Lstat(provider)
 	if err != nil {
 		return true, ""
 	}
 
 	if info.Mode()&fs.ModeSymlink != 0 || !info.IsDir() {
-		return false, fmt.Sprintf("the slot %s holds something beadle did not deliver; move it away manually", record.Provider)
+		return false, fmt.Sprintf("the slot %s holds something beadle did not deliver; move it away manually", provider)
 	}
 
-	if !e.ownCopyMatchesBase(a, record.Provider, record.Name, st) {
-		return false, fmt.Sprintf("the copy at %s is not beadle's unmodified delivery; move it away manually", record.Provider)
+	if !e.ownCopyMatchesBase(a, provider, record.Name, st) {
+		return false, fmt.Sprintf("the copy at %s is not beadle's unmodified delivery; move it away manually", provider)
 	}
 
 	return true, ""
@@ -545,14 +609,14 @@ func (e *Engine) applyRestore(plan restorePlan) error {
 	}
 
 	if plan.symlink != "" {
-		if err := os.Symlink(plan.symlink, plan.record.Provider); err != nil {
-			return fmt.Errorf("recreate the symlink %s: %w", plan.record.Provider, err)
+		if err := os.Symlink(plan.symlink, plan.provider); err != nil {
+			return fmt.Errorf("recreate the symlink %s: %w", plan.provider, err)
 		}
 
 		return nil
 	}
 
-	return e.stashBack(plan.record)
+	return e.stashBack(plan.record, plan.provider, plan.target)
 }
 
 // entryExists reports whether a filesystem entry is there; unlike

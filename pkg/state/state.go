@@ -389,6 +389,11 @@ func Load(path string) (*State, error) {
 		st.migrated = true
 	}
 
+	if rekeyed := st.rekeyAdoptionPaths(); len(rekeyed) > 0 {
+		st.migration = append(st.migration, rekeyed...)
+		st.migrated = true
+	}
+
 	return st, nil
 }
 
@@ -540,6 +545,43 @@ func (s *State) rekeyHookModules() []string {
 	}
 
 	return []string{fmt.Sprintf("hook module records: %d key(s) made machine-independent", moved)}
+}
+
+// rekeyAdoptionPaths rewrites the two paths an adoption record carries: the slot
+// the foreign copy occupied and the copy behind it. They are values rather than
+// keys, but they are read as paths, so a record written on one machine told the
+// next one where to put a user's own skill back — on the first machine's disk.
+//
+// A path outside the recorded home keeps its absolute form, and that is the
+// point rather than a gap: there is no portable name for a place that is not
+// every machine's, and the restore refuses it there instead of guessing.
+func (s *State) rekeyAdoptionPaths() []string {
+	if s.Home == "" {
+		return nil
+	}
+
+	moved := 0
+
+	for i := range s.Adoptions {
+		record := &s.Adoptions[i]
+
+		for _, field := range []*string{&record.Provider, &record.Target} {
+			canonical := HomeKey(*field, s.Home)
+			if canonical == *field {
+				continue
+			}
+
+			*field = canonical
+
+			moved++
+		}
+	}
+
+	if moved == 0 {
+		return nil
+	}
+
+	return []string{fmt.Sprintf("adoption records: %d path(s) made machine-independent", moved)}
 }
 
 // rekeyHomeKeys rewrites every key of one path-keyed map into its portable

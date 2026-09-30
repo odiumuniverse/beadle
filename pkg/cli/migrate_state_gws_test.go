@@ -74,8 +74,9 @@ const v2State = `{
     {"at": "2026-01-01T00:00:00Z", "id": "abc", "kind": "mcp", "agent": "antigravity-cli", "key": "gamma", "code": "risky-change", "message": "no"}
   ],
   "adoptions": [
-    {"host": "claude-code", "name": "alpha", "provider": "/home/u/.claude/skills/alpha", "digest": "had", "at": "2026-01-01T00:00:00Z"},
-    {"host": "deepseek-harness", "name": "delta", "provider": "/home/u/.dsh/skills/delta", "at": "2026-01-02T00:00:00Z"}
+    {"host": "claude-code", "name": "alpha", "provider": "/home/u/.claude/skills/alpha", "target": "/home/u/skills-src/alpha", "digest": "had", "at": "2026-01-01T00:00:00Z"},
+    {"host": "deepseek-harness", "name": "delta", "provider": "/home/u/.dsh/skills/delta", "at": "2026-01-02T00:00:00Z"},
+    {"host": "claude-code", "name": "epsilon", "provider": "/opt/shared/skills/epsilon", "at": "2026-01-03T00:00:00Z"}
   ],
   "skill_trees": {
     "/home/u/.claude/skills": {"digest": "hst", "fingerprint": "hsfp", "latest": "2026-01-09T00:00:00Z", "stamp": "2026-01-09T00:01:00Z"}
@@ -165,20 +166,6 @@ func assertMigratedStateIsIntact(onDisk map[string]any, raw string) {
 		})
 	})
 
-	Convey("And every adopted skill keeps its stash record under the canonical host", func() {
-		So(onDisk["adoptions"], ShouldResemble, []any{
-			map[string]any{
-				"host": "claude", "name": "alpha",
-				"provider": "/home/u/.claude/skills/alpha",
-				"digest":   "had", "at": "2026-01-01T00:00:00Z",
-			},
-			map[string]any{
-				"host": "dsh", "name": "delta",
-				"provider": "/home/u/.dsh/skills/delta", "at": "2026-01-02T00:00:00Z",
-			},
-		})
-	})
-
 	Convey("And the bundle state, withdrawn items and pins are all still there", func() {
 		bundles, ok := onDisk["bundles"].(map[string]any)
 		So(ok, ShouldBeTrue)
@@ -258,6 +245,41 @@ func assertMigratedStateIsIntact(onDisk map[string]any, raw string) {
 	})
 }
 
+// assertAdoptionPathsArePortable pins the one part of the migration that is
+// not a rename: an adoption's two paths are rewritten to the machine-independent
+// name of the place, because the record is a standing instruction rather than a
+// note about the machine that wrote it — and the one path with no portable name
+// keeps its absolute form, so a restore on another machine refuses it with a
+// reason instead of pointing a user's own skill at a guess.
+func assertAdoptionPathsArePortable(onDisk map[string]any) {
+	Convey("And every adoption names the place, not the machine's path for it", func() {
+		// An adoption names two PLACES, and the record travels. Stored as paths,
+		// they tell the next machine to put a user's own skill back on the first
+		// machine's disk, so both are rewritten to the machine-independent name.
+		So(onDisk["adoptions"], ShouldResemble, []any{
+			map[string]any{
+				"host": "claude", "name": "alpha",
+				"provider": state.HomePrefix + ".claude/skills/alpha",
+				"target":   state.HomePrefix + "skills-src/alpha",
+				"digest":   "had", "at": "2026-01-01T00:00:00Z",
+			},
+			map[string]any{
+				"host": "dsh", "name": "delta",
+				"provider": state.HomePrefix + ".dsh/skills/delta",
+				"at":       "2026-01-02T00:00:00Z",
+			},
+			// And the one place that has no portable name keeps its absolute
+			// path: `/opt/shared` is not every machine's, so a restore there
+			// refuses it instead of pointing a user's skill at a guess.
+			map[string]any{
+				"host": "claude", "name": "epsilon",
+				"provider": "/opt/shared/skills/epsilon",
+				"at":       "2026-01-03T00:00:00Z",
+			},
+		})
+	})
+}
+
 func TestMigrateUpgradesAnOldStateJSONOnDisk(t *testing.T) {
 	Convey("Given a vault whose state.json is still at v2", t, func() {
 		home := gwsHome(t)
@@ -281,6 +303,7 @@ func TestMigrateUpgradesAnOldStateJSONOnDisk(t *testing.T) {
 			So(json.Unmarshal([]byte(raw), &onDisk), ShouldBeNil)
 
 			assertMigratedStateIsIntact(onDisk, raw)
+			assertAdoptionPathsArePortable(onDisk)
 
 			Convey("Then the state on disk is the current version", func() {
 				So(onDisk["version"], ShouldEqual, float64(state.CurrentVersion))

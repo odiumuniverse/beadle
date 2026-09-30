@@ -13,6 +13,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/engine"
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
+	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
 func TestAdoptMovesForeignCopyIntoStash(t *testing.T) {
@@ -35,7 +36,11 @@ func TestAdoptMovesForeignCopyIntoStash(t *testing.T) {
 			Convey("Then the symlink is stashed and the ledger records it", func() {
 				So(report.Adoptions, ShouldHaveLength, 1)
 				So(report.Adoptions[0].Action, ShouldEqual, "adopted")
-				So(report.Adoptions[0].Provider, ShouldEqual, link)
+				// The report names the place, not this machine's path for it: the
+				// same spelling `beadle doctor` already prints for a path under
+				// the home, and the only one that means anything on the machine
+				// that reads the record next.
+				So(report.Adoptions[0].Provider, ShouldEqual, state.HomePrefix+".claude/skills/alpha")
 
 				_, statErr := os.Lstat(link)
 				So(errors.Is(statErr, fs.ErrNotExist), ShouldBeTrue)
@@ -50,8 +55,12 @@ func TestAdoptMovesForeignCopyIntoStash(t *testing.T) {
 
 				record, ok := loadState(t, f).AdoptionFor(agent.ClaudeCodeID, "alpha")
 				So(ok, ShouldBeTrue)
-				So(record.Target, ShouldEqual, src)
-				So(record.Provider, ShouldEqual, link)
+				// Both are the machine-independent name of the place. The file
+				// assertions above and below still speak in real paths, because
+				// that is what the filesystem has; the record speaks in the names
+				// that survive the vault travelling to another machine.
+				So(record.Target, ShouldEqual, state.HomePrefix+filepath.Join("skills-src", "alpha"))
+				So(record.Provider, ShouldEqual, state.HomePrefix+filepath.Join(".claude", "skills", "alpha"))
 				So(read(t, filepath.Join(src, "SKILL.md")), ShouldEqual, "# alpha\n")
 				So(read(t, f.vaultSkill("alpha")), ShouldEqual, "# alpha\n")
 			})
