@@ -30,6 +30,28 @@ func adoptionFields(t *testing.T, f *fixture, host, name string) (provider, targ
 	return "", ""
 }
 
+// carriesHomePath reports whether the persisted state names this machine's home
+// anywhere — in any spelling.
+//
+// The canonicalisation is the point, and it was found the hard way: a count of
+// the raw temp path is 1 on macOS and 0 on Linux for the same tree, because a
+// temporary home on macOS is reached through /var, a symlink to /private/var.
+// The document was not lying differently on the two systems — the search was
+// asking two different questions. Both spellings are checked, so the assertion
+// means "this machine's home is nowhere in the record" on either OS.
+func carriesHomePath(t *testing.T, f *fixture, home string) bool {
+	t.Helper()
+
+	spelling := home
+	if resolved, err := filepath.EvalSymlinks(home); err == nil {
+		spelling = resolved
+	}
+
+	raw := string(stateJSON(t, f))
+
+	return strings.Contains(raw, home) || strings.Contains(raw, spelling)
+}
+
 // TestUnadoptOnTheMachineThatArrivedWithTheVault is the adoption half of the
 // vault that travels.
 //
@@ -70,11 +92,12 @@ func TestUnadoptOnTheMachineThatArrivedWithTheVault(t *testing.T) {
 		Convey("Then the record names the places, not the machine's paths", func() {
 			So(providerA, ShouldStartWith, state.HomePrefix)
 			So(targetA, ShouldStartWith, state.HomePrefix)
-			// The state records the home on purpose — it is how a run knows the
-			// vault was last synced from somewhere else — so the claim is "the
-			// record carries none of it", and one occurrence in the whole document
-			// is the home field being honest about where it came from.
-			So(strings.Count(string(stateJSON(t, a)), homeA), ShouldEqual, 1)
+			// The claim is that the record carries none of this machine's home.
+			// It is NOT "one occurrence is the home field": `adopt` does not go
+			// through a sync commit, so the home stamp is never written here, and
+			// an assertion built on that field was asserting a coincidence of the
+			// command it happened to follow.
+			So(carriesHomePath(t, a, homeA), ShouldBeFalse)
 		})
 
 		Convey("When the vault is opened on a machine whose home is /home/b", func() {
@@ -113,12 +136,11 @@ func TestUnadoptOnTheMachineThatArrivedWithTheVault(t *testing.T) {
 				})
 			})
 
-			Convey("And the first machine's home survives only as the recorded home", func() {
-				// The record is gone by now, so the one thing left that names the
-				// first machine is the `home` field — and on this machine nothing
-				// has written the current one yet, because `unadopt` does not sync.
-				// What must not come back is a path inside the record.
-				So(strings.Count(string(stateJSON(t, b)), homeA), ShouldEqual, 1)
+			Convey("And the first machine's home is nowhere in the state on disk", func() {
+				// After the record is gone, nothing in the document may still name
+				// the machine it was written on. `unadopt` does not sync either,
+				// so the home field is absent rather than stale here.
+				So(carriesHomePath(t, b, homeA), ShouldBeFalse)
 			})
 		})
 	})

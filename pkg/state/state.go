@@ -492,17 +492,58 @@ const HomePrefix = "~/"
 // up by. An absolute key is a name only the machine that wrote it can read: the
 // record is not lost, it is inert, and the next sync writes a second one beside
 // it. Every map in the state whose key is a path under home goes through here.
+//
+// "Under home" is decided by comparing the two canonically, because the same
+// directory is routinely reachable under two names — see the symlink note
+// below, which is a bug this function shipped once.
 func HomeKey(path, home string) string {
 	if home == "" {
 		return path
 	}
 
-	rel, err := filepath.Rel(filepath.Clean(home), filepath.Clean(path))
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return path
+	// The fast path first: a key for a path that already spells home the way
+	// this machine does costs no syscalls, and on a machine with no symlinks in
+	// the way that is every call.
+	if rel, ok := relativeTo(path, home); ok {
+		return HomePrefix + filepath.ToSlash(rel)
 	}
 
-	return HomePrefix + filepath.ToSlash(rel)
+	// Otherwise the two may still be the same directory spelled two ways, which
+	// is not a rare accident: on macOS a temporary home lives under /var, which
+	// is a symlink to /private/var, and the scan path resolves it while the
+	// engine was handed the other spelling. Rel walks out of the home and comes
+	// back as a chain of `..`, and returning the absolute path here is how a
+	// field whose entire purpose is to be machine-independent quietly becomes
+	// machine-specific — on one operating system only, which is what makes it
+	// survive a green run and fail in CI.
+	if rel, ok := relativeTo(canonical(path), canonical(home)); ok {
+		return HomePrefix + filepath.ToSlash(rel)
+	}
+
+	return path
+}
+
+// relativeTo reports path relative to home, and whether it lies under it.
+func relativeTo(path, home string) (string, bool) {
+	rel, err := filepath.Rel(filepath.Clean(home), filepath.Clean(path))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+
+	return rel, true
+}
+
+// canonical resolves symlinks as far as the path exists, and cleans it when it
+// does not: a path that is not there yet has no resolved form, and the cleaned
+// spelling is the best answer available — and the right one, because a key for a
+// file beadle has not written yet must not depend on whether it exists.
+func canonical(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+
+	return resolved
 }
 
 // HomePath is the inverse of HomeKey: it turns a stored key back into a path
