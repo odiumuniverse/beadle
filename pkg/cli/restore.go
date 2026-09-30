@@ -35,7 +35,7 @@ func (a *app) newHistoryCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 
 			if asJSON {
-				return writeJSON(out, newHistoryDocument(k, history))
+				return writeJSON(out, newHistoryDocument(jsonSchemaName(cmd), k, history))
 			}
 
 			if len(history) == 0 {
@@ -61,7 +61,7 @@ func (a *app) newHistoryCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print the document as JSON")
 
-	return cmd
+	return jsonForm(cmd, "beadle.history")
 }
 
 func (a *app) newRestoreCmd() *cobra.Command {

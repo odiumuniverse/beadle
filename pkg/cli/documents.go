@@ -274,9 +274,9 @@ type pluginsPackage struct {
 	State   string `json:"state"`
 }
 
-func newPluginsDocument(doc *verger.StatusDocument) pluginsDocument {
+func newPluginsDocument(name string, doc *verger.StatusDocument) pluginsDocument {
 	out := pluginsDocument{
-		withSchema: newEnvelope("beadle.plugins"),
+		withSchema: newEnvelope(name),
 		Packages:   []pluginsPackage{},
 		Cells:      []verger.Cell{},
 	}
@@ -311,9 +311,9 @@ type bundlesDocument struct {
 	Bundles []syncBundle `json:"bundles"`
 }
 
-func newBundlesDocument(results []engine.BundleResult) bundlesDocument {
+func newBundlesDocument(name string, results []engine.BundleResult) bundlesDocument {
 	doc := bundlesDocument{
-		withSchema: newEnvelope("beadle.bundles"),
+		withSchema: newEnvelope(name),
 		Bundles:    []syncBundle{},
 	}
 
@@ -442,9 +442,9 @@ type conflictsDocument struct {
 }
 
 // newAgentsDocument projects the agent table into its document.
-func newAgentsDocument(cfg *config.Config, agents []*agent.Agent) agentsDocument {
+func newAgentsDocument(name string, cfg *config.Config, agents []*agent.Agent) agentsDocument {
 	doc := agentsDocument{
-		withSchema: newEnvelope("beadle.agents"),
+		withSchema: newEnvelope(name),
 		Agents:     []agentRow{},
 		Kinds:      []agentsKind{},
 	}
@@ -464,9 +464,9 @@ func newAgentsDocument(cfg *config.Config, agents []*agent.Agent) agentsDocument
 }
 
 // newHistoryDocument projects one kind's snapshots into its document.
-func newHistoryDocument(k kind.ID, history []state.Snapshot) historyDocument {
+func newHistoryDocument(name string, k kind.ID, history []state.Snapshot) historyDocument {
 	doc := historyDocument{
-		withSchema: newEnvelope("beadle.history"),
+		withSchema: newEnvelope(name),
 		Kind:       string(k),
 		Snapshots:  []historySnapshot{},
 	}

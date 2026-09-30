@@ -154,22 +154,58 @@ reliable way to tell the documents apart:
 {"schema":{"name":"beadle.status","version":1}, ...}
 ```
 
+Every command that has a machine-readable form names it in exactly one place —
+the command itself — and prints the same name in the envelope, so the table below
+cannot drift from the binary. It is read off the built command tree, and
+`TestEveryCommandAnswersJSONOrRefuses` walks that tree and fails if a command
+answers `--json` with anything else.
+
 | command | `schema.name` |
 |---|---|
 | `beadle status --json` | `beadle.status` |
 | `beadle sync --json` | `beadle.sync` |
 | `beadle doctor --json` | `beadle.doctor` |
 | `beadle agents --json` | `beadle.agents` |
+| `beadle kinds --json` | `beadle.kinds` |
 | `beadle conflicts --json` | `beadle.conflicts` |
+| `beadle resolve --json` | `beadle.resolve` |
+| `beadle resolve <id> --mergetool --json` | `beadle.resolve.mergetool` |
 | `beadle history <kind> --json` | `beadle.history` |
+| `beadle explain <skill> --json` | `beadle.explain` |
 | `beadle plugins list --json` | `beadle.plugins` |
+| `beadle plugins install --json` | `beadle.plugins.install` |
+| `beadle plugins remove --json` | `beadle.plugins.remove` |
 | `beadle bundles status --json` | `beadle.bundles` |
+| `beadle rulings list --json` | `beadle.rulings` |
+| `beadle rulings show <sig> --json` | `beadle.rulings.show` |
+
+**A command not in that table refuses `--json`, and says so.** It exits 2 — the
+usage class, because a caller named a capability the command does not have —
+and the message names the commands that do have one:
+
+```
+$ beadle hooks add notify --json
+`beadle hooks add` has no machine-readable form; drop --json, or use one of: beadle status, beadle sync, …
+```
+
+Nothing is written to stdout in that case, so a pipe sees the refusal on stderr
+and no half-document. What you will never get is the human table printed as if
+the flag had been accepted: that reaches `jq` as a parse error at character zero
+with nothing pointing at the flag. The same refusal fires for `beadle --json`
+with no verb, which is the point of asking centrally rather than per command.
 
 `beadle.sync` carries one `status` per kind — `delivered`, `in sync` or
 `skipped`, the same words the human table prints — and a `detail` saying why when
 it is not `delivered`. `no_active_agents` says the run had no enabled host agent
 at all, which is why every kind is `skipped`; `notes` carries the run-level
 hints, such as the command that enables one.
+
+`beadle.kinds` is the kind-centric view and the only document that answers "is
+this kind synchronized at all": one row per kind with a `status` in the same
+words the human table prints, plus a `reason` and the `command` that changes it
+when the answer is no. It carries `agents` too, with the mode each kind resolves
+to per agent, so a script that needs both does not have to reconcile
+`beadle.kinds` with `beadle.agents` — the rows are the same shape in both.
 
 Switch on `schema.name`, never on the fields: a document grows fields within a
 version, so a field you read today is not the whole document. `version` is `1`

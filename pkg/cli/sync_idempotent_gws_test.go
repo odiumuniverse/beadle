@@ -88,33 +88,39 @@ func readTree(t *testing.T, root string) map[string]string {
 	return out
 }
 
-// TestFirstSyncDoesNotReRenderTheFarmItWasGiven is a sentinel, not the guard.
+// TestSentinelFarmShapeIsUnchangedByTheFirstSync is a sentinel about the SHAPE
+// of a farm across two processes, and it is named that way on purpose: it was
+// written as the regression test for a farm losing what init had already settled,
+// and it is green with that fix reverted. An older name claiming otherwise would
+// have kept pointing a reader at a test that cannot fail.
 //
-// It needs a fixture that actually has a native bundle, which is a different
-// fixture from the idempotency one: with `testhost.Stubs` every host reports
-// itself present, the bundle probe never verifies, and `init` writes no farm at
-// all — so an assertion about the farm there would pass on an empty tree. Here
-// the host is present the way a machine that has run Claude Code once looks,
-// which is what makes init render the farm in the first place.
+// What it holds, and what is worth holding: a vault handed to beadle and then
+// synced, with a native bundle rendered at init, still has the farm init
+// rendered. That is a real property of the two-process path and it is stated
+// once, here.
 //
-// It was written as the regression test for the farm losing what init had
-// already settled, and it is green with the fix reverted — VERIFY-CP-beadle-pS-5
-// §3 measured that, and this pass confirmed why. The bug lived inside ONE run:
-// syncKinds pushed the canon skills to the host's file surface and the farm
-// refresh later in the same run credited that copy as a provider. Across two
-// processes the first run's delivery is already on disk, the coverage question
-// answers itself, and the render agrees with itself — so this shape cannot fail
-// for the reason the bug had, whichever way the code is built.
+// It cannot be the guard, and the reason is structural rather than a matter of
+// fixtures. The bug lived inside ONE run: syncKinds pushed the canon skills to
+// the host's file surface, and the farm refresh later in the SAME run credited
+// that copy as a provider and dropped the skills it was about to deliver. Across
+// two processes the first run's delivery is already on disk, the coverage
+// question answers itself, and the render agrees with itself — so this shape
+// cannot fail for the reason the bug had, whichever way the code is built.
+// VERIFY-CP-beadle-pS-5 §3 measured exactly that and called it a missing guard.
 //
-// What it is worth is narrower and still real: that a vault handed to beadle
-// and then synced, with a native bundle rendered at init, keeps the farm init
-// rendered. The guard that fails without the fix is
-// TestTheFirstSyncKeepsTheFarmSkillsItJustDelivered in pkg/engine, which runs
-// the delivery and the farm refresh in one process — the shape the bug needs.
-// This one stays because the cross-process property is worth stating once, and
-// its doc comment now says which of the two is load-bearing instead of implying
-// it is this one.
-func TestFirstSyncDoesNotReRenderTheFarmItWasGiven(t *testing.T) {
+// The tests that DO pin the fix, all three of which fail with it reverted
+// (`if ownsSkills` → `if ownsSkills && false` in pkg/engine/visibility.go), are
+// in pkg/engine, where the delivery and the farm refresh happen in one process:
+//
+//	TestTheFirstSyncKeepsTheFarmSkillsItJustDelivered — the explicit guard, whose
+//	  comment says which of its leaves carries the fix and why the other does not;
+//	TestSyncAutoEnablesUntouchedHost — pre-existing, through its "the next sync
+//	  is a no-op: the first pass already settled the version" leaf;
+//	TestSyncAutoEnableRefreshDoesNotRetryFailedProbe — pre-existing.
+//
+// So the fix was never unguarded; what was missing was a statement of which
+// test was load-bearing. It is now written down in both places.
+func TestSentinelFarmShapeIsUnchangedByTheFirstSync(t *testing.T) {
 	Convey("Given a vault whose native bundle init rendered", t, func() {
 		home := gwsHome(t)
 		So(os.MkdirAll(filepath.Join(home, ".claude"), 0o700), ShouldBeNil)

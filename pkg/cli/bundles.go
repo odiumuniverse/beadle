@@ -50,7 +50,7 @@ func (a *app) newBundlesStatusCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 
 			if asJSON {
-				return writeJSON(out, newBundlesDocument(bundleStates(st)))
+				return writeJSON(out, newBundlesDocument(jsonSchemaName(cmd), bundleStates(st)))
 			}
 
 			fmt.Fprintf(out, "  %-13s %-8s %-11s %-16s %-14s %s\n", "host", "enabled", "registered", "version", "tier", "cli")
@@ -82,7 +82,7 @@ func (a *app) newBundlesStatusCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print the document as JSON")
 
-	return cmd
+	return jsonForm(cmd, "beadle.bundles")
 }
 
 // newBundlesToggleCmd is `beadle bundles enable|disable`: beadle renders the

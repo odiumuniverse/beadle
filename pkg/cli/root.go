@@ -152,7 +152,7 @@ func newRootCmdWithApp(a *app, opts Options) *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
-		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			a.errOut = cmd.ErrOrStderr()
 
 			// The dev logger writes INFO to STDOUT at debug level, and stdout is
@@ -179,6 +179,19 @@ func newRootCmdWithApp(a *app, opts Options) *cobra.Command {
 			// not overridden.
 			carryDown(cmd, "json", jsonOut)
 			carryDown(cmd, "yes", assumeYes)
+
+			// --json is global, so every command is asked the question whether it
+			// can answer it. A command that has no document says so and exits 2,
+			// here rather than in each command: the check is one fact about the
+			// tree, and twenty copies of it would be twenty places to forget one.
+			// Silently printing the human table is the one answer a JSON
+			// consumer cannot use — `beadle hooks --json | jq` fails at character
+			// zero with nothing pointing at the flag.
+			if asked, _ := cmd.Flags().GetBool("json"); asked && jsonSchemaName(cmd) == "" {
+				return noJSONForm(cmd, cmd.Root())
+			}
+
+			return nil
 		},
 	}
 

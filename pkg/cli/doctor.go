@@ -69,7 +69,7 @@ func (a *app) newDoctorCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&fix, "fix", false, "apply the fixes doctor owns, after one confirmation")
 	cmd.Flags().BoolVarP(&assume, "yes", "y", false, "apply the fixes without asking")
 
-	return cmd
+	return jsonForm(cmd, "beadle.doctor")
 }
 
 // printDoctorFindings writes the human form: one line per finding, the words
@@ -129,7 +129,7 @@ func printDoctorJSON(cmd *cobra.Command, issues []engine.Finding) error {
 
 	issues = resolved
 
-	doc := doctorDocument{withSchema: newEnvelope("beadle.doctor"), Findings: issues}
+	doc := doctorDocument{withSchema: newEnvelope(jsonSchemaName(cmd)), Findings: issues}
 
 	if err := writeJSON(cmd.OutOrStdout(), doc); err != nil {
 		return fmt.Errorf("doctor: %w", err)

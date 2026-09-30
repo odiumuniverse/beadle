@@ -68,7 +68,7 @@ func (a *app) newStatusCmd() *cobra.Command {
 			}
 
 			if asJSON {
-				return writeJSON(out, buildStatusDocument(root, cfg, agents, st))
+				return writeJSON(out, buildStatusDocument(jsonSchemaName(cmd), root, cfg, agents, st))
 			}
 
 			if err := printAgents(out, cfg, agents); err != nil {
@@ -101,7 +101,7 @@ func (a *app) newStatusCmd() *cobra.Command {
 	_ = cmd.Flags().MarkHidden("check")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print the document as JSON")
 
-	return cmd
+	return jsonForm(cmd, "beadle.status")
 }
 
 // printOutdated is the `--outdated-only` path: what a sync would do, without
@@ -146,9 +146,9 @@ type statusConflict struct {
 	Reason string `json:"reason"`
 }
 
-func buildStatusDocument(root string, cfg *config.Config, agents []*agent.Agent, st *state.State) statusDocument {
+func buildStatusDocument(name, root string, cfg *config.Config, agents []*agent.Agent, st *state.State) statusDocument {
 	doc := statusDocument{
-		withSchema: newEnvelope("beadle.status"),
+		withSchema: newEnvelope(name),
 		Root:       root,
 		Agents:     []agentRow{},
 		Conflicts:  []statusConflict{},

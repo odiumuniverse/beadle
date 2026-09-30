@@ -28,7 +28,7 @@ func (a *app) newConflictsCmd() *cobra.Command {
 			}
 
 			if jsonOut {
-				return showConflictsJSON(cmd.OutOrStdout(), e, args)
+				return showConflictsJSON(cmd.OutOrStdout(), e, args, jsonSchemaName(cmd))
 			}
 
 			conflicts, err := e.Conflicts()
@@ -55,10 +55,10 @@ func (a *app) newConflictsCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "machine-readable output with redacted values and a unified patch")
 
-	return cmd
+	return jsonForm(cmd, "beadle.conflicts")
 }
 
-func showConflictsJSON(w io.Writer, e *engine.Engine, args []string) error {
+func showConflictsJSON(w io.Writer, e *engine.Engine, args []string, name string) error {
 	views, err := e.ConflictViews()
 	if err != nil {
 		return err
@@ -91,7 +91,7 @@ func showConflictsJSON(w io.Writer, e *engine.Engine, args []string) error {
 	}
 
 	return writeJSON(w, conflictsDocument{
-		withSchema: newEnvelope("beadle.conflicts"),
+		withSchema: newEnvelope(name),
 		Conflicts:  views,
 	})
 }

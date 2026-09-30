@@ -33,14 +33,14 @@ func (a *app) newPluginsListCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return a.withPlugins(cmd, func(c *vergerx.Client, out *bytes.Buffer) error {
-				return pluginsListJSON(c, out, asJSON)
+				return pluginsListJSON(c, out, asJSON, jsonSchemaName(cmd))
 			})
 		},
 	}
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print the status document as JSON")
 
-	return cmd
+	return jsonForm(cmd, "beadle.plugins")
 }
 
 func (a *app) newPluginsInstallCmd() *cobra.Command {
@@ -60,7 +60,7 @@ func (a *app) newPluginsInstallCmd() *cobra.Command {
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.withPlugins(cmd, func(c *vergerx.Client, out *bytes.Buffer) error {
-				return pluginsInstallWith(c, out, args, pluginFlags{assume: assume, asJSON: asJSON, hosts: hosts, except: except, dryRun: dryRun, force: force, project: project})
+				return pluginsInstallWith(c, out, args, pluginFlags{assume: assume, asJSON: asJSON, hosts: hosts, except: except, dryRun: dryRun, force: force, project: project}, jsonSchemaName(cmd))
 			})
 		},
 	}
@@ -77,7 +77,7 @@ func (a *app) newPluginsInstallCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite files you edited; the previous version is kept and reported")
 	cmd.Flags().BoolVar(&project, "project", false, "use the project scope")
 
-	return cmd
+	return jsonForm(cmd, "beadle.plugins.install")
 }
 
 func (a *app) newPluginsRemoveCmd() *cobra.Command {
@@ -97,7 +97,7 @@ func (a *app) newPluginsRemoveCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.withPlugins(cmd, func(c *vergerx.Client, out *bytes.Buffer) error {
-				return pluginsRemoveWith(c, out, args[0], pluginFlags{asJSON: asJSON, hosts: hosts, except: except, dryRun: dryRun, force: force, assume: assume, project: project})
+				return pluginsRemoveWith(c, out, args[0], pluginFlags{asJSON: asJSON, hosts: hosts, except: except, dryRun: dryRun, force: force, assume: assume, project: project}, jsonSchemaName(cmd))
 			})
 		},
 	}
@@ -113,7 +113,7 @@ func (a *app) newPluginsRemoveCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite files you edited; the previous version is kept and reported")
 	cmd.Flags().BoolVar(&project, "project", false, "use the project scope")
 
-	return cmd
+	return jsonForm(cmd, "beadle.plugins.remove")
 }
 
 func (a *app) newPluginsEjectCmd() *cobra.Command {
@@ -343,7 +343,7 @@ type pluginFlags struct {
 
 const cmdList = "list"
 
-func pluginsListJSON(c *vergerx.Client, out *bytes.Buffer, asJSON bool) error {
+func pluginsListJSON(c *vergerx.Client, out *bytes.Buffer, asJSON bool, name string) error {
 	if !asJSON {
 		return pluginsList(c, out)
 	}
@@ -353,13 +353,13 @@ func pluginsListJSON(c *vergerx.Client, out *bytes.Buffer, asJSON bool) error {
 		return err
 	}
 
-	return writeJSON(out, newPluginsDocument(&doc))
+	return writeJSON(out, newPluginsDocument(name, &doc))
 }
 
 // pluginsInstallWith plans, asks beadle's confirmer and installs. -y answers
 // every question yes; without it a question is declined, which is the safe
 // default for a package that wants to run something.
-func pluginsInstallWith(c *vergerx.Client, out *bytes.Buffer, refs []string, flags pluginFlags) error {
+func pluginsInstallWith(c *vergerx.Client, out *bytes.Buffer, refs []string, flags pluginFlags, name string) error {
 	if len(refs) == 0 {
 		return errors.New("plugins install: needs at least one package reference")
 	}
@@ -407,7 +407,7 @@ func pluginsInstallWith(c *vergerx.Client, out *bytes.Buffer, refs []string, fla
 		return errors.New("plugins install: the plugin manager applied nothing; nothing was written")
 	}
 
-	return printPluginReport(out, report, flags.asJSON)
+	return printPluginReport(out, report, flags.asJSON, name)
 }
 
 // resolveLocalRefsForVault is resolveLocalRefs with the vault as the base: a
@@ -450,7 +450,7 @@ func isLocalRef(ref string) bool {
 }
 
 // pluginsRemoveWith plans the removal and runs it.
-func pluginsRemoveWith(c *vergerx.Client, out *bytes.Buffer, id string, flags pluginFlags) error {
+func pluginsRemoveWith(c *vergerx.Client, out *bytes.Buffer, id string, flags pluginFlags, name string) error {
 	ctx := context.Background()
 
 	// A package that is not in the spec is a mistake the user can fix by
@@ -476,7 +476,7 @@ func pluginsRemoveWith(c *vergerx.Client, out *bytes.Buffer, id string, flags pl
 		return fmt.Errorf("plugins remove: %w", err)
 	}
 
-	return printPluginReport(out, report, flags.asJSON)
+	return printPluginReport(out, report, flags.asJSON, name)
 }
 
 // pluginsEjectFrom moves the plugin home out of the vault. beadle owns the
@@ -520,9 +520,9 @@ func defaultVergerHome() (string, error) {
 	return filepath.Join(home, ".verger"), nil
 }
 
-func printPluginReport(out *bytes.Buffer, report *apply.Report, asJSON bool) error {
+func printPluginReport(out *bytes.Buffer, report *apply.Report, asJSON bool, name string) error {
 	if asJSON {
-		return writeJSON(out, envelope{name: "beadle.plugins.apply", payload: report})
+		return writeJSON(out, envelope{name: name, payload: report})
 	}
 
 	for _, cell := range report.Cells {

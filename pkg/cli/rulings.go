@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -50,7 +49,7 @@ func (a *app) newRulingsListCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 
 			if jsonOut {
-				return printRulingsJSON(out, ledger.All())
+				return printRulingsJSON(out, ledger.All(), jsonSchemaName(cmd))
 			}
 
 			listRulings(out, ledger.All(), explain)
@@ -62,7 +61,7 @@ func (a *app) newRulingsListCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&explain, "explain", false, "show how each signature was derived")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "machine-readable output")
 
-	return cmd
+	return jsonForm(cmd, "beadle.rulings")
 }
 
 func (a *app) newRulingsShowCmd() *cobra.Command {
@@ -84,7 +83,7 @@ func (a *app) newRulingsShowCmd() *cobra.Command {
 			}
 
 			if jsonOut {
-				return printRulingsJSON(cmd.OutOrStdout(), []rulings.Ruling{ruling})
+				return printRulingsJSON(cmd.OutOrStdout(), []rulings.Ruling{ruling}, jsonSchemaName(cmd))
 			}
 
 			printRuling(cmd.OutOrStdout(), ruling)
@@ -95,7 +94,7 @@ func (a *app) newRulingsShowCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "machine-readable output")
 
-	return cmd
+	return jsonForm(cmd, "beadle.rulings.show")
 }
 
 func (a *app) newRulingsTrustCmd() *cobra.Command {
@@ -326,17 +325,21 @@ func canonicalScope(scope string) string {
 	return rulings.ScopeHost + ":" + agent.Canonical(host)
 }
 
-func printRulingsJSON(w io.Writer, all []rulings.Ruling) error {
+// rulingsDocument is what `beadle rulings list --json` and `beadle rulings show
+// --json` print. It had no envelope until the walk test found it: a consumer
+// switching on `schema.name` got null and no reason, which is the one failure a
+// JSON contract cannot absorb.
+type rulingsDocument struct {
+	withSchema
+	Rulings []rulings.Ruling `json:"rulings"`
+}
+
+// printRulingsJSON renders the ledger in the shared envelope. The name comes
+// from the command, which is where it is declared.
+func printRulingsJSON(w io.Writer, all []rulings.Ruling, name string) error {
 	if all == nil {
 		all = []rulings.Ruling{}
 	}
 
-	data, err := json.MarshalIndent(map[string]any{"rulings": all}, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	_, err = fmt.Fprintln(w, string(data))
-
-	return err
+	return writeJSON(w, rulingsDocument{withSchema: newEnvelope(name), Rulings: all})
 }

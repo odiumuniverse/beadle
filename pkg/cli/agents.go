@@ -34,7 +34,7 @@ func (a *app) newAgentsCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 
 			if asJSON {
-				return writeJSON(out, newAgentsDocument(cfg, agents))
+				return writeJSON(out, newAgentsDocument(jsonSchemaName(cmd), cfg, agents))
 			}
 
 			if err := printAgents(out, cfg, agents); err != nil {
@@ -52,7 +52,7 @@ func (a *app) newAgentsCmd() *cobra.Command {
 
 	cmd.AddCommand(a.newAgentsToggleCmd(true), a.newAgentsToggleCmd(false), a.newAgentsModeCmd())
 
-	return cmd
+	return jsonForm(cmd, "beadle.agents")
 }
 
 func (a *app) newAgentsToggleCmd(enable bool) *cobra.Command {
@@ -156,6 +156,59 @@ func (a *app) newAgentsModeCmd() *cobra.Command {
 	}
 }
 
+// kindsDocument is what `beadle kinds --json` prints: the kind-centric view,
+// which is the one thing `beadle agents --json` does not carry. An agent document
+// answers "what mode does this agent resolve for that kind"; this one answers
+// "is this kind synchronized at all, and if not, what do I run" — and the answer
+// to the second is the footnote the human table prints under it, which a script
+// cannot get anywhere else.
+type kindsDocument struct {
+	withSchema
+	Kinds  []kindRow  `json:"kinds"`
+	Agents []agentRow `json:"agents"`
+}
+
+// kindRow is one resource kind in the document: whether beadle keeps it in step,
+// in the reader's word, and the reason and the command when it does not. The
+// word is the same one the table prints, because a consumer and a person reading
+// the same vault should not have to learn two vocabularies.
+type kindRow struct {
+	ID       string `json:"id"`
+	Status   string `json:"status"`
+	Reason   string `json:"reason,omitempty"`
+	Runnable string `json:"command,omitempty"`
+}
+
+// newKindsDocument projects the config into the kind view, plus the per-agent
+// modes the same run resolves — one row type with `beadle agents --json`, so a
+// consumer that wants both does not have to reconcile two shapes.
+// newKindsDocument projects the config into the kind view, plus the per-agent
+// modes the same run resolves — the same row type `beadle agents --json` uses, so
+// a consumer that wants both does not have to reconcile two shapes. The name
+// comes from the command that asked, which is where it is declared: the envelope
+// on stdout and the annotation the root reads cannot drift apart.
+func newKindsDocument(name string, cfg *config.Config, agents []*agent.Agent) kindsDocument {
+	doc := kindsDocument{
+		withSchema: newEnvelope(name),
+		Kinds:      []kindRow{},
+		Agents:     agentRows(cfg, agents),
+	}
+
+	for _, spec := range kind.All() {
+		row := kindRow{ID: string(spec.ID), Status: wordDelivered}
+
+		if !cfg.KindEnabled(spec.ID) {
+			row.Status = wordSkipped
+			row.Reason = "not synchronized"
+			row.Runnable = "beadle kinds enable " + string(spec.ID)
+		}
+
+		doc.Kinds = append(doc.Kinds, row)
+	}
+
+	return doc
+}
+
 func (a *app) newKindsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "kinds",
@@ -165,6 +218,15 @@ func (a *app) newKindsCmd() *cobra.Command {
 			_, cfg, err := a.loadConfig()
 			if err != nil {
 				return err
+			}
+
+			if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
+				agents, agentsErr := allAgents()
+				if agentsErr != nil {
+					return agentsErr
+				}
+
+				return writeJSON(cmd.OutOrStdout(), newKindsDocument(jsonSchemaName(cmd), cfg, agents))
 			}
 
 			out := cmd.OutOrStdout()
@@ -182,12 +244,13 @@ func (a *app) newKindsCmd() *cobra.Command {
 
 	cmd.AddCommand(a.newKindsToggleCmd(true), a.newKindsToggleCmd(false))
 
-	return cmd
+	return jsonForm(cmd, "beadle.kinds")
 }
 
 // kindWord is one resource's state in the reader's words. A resource that is
 // switched on is what beadle keeps in step with every agent; one that is off is
-// skipped, with the command that changes it.
+// skipped, with the command that changes it. It is the human half of the same
+// fact newKindsDocument states as a status and a runnable command.
 func kindWord(rs *reasons, cfg *config.Config, id kind.ID) string {
 	if cfg.KindEnabled(id) {
 		return wordDelivered

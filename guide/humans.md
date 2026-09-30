@@ -151,7 +151,12 @@ lines in kinds the gate does not scan (rules, subagents, commands), and more.
 Common answers:
 
 - **A file is not synced.** `beadle diff` shows it; if the agent's kind is
-  `pull`, only the agent writes there. `beadle kinds` lists the modes.
+  `pull`, only the agent writes there. The mode is the third column of
+  `beadle status` — `opencode … skills:pull` means opencode's copy of `skills` is
+  the one that moves — and `beadle agents` prints the same modes as a
+  `what is synchronized:` block, one kind per line, for reading them one at a
+  time. `beadle kinds` does **not** show modes: it answers a different question,
+  whether beadle keeps that kind in step at all, for every agent together.
 - **Every kind says `skipped — no agent is on for this vault`.** No agent is
   enabled and installed here, so there was nobody to write to. The command to
   change that is printed once, under the table, not once per kind.

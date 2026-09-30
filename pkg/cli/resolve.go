@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -86,7 +85,7 @@ func (a *app) newResolveCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 
 			if jsonOut {
-				if err := printResolveJSON(out, report); err != nil {
+				if err := printResolveJSON(out, report, jsonSchemaName(cmd)); err != nil {
 					return err
 				}
 
@@ -118,7 +117,7 @@ func (a *app) newResolveCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&mergetool, "mergetool", false, "materialize the conflict as a git merge state in the vault (audit mode)")
 	cmd.Flags().BoolVar(&mergetoolAbort, "mergetool-abort", false, "remove the mergetool merge state, keeping the audit refs")
 
-	return cmd
+	return jsonForm(cmd, "beadle.resolve")
 }
 
 type mergetoolOptions struct {
@@ -146,7 +145,7 @@ func (a *app) runMergetool(cmd *cobra.Command, opts mergetoolOptions, args []str
 		}
 
 		if opts.json {
-			return printMergetoolJSON(out, result)
+			return printMergetoolJSON(out, result, jsonSchemaName(cmd))
 		}
 
 		cmd.Printf("mergetool aborted: %s\n", result.Path)
@@ -164,7 +163,7 @@ func (a *app) runMergetool(cmd *cobra.Command, opts mergetoolOptions, args []str
 	}
 
 	if opts.json {
-		return printMergetoolJSON(out, result)
+		return printMergetoolJSON(out, result, jsonSchemaName(cmd))
 	}
 
 	cmd.Printf("mergetool active: %s\n", result.Path)
@@ -192,24 +191,18 @@ func validateMergetool(opts mergetoolOptions, args []string) error {
 	return nil
 }
 
-func printMergetoolJSON(w io.Writer, result engine.MergetoolResult) error {
-	payload := struct {
+// printMergetoolJSON renders the audit document. It is the command's document
+// with a different shape and its own name, because a consumer switching on
+// `schema.name` cannot otherwise tell an audit apart from a set of resolutions —
+// and it had no envelope at all until the walk test found it, which is the same
+// break `beadle rulings list --json` had.
+func printMergetoolJSON(w io.Writer, result engine.MergetoolResult, name string) error {
+	doc := struct {
+		withSchema
 		Mergetool engine.MergetoolResult `json:"mergetool"`
-	}{Mergetool: result}
+	}{withSchema: newEnvelope(name + ".mergetool"), Mergetool: result}
 
-	data, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	_, err = fmt.Fprintln(w, string(data))
-
-	return err
-}
-
-type resolveJSON struct {
-	Resolved []string        `json:"resolved"`
-	Refusals []state.Refusal `json:"refusals"`
+	return writeJSON(w, doc)
 }
 
 // refusalError is beadle's "the policy said no" exit, and it is typed rather
@@ -246,25 +239,31 @@ func dedupe(codes []string) []string {
 	return out
 }
 
-func printResolveJSON(w io.Writer, report *engine.Report) error {
-	payload := resolveJSON{Resolved: report.Resolved, Refusals: report.Refusals}
+// resolveDocument is what `beadle resolve --json` prints. The empty slices are
+// set rather than left nil so a consumer reads `[]` and not `null` — the
+// difference between "nothing was resolved" and "the field is missing".
+type resolveDocument struct {
+	withSchema
+	Resolved []string        `json:"resolved"`
+	Refusals []state.Refusal `json:"refusals"`
+}
 
-	if payload.Resolved == nil {
-		payload.Resolved = []string{}
+func printResolveJSON(w io.Writer, report *engine.Report, name string) error {
+	doc := resolveDocument{
+		withSchema: newEnvelope(name),
+		Resolved:   report.Resolved,
+		Refusals:   report.Refusals,
 	}
 
-	if payload.Refusals == nil {
-		payload.Refusals = []state.Refusal{}
+	if doc.Resolved == nil {
+		doc.Resolved = []string{}
 	}
 
-	data, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		return err
+	if doc.Refusals == nil {
+		doc.Refusals = []state.Refusal{}
 	}
 
-	_, err = fmt.Fprintln(w, string(data))
-
-	return err
+	return writeJSON(w, doc)
 }
 
 type expectation struct {

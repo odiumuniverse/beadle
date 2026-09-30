@@ -30,7 +30,7 @@ func (a *app) newSyncCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print the report as JSON")
 	cmd.Flags().BoolVar(&refresh, "refresh-digest", false, "overwrite the frozen memory digest block even if it was edited by hand")
 
-	return cmd
+	return jsonForm(cmd, "beadle.sync")
 }
 
 func (a *app) newPullCmd() *cobra.Command {

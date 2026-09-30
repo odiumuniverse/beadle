@@ -51,5 +51,5 @@ func (a *app) newExplainCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print the rows as JSON")
 
-	return cmd
+	return jsonForm(cmd, "beadle.explain")
 }

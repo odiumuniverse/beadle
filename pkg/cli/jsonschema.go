@@ -4,6 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	"github.com/odiumuniverse/verger/pkg/verger"
 )
 
 // Every beadle document that a machine reads carries the same envelope, and it
@@ -85,4 +91,86 @@ func writeJSON(out io.Writer, doc any) error {
 	_, err = fmt.Fprintf(out, "%s\n", data)
 
 	return err
+}
+
+// jsonFormAnnotation is the cobra annotation a command carries when it has a
+// machine-readable form, and its value is the document's `schema.name`.
+//
+// It is the only place that name is written. The command reads it back when it
+// prints, so the annotation the refusal consults, the name on stdout, and the
+// table in `guide/ai-agents.md` are three views of one string rather than three
+// places to keep in step — and a command that invents a name in its own body
+// cannot be written by accident.
+const jsonFormAnnotation = "beadle.json"
+
+// jsonForm marks a command as having a machine-readable form and names the
+// document it prints. Every command that answers --json calls this exactly once,
+// and the walk test requires that every command either calls it or is refused.
+func jsonForm(cmd *cobra.Command, name string) *cobra.Command {
+	if cmd.Annotations == nil {
+		cmd.Annotations = map[string]string{}
+	}
+
+	cmd.Annotations[jsonFormAnnotation] = name
+
+	return cmd
+}
+
+// jsonSchemaName returns the document a command prints under --json, or "" when
+// it has none. A subcommand inherits nothing: `beadle plugins --json` is not
+// `beadle plugins list --json`, and answering with the parent's document would be
+// a lie about which one ran.
+func jsonSchemaName(cmd *cobra.Command) string {
+	if cmd == nil || cmd.Annotations == nil {
+		return ""
+	}
+
+	return cmd.Annotations[jsonFormAnnotation]
+}
+
+// noJSONForm is the answer for a command that has no machine-readable form. It
+// is a usage error, so it exits 2 like any other bad invocation: the caller
+// named a capability the command does not have, which is a mistake in the
+// invocation rather than a fault in the vault or a question for the user.
+//
+// The alternative — printing the human table and saying nothing — is the one
+// thing a JSON consumer cannot defend against: a script that pipes beadle into
+// `jq` gets a parse error with no hint that the flag was the mistake, and the
+// flag's own help text promises a document.
+func noJSONForm(cmd, root *cobra.Command) error {
+	have := jsonFormCommands(root)
+	if len(have) == 0 {
+		return &verger.UsageError{Cause: fmt.Errorf("`%s` has no machine-readable form; drop --json", cmd.CommandPath())}
+	}
+
+	return &verger.UsageError{Cause: fmt.Errorf(
+		"`%s` has no machine-readable form; drop --json, or use one of: %s",
+		cmd.CommandPath(), strings.Join(have, ", "),
+	)}
+}
+
+// jsonFormCommands lists every command in the tree that does have a document, by
+// the path a user would type. It is what the refusal offers instead of a bare
+// "no", because the useful answer to "this command cannot do that" is the one
+// that can.
+func jsonFormCommands(root *cobra.Command) []string {
+	var out []string
+
+	var walk func(*cobra.Command)
+
+	walk = func(cmd *cobra.Command) {
+		if name := jsonSchemaName(cmd); name != "" {
+			out = append(out, cmd.CommandPath())
+		}
+
+		for _, sub := range cmd.Commands() {
+			walk(sub)
+		}
+	}
+
+	walk(root)
+
+	sort.Strings(out)
+
+	return out
 }
