@@ -108,8 +108,7 @@ func TestExportRequiresInitializedVault(t *testing.T) {
 		home := t.TempDir()
 
 		t.Setenv("HOME", home)
-		t.Setenv("XDG_CONFIG_HOME", "")
-		t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
+		isolateTestRoots(t)
 
 		out := filepath.Join(t.TempDir(), "package")
 
@@ -135,8 +134,7 @@ func TestExportAgentPluginsEndToEnd(t *testing.T) {
 		home := t.TempDir()
 
 		t.Setenv("HOME", home)
-		t.Setenv("XDG_CONFIG_HOME", "")
-		t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
+		isolateTestRoots(t)
 
 		_, err := runCLI(t, "init")
 		So(err, ShouldBeNil)

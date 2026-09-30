@@ -1,34 +1,40 @@
 package agent
 
 import (
-	"os"
-	"path/filepath"
+	"github.com/odiumuniverse/verger/pkg/hostpath"
 )
 
 // InboxPath returns the append-only inbox file of an agent, or "" when the
 // agent has no inbox.
+//
+// The shared resolver answers a path for every host that has an inbox document,
+// claude included. Claude is deliberately absent from the list below: the
+// decision (docs/tasks/orchestration-2026-09-29.md) is that beadle creates no
+// file in the user's home for it, so the resolver's answer is not consumed
+// here. The resolver describes what the host reads; the consumer decides.
 func InboxPath(home, id string) string {
-	switch id {
-	case OpenCodeID:
-		dir := filepath.Join(home, ".config", "opencode")
-		if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-			dir = filepath.Join(xdg, "opencode")
-		}
-
-		return filepath.Join(dir, "inbox.md")
-	case GeminiCLIID:
-		return filepath.Join(home, ".gemini", "inbox.md")
-	case CursorID:
-		return filepath.Join(home, ".cursor", "inbox.md")
-	case CodexID:
-		return filepath.Join(home, ".codex", "inbox.md")
-	case PiID:
-		return filepath.Join(home, ".pi", "agent", "inbox.md")
-	case KiloID:
-		return filepath.Join(home, ".config", "kilo", "inbox.md")
-	case OmpID:
-		return filepath.Join(OmpAgentDir(home), "inbox.md")
-	default:
+	// The shared resolver names the inbox of every host that has one. Claude
+	// is deliberately absent: the decision (docs/tasks/orchestration-2026-09-29.md)
+	// is that beadle creates no file in the user's home for it, so the
+	// resolver's answer is not consumed. The resolver describes what the host
+	// reads; the consumer decides.
+	if id == ClaudeCodeID {
 		return ""
 	}
+
+	if id == OpenCodeID {
+		return surfaces(hostpath.OpenCode, home).Inbox
+	}
+
+	// The hub pseudo-agent and any id the resolver does not know have no inbox.
+	if !hostpath.Known(id) {
+		return ""
+	}
+
+	resolved, err := hostpath.Surfaces(id, hostEnv(home))
+	if err != nil {
+		return ""
+	}
+
+	return resolved.Inbox
 }

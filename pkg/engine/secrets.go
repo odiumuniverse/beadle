@@ -46,6 +46,10 @@ func (e *Engine) inboundCount(k kind.ID, items kind.Items) (kind.Items, int, err
 	}
 }
 
+// logNoteSecretMoves records, at log level, how many literal secrets this run
+// pulled out of host notes. The user-visible half of that fact is the sync
+// report's note, which fires once per value that actually entered the store -
+// see Engine.Sync.
 func (e *Engine) logNoteSecretMoves(ctx context.Context, spec kind.Spec, views []*view, opts SyncOptions) {
 	if spec.ID != kind.Memory || opts.DryRun {
 		return

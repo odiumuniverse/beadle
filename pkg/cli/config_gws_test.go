@@ -23,7 +23,7 @@ func configFilePath(home string) string {
 func gwsRunSplit(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
 
-	root := newRootCmd(Options{Version: "test"})
+	root := newRootCmd(testOptions())
 
 	var stdout, stderr bytes.Buffer
 

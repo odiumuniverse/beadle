@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -59,10 +58,6 @@ func (a *app) newConflictsCmd() *cobra.Command {
 	return cmd
 }
 
-type conflictsJSON struct {
-	Conflicts []engine.ConflictView `json:"conflicts"`
-}
-
 func showConflictsJSON(w io.Writer, e *engine.Engine, args []string) error {
 	views, err := e.ConflictViews()
 	if err != nil {
@@ -95,14 +90,10 @@ func showConflictsJSON(w io.Writer, e *engine.Engine, args []string) error {
 		views = []engine.ConflictView{}
 	}
 
-	data, err := json.MarshalIndent(conflictsJSON{Conflicts: views}, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	_, err = fmt.Fprintln(w, string(data))
-
-	return err
+	return writeJSON(w, conflictsDocument{
+		withSchema: newEnvelope("beadle.conflicts"),
+		Conflicts:  views,
+	})
 }
 
 func listConflicts(w io.Writer, conflicts []state.Conflict) {

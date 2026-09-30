@@ -18,11 +18,24 @@ func (e *Engine) daemonEnvIssues(status daemon.Status) []Issue {
 
 	unit, err := daemon.UnitEnvFromFile(status.Path)
 	if err != nil {
-		return []Issue{{Severity: SeverityWarn, Message: "cannot read the daemon unit environment: " + err.Error()}}
+		return []Issue{{
+			Severity: SeverityWarn,
+			Subject:  "daemon.env",
+			Message:  "cannot read the daemon unit environment: " + err.Error(),
+			Fix:      [][]string{{beadleName, "daemon", cliInstall}},
+		}}
 	}
 
 	if len(unit) == 0 {
-		return []Issue{{Severity: SeverityWarn, Message: "daemon unit pins no environment (installed before env pinning); reinstall it with `beadle daemon install` so the watcher follows this vault"}}
+		return []Issue{{
+			Severity: SeverityWarn,
+			Subject:  "daemon.env",
+			Message:  "the daemon unit pins no environment (installed before env pinning), so the watcher does not follow this vault",
+			// Re-registering the unit is a repair beadle owns outright: it
+			// rewrites a file beadle wrote, and changes nothing the user did.
+			Fix:           [][]string{{beadleName, "daemon", cliInstall}},
+			SafeToAutofix: true,
+		}}
 	}
 
 	expected := daemon.UnitEnv(e.home, e.vault.Root())

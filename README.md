@@ -26,6 +26,10 @@ starts to drift. Beadle keeps that configuration in **a private vault of plain f
 syncs it both ways with a **git-style three-way merge**, and leaves **everything it does not
 manage** alone.
 
+Want every agent's whole configuration — rules, memory, skills, subagents, inbox — kept in sync
+across machines? You are in the right place. Only need plugins, without the rest?
+→ [verger](https://github.com/odiumuniverse/verger), the plugin manager beadle embeds.
+
 ```
 ~/.beadle/                  your vault — the only thing you edit
 ├── rules/base.md               your rules and instructions
@@ -49,7 +53,7 @@ manage** alone.
 [Why use it](#why-use-it) · [Supported agents](#supported-agents) · [Install](#install) ·
 [Quick start](#quick-start) · [Guides](#guides) · [Plugins](#plugins) ·
 [Reference](#reference) · [Commands](#commands) · [Project scope](#project-scope) ·
-[Secrets](#secrets)
+[Secrets](#secrets) · [Exit codes](#exit-codes) · [beadle and verger](#beadle-and-verger)
 
 ## Guides
 
@@ -288,12 +292,15 @@ See [Project scope](#project-scope).
 | `resolve [id…] --take vault\|agent\|file` | settle conflicts and push the decision |
 | `history <kind>` / `restore <kind> --to N` | snapshots and rollbacks |
 | `doctor` | diagnostics; non-zero exit on errors |
-| `heal [--dry-run]` | clear quarantined plugins and tidy leftovers |
+| `migrate` | upgrade the vault's stored schemas to the current version |
 | `agents` (`enable` / `disable` / `mode`) | agents and their per-kind directions |
 | `kinds` (`enable` / `disable`) | switch kinds on or off for every agent |
 | `watch` / `daemon` | background sync and the autostart service |
 | `secrets list\|set\|rm\|prune\|migrate` | credential values; never printed |
+| `plugins list\|install\|remove` | plugin packages, delivered by the embedded plugin manager |
+| `plugins canon enable\|disable` | install beadle's canon as a plugin package on every host, or remove it |
 | `plugins pins\|pin\|unpin` | per-agent plugin version pins |
+| `plugins eject` | move the plugin home out of the vault to `~/.verger`, keeping the packages |
 | `bundles status\|enable\|disable` | native host bundles and their registration |
 | `hooks list\|add\|rm\|approve\|revoke` | lifecycle hooks, rendered into host hook files and bundles — beadle never runs them |
 | `skills seed\|adopt\|unadopt` | the built-in skills, foreign-copy adoption and its restore |
@@ -338,6 +345,43 @@ fail-closed: an unavailable keyring yields skips and warnings, never a plaintext
   directory; the file mode is preserved.
 - **Local stays local.** OAuth state, hooks, plugins, UI settings, folder trust — untouched.
   Secrets never reach the synced canon, the object store or git history.
+
+## Exit codes
+
+beadle and verger use the same classes, so a script can treat them alike.
+
+| code | name | meaning |
+|---|---|---|
+| 0 | ok | success |
+| 1 | unexpected | an error with no more specific class |
+| 2 | usage | wrong flag, wrong argument, unknown command |
+| 3 | conflict | a conflict only you can settle: a `sync` that ended with one open, or a watcher that already holds the lease |
+| 4 | policy refusal | a managed-settings policy forbids this |
+| 5 | consent needed | a package needs approval before it runs |
+| 6 | host unavailable | the host cannot be reached or has no schema |
+| 7 | schema newer | the spec was written by a newer version |
+
+## beadle and verger
+
+beadle is a coding agent's own configuration — rules, memory, skills, subagents, inbox, vault — and
+it uses verger as its plugin manager, embedded, so the two share one spec, one lock and one set of
+exit codes. Use beadle when you want an agent's behaviour managed along with its plugins, and
+verger on its own when you only want plugins.
+
+They are the same program underneath, which is what makes the two arrangements safe to combine:
+
+- **One home.** `~/.beadle` and `~/.verger` are read by both. What beadle writes to an agent,
+  standalone `verger` sees, and the package set each of them reports is the same set.
+- **One watcher.** `beadle watch` and `verger watch` take the same lease. The second one does not
+  compete: it says which watcher holds it and by which pid, and exits 3. Run whichever you prefer;
+  do not run both.
+- **Eject.** `beadle plugins eject` moves the plugin home out of the vault to `~/.verger`, keeping
+  every installed package. From then on `verger status`, `verger sync` and the rest work on it
+  directly, with everything else in `~/.beadle` untouched — and the two can still be run on the
+  same home, because after the eject there is one plugin home, not two.
+- **Absorb.** The other direction needs no command: `beadle init` moves a standalone `~/.verger`
+  into the vault, file for file, and the old directory is gone afterwards. After that there is one
+  plugin home again — inside the vault — and `beadle plugins eject` sends it back out.
 
 ## License
 

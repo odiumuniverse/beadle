@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "snapshots": {
+    "skills": [
+      {
+        "at": "2026-09-30T00:57:02.259263Z",
+        "manifest": "355a362906d7dd6b33ff2d6235aaa624010afaef9b3ebec2827bfaea386ef83b"
+      }
+    ]
+  },
+  "bundles": {
+    "claude": {
+      "enabled": true,
+      "version": "0.0.0-0bf8dbd0b4b4",
+      "registered": true,
+      "verify_tier": "failed",
+      "probe_note": "claude plugin list --json output is not parseable"
+    }
+  }
+}

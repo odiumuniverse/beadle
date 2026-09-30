@@ -53,9 +53,13 @@ func TestKiloDualReadPaths(t *testing.T) {
 		})
 
 		Convey("Then the future agent and command dirs keep singular and plural", func() {
+			// The agent read list also carries the legacy {modes,mode} pair:
+			// one source of truth for the four read dirs, not two.
 			So(agent.KiloAgentDirs(home), ShouldResemble, []string{
 				filepath.Join(configDir, "agents"),
 				filepath.Join(configDir, "agent"),
+				filepath.Join(configDir, "modes"),
+				filepath.Join(configDir, "mode"),
 			})
 			So(agent.KiloCommandDirs(home), ShouldResemble, []string{
 				filepath.Join(configDir, "commands"),
@@ -100,11 +104,24 @@ func TestPiMCPAdapterDetection(t *testing.T) {
 			})
 		})
 
-		Convey("When the managed npm catalog holds the package", func() {
-			writeFile(t, filepath.Join(piDir, "npm", "node_modules", "pi-mcp-adapter", "package.json"), `{"name":"pi-mcp-adapter"}`)
+		// A user-scope `pi install` writes only the settings registration and
+		// puts the payload in the global npm root (live, pi 0.74.2), so no
+		// directory under the agent dir is a user-scope install target: the
+		// resolver's user set is the whole truth. The project-scope catalog
+		// below is the one directory form that does exist.
+		Convey("When a node_modules tree sits under the agent dir anyway", func() {
+			writeFile(t, filepath.Join(piDir, "node_modules", "pi-mcp-adapter", "package.json"), `{"name":"pi-mcp-adapter"}`)
 
 			Convey("Then the adapter is detected", func() {
 				So(agent.PiMCPAdapterPresent(home, cwd), ShouldBeTrue)
+			})
+		})
+
+		Convey("When the npm catalog under the agent dir holds the package", func() {
+			writeFile(t, filepath.Join(piDir, "npm", "node_modules", "pi-mcp-adapter", "package.json"), `{"name":"pi-mcp-adapter"}`)
+
+			Convey("Then it is not a user-scope install target and is not detected", func() {
+				So(agent.PiMCPAdapterPresent(home, cwd), ShouldBeFalse)
 			})
 		})
 

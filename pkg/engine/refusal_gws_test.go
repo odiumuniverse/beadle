@@ -1,31 +1,41 @@
-package engine
+package engine_test
 
 import (
-	"fmt"
+	"errors"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
 
-	"github.com/odiumuniverse/beadle/pkg/state"
+	"github.com/odiumuniverse/beadle/pkg/engine"
 )
 
-func TestConflictsRefusalsBounded(t *testing.T) {
-	Convey("Given a fresh state", t, func() {
-		st := state.New()
+// TestRefusalErrorIsNamedAndCarriesItsCode pins what an embedder needs: a
+// refusal is classifiable by type and names its machine code, and a refusal
+// raised by a caller travels the same way as one beadle raised itself.
+func TestRefusalErrorIsNamedAndCarriesItsCode(t *testing.T) {
+	Convey("Given a refusal beadle raised", t, func() {
+		err := engine.NewRefusalError("risky-change", "the change alters an MCP command")
 
-		Convey("When more refusals than the bound are recorded", func() {
-			for i := range state.MaxRefusals + 10 {
-				st.AddRefusal(state.Refusal{ID: fmt.Sprintf("id-%02d", i), Code: state.RefusalStaleConflict})
-			}
+		Convey("Then it is recognised as a refusal and carries its code", func() {
+			refused, ok := engine.IsRefusal(err)
+			So(ok, ShouldBeTrue)
+			So(refused.Code(), ShouldEqual, "risky-change")
+			So(refused.Message(), ShouldEqual, "the change alters an MCP command")
+			So(err.Error(), ShouldEqual, "risky-change: the change alters an MCP command")
+		})
 
-			Convey("Then only the last MaxRefusals remain, oldest dropped", func() {
-				So(st.Refusals, ShouldHaveLength, state.MaxRefusals)
-				So(st.Refusals[0].ID, ShouldEqual, "id-10")
+		Convey("Then it is found through a wrapping chain", func() {
+			wrapped := errors.Join(errors.New("resolve conflicts"), err)
 
-				last, ok := st.LastRefusal()
-				So(ok, ShouldBeTrue)
-				So(last.ID, ShouldEqual, fmt.Sprintf("id-%02d", state.MaxRefusals+9))
-			})
+			_, ok := engine.IsRefusal(wrapped)
+			So(ok, ShouldBeTrue)
+		})
+	})
+
+	Convey("Given an ordinary error", t, func() {
+		Convey("Then it is not a refusal and carries no code", func() {
+			_, ok := engine.IsRefusal(errors.New("disk on fire"))
+			So(ok, ShouldBeFalse)
 		})
 	})
 }

@@ -79,7 +79,11 @@ func TestMergetoolCLIJSON(t *testing.T) {
 		gwsWrite(t, filepath.Join(vault, "rules", "base.md"), "# vault v2\n")
 		gwsWrite(t, filepath.Join(home, ".claude", "CLAUDE.md"), "# claude v2\n")
 
-		if _, err := gwsRun(t, "sync"); err != nil {
+		// This scenario makes the host and the vault disagree on purpose, so
+		// the sync that follows is meant to block. A blocked run exits with the
+		// conflict class, not success — that is the contract, and the assertions
+		// below are about what it did with the files.
+		if _, err := gwsRun(t, "sync"); err != nil && !gwsBlocked(err) {
 			t.Fatal(err)
 		}
 

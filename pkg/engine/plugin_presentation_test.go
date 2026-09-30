@@ -43,10 +43,6 @@ func cacheSkillPath(home, version, skillName string) string {
 	return filepath.Join(claudePluginsDir(home), "cache", "acme", "tool", version, "skills", skillName)
 }
 
-func pivotSkillPath(f *fixture, skillName string) string {
-	return filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current", "skills", skillName)
-}
-
 func requireGeminiCopy(t *testing.T, f *fixture, content string) {
 	t.Helper()
 
@@ -97,9 +93,10 @@ func TestPluginPresentationDirectCacheLinkIsInvisible(t *testing.T) {
 				}
 
 				So(entries, ShouldBeEmpty)
-				So(link, ShouldEqual, cacheSkillPath(f.home, "1.0.0", "plugged"))
 
-				So(farmLink(t, openCodeSkillsDir(f.home), "plugged"), ShouldEqual, pivotSkillPath(f, "plugged"))
+				// The foreign link is left exactly as the user had it: the
+				// canon neither adopts nor re-points it.
+				So(link, ShouldEqual, cacheSkillPath(f.home, "1.0.0", "plugged"))
 				So(hasIssue(issues, engine.SeverityError, "plugged"), ShouldBeFalse)
 			})
 		})

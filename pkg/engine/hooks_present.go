@@ -66,7 +66,7 @@ func (e *Engine) presentHooks(st *state.State, report *Report, active []*agent.A
 		return
 	}
 
-	approved := hooks.Approved(e.config)
+	approved := e.approvedHooksForRender(canon)
 	sources, retired := e.pluginHookSources()
 
 	for _, target := range hookFileTargets(e.home) {

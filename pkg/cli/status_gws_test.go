@@ -25,8 +25,7 @@ func statusFixture(t *testing.T, offMode bool, complement []string) string {
 	home := t.TempDir()
 
 	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
+	isolateTestRoots(t)
 
 	writeFile(t, filepath.Join(home, ".claude.json"), `{"mcpServers": {}}`)
 
@@ -87,11 +86,11 @@ func TestStatusNamesBundleDelivery(t *testing.T) {
 
 			Convey("And the report says the bundle delivers it and names the host-file copies", func() {
 				So(out, ShouldContainSubstring,
-					"bundles: claude mcp=off is delivered by the bundle; the servers it cannot carry go to the host file: context7, web-reader, web-search-prime")
+					"bundles: claude mcp=off is written by the bundle; the servers it cannot carry go to the host file: context7, web-reader, web-search-prime")
 			})
 
 			Convey("And the agents table keeps one token per kind", func() {
-				So(out, ShouldContainSubstring, "claude       enabled   installed")
+				So(out, ShouldContainSubstring, "claude       delivered")
 			})
 		})
 	})
@@ -109,7 +108,7 @@ func TestStatusStaysSilentWithoutComplement(t *testing.T) {
 			So(err, ShouldBeNil)
 
 			Convey("Then the bundle delivery is reported without inventing names", func() {
-				So(out, ShouldContainSubstring, "bundles: claude mcp=off is delivered by the bundle, not the file surface")
+				So(out, ShouldContainSubstring, "bundles: claude mcp=off is written by the bundle, not as a file")
 				So(out, ShouldNotContainSubstring, "go to the host file")
 			})
 
@@ -187,7 +186,7 @@ func TestPrintBundleDeliveryCoversEveryBundleHost(t *testing.T) {
 
 			for _, line := range lines {
 				So(line, ShouldStartWith, "bundles: ")
-				So(line, ShouldContainSubstring, "=off is delivered by the bundle")
+				So(line, ShouldContainSubstring, "=off is written by the bundle")
 			}
 
 			So(out.String(), ShouldContainSubstring, "secret-server")

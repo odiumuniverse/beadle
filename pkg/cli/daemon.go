@@ -15,13 +15,37 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/secret"
 )
 
-var (
-	daemonInstallRunner daemon.Runner = execRunner
-	daemonCheckRunner   secret.Runner = secret.ExecRunner{}
-	// daemonTempHome is the temporary-root check the installer consults; tests
-	// override it to exercise the install path from a temp home.
-	daemonTempHome = daemon.TemporaryHome
-)
+// temporaryHome is the temporary-root check the installer consults. It is a
+// field on the app (Options.DaemonTemporaryHome), not a package variable, so a
+// test that lifts this check does it for its own run.
+func (a *app) temporaryHome(home string) bool {
+	if a.daemonTemporaryHome != nil {
+		return a.daemonTemporaryHome(home)
+	}
+
+	return daemon.TemporaryHome(home)
+}
+
+// not been given one. It is a default, not the source of truth: a.daemonInstall
+// is what every call site reads, so a test can hand the app a recorder without
+// touching anything another test is doing.
+func (a *app) installRunner() daemon.Runner {
+	if a.daemonInstall != nil {
+		return a.daemonInstall
+	}
+
+	return execRunner
+}
+
+// checkRunner is the process call the init-time daemon probe makes, with the
+// same contract as installRunner.
+func (a *app) checkRunner() secret.Runner {
+	if a.daemonCheck != nil {
+		return a.daemonCheck
+	}
+
+	return secret.ExecRunner{}
+}
 
 func (a *app) newDaemonCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -48,7 +72,7 @@ func (a *app) newDaemonInstallCmd() *cobra.Command {
 				return err
 			}
 
-			path, err := daemon.Install(cmd.Context(), spec, daemonInstallRunner)
+			path, err := daemon.Install(cmd.Context(), spec, a.installRunner())
 			if err != nil {
 				return err
 			}
@@ -74,7 +98,7 @@ func (a *app) newDaemonUninstallCmd() *cobra.Command {
 				return err
 			}
 
-			path, err := daemon.Uninstall(cmd.Context(), spec, daemonInstallRunner)
+			path, err := daemon.Uninstall(cmd.Context(), spec, a.installRunner())
 			if err != nil {
 				return err
 			}
@@ -94,7 +118,7 @@ func (a *app) temporaryDaemonRefusal(spec daemon.Spec, vaultRoot, hint string) e
 	var temporary []string
 
 	for _, path := range []string{spec.Home, vaultRoot} {
-		if daemonTempHome(path) {
+		if a.temporaryHome(path) {
 			temporary = append(temporary, path)
 		}
 	}

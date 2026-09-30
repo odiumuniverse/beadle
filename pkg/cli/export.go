@@ -17,7 +17,7 @@ import (
 func (a *app) newExportCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "export",
-		Short: "Export the canon in external package formats",
+		Short: "Export your configuration in external package formats",
 	}
 
 	cmd.AddCommand(a.newExportAgentPluginsCmd())
@@ -30,7 +30,7 @@ func (a *app) newExportAgentPluginsCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "agent-plugins",
-		Short: "Render the canon (skills and MCP) as an Agent Plugins v1.0.0 package",
+		Short: "Render your configuration (skills and MCP) as an Agent Plugins v1.0.0 package",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if out == "" {
@@ -60,7 +60,7 @@ func (a *app) newExportAgentPluginsCmd() *cobra.Command {
 			pkg, err := agentplugins.Render(skills, servers, agentplugins.Options{
 				Name:        "beadle-canon",
 				Version:     version,
-				Description: "The beadle canon: portable skills and MCP servers",
+				Description: "Your beadle configuration: portable skills and MCP servers",
 				License:     "MIT",
 				Keywords:    []string{"beadle", "skills", "mcp"},
 			})
@@ -94,7 +94,7 @@ func (a *app) newExportAgentPluginsCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&out, "out", "", "output directory (required)")
+	cmd.Flags().StringVar(&out, "out", "", "output directory (default: the configuration package directory in the vault)")
 
 	return cmd
 }
@@ -111,7 +111,7 @@ func (a *app) resolveVaultReadOnly() (*vault.Vault, error) {
 	v := vault.New(root)
 
 	if _, err := os.Stat(v.ConfigPath()); err != nil { //nolint:gosec // G703: the path is the resolved vault path, not request taint
-		return nil, fmt.Errorf("vault %s is not initialized (run beadle init)", root)
+		return nil, fmt.Errorf("vault %s: %w (run beadle init)", root, ErrVaultNotInitialized)
 	}
 
 	return v, nil

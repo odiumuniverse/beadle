@@ -200,8 +200,11 @@ func TestMigratedConflictSurvivesAndResolves(t *testing.T) {
 		So(gwsRead(t, oldFile), ShouldNotBeEmpty)
 
 		Convey("When a sync migrates the vault", func() {
+			// The migration itself succeeded; the vault it migrated has a
+			// conflict in it, and a sync that leaves one open exits with the
+			// conflict class rather than success.
 			out, err := gwsRun(t, "sync")
-			So(err, ShouldBeNil)
+			So(gwsBlocked(err), ShouldBeTrue)
 			So(out, ShouldContainSubstring, "state: agent gemini-cli is now named gemini")
 
 			Convey("Then the conflict survives under the new id", func() {

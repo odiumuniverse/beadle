@@ -46,11 +46,24 @@ func (e *Engine) skillTreeDigest(st *state.State, root string) (cas.Hash, error)
 		return "", err
 	}
 
-	e.setSkillTree(st, root, state.SkillTree{
+	// The stamp records when the digest was computed, so it moves only when
+	// the digest does. Re-stamping an unchanged digest on every run made
+	// state.json a function of the clock rather than of the content: a sync
+	// that re-rendered the farm refreshed the mtimes, the cache missed, the
+	// stamp moved, and a second sync produced a different state file. A script
+	// that hashes the vault to decide whether anything happened cannot tell
+	// that from work, and `migrate.idempotent` fails on it.
+	stamp := e.now()
+	key := state.SkillTreeKey(root, e.home)
+	if previous, ok := st.SkillTreeFor(key); ok && previous.Digest == digest {
+		stamp = previous.Stamp
+	}
+
+	e.setSkillTree(st, root, key, state.SkillTree{
 		Digest:      digest,
 		Fingerprint: stat.Fingerprint,
 		Latest:      stat.Latest,
-		Stamp:       e.now(),
+		Stamp:       stamp,
 	})
 
 	return digest, nil
@@ -63,7 +76,9 @@ func (e *Engine) cachedSkillTree(st *state.State, root string, stat skill.TreeSt
 		return entry.Digest, true
 	}
 
-	if entry, ok := st.SkillTreeFor(root); ok && skillTreeFresh(entry, stat) {
+	// The in-process cache is keyed by the real path, because it never leaves
+	// this machine. The state is keyed by the portable one, because it does.
+	if entry, ok := st.SkillTreeFor(state.SkillTreeKey(root, e.home)); ok && skillTreeFresh(entry, stat) {
 		e.setSkillCache(root, entry)
 
 		return entry.Digest, true
@@ -83,10 +98,11 @@ func skillTreeFresh(entry state.SkillTree, stat skill.TreeStat) bool {
 }
 
 // setSkillTree records one digest in the in-process cache and in the state the
-// caller may save.
-func (e *Engine) setSkillTree(st *state.State, root string, entry state.SkillTree) {
+// caller may save. root is this machine's path and key is the portable name the
+// state stores it under.
+func (e *Engine) setSkillTree(st *state.State, root, key string, entry state.SkillTree) {
 	e.setSkillCache(root, entry)
-	st.SetSkillTree(root, entry)
+	st.SetSkillTree(key, entry)
 }
 
 // setSkillCache records one digest in the in-process cache.

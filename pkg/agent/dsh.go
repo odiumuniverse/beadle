@@ -4,9 +4,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 
 	"github.com/odiumuniverse/beadle/pkg/agentid"
+	"github.com/odiumuniverse/verger/pkg/hostpath"
+
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/project"
 )
@@ -38,26 +39,28 @@ const DSHHomeNote = "DSH_HOME is empty; DSH ignores it and falls back to ~/.dsh 
 // directory. Detection treats any existing path — a file included — as
 // present. Q-15 verifies these semantics against upstream DSH.
 func DSHHome(home string) (string, bool) {
-	value, ok := os.LookupEnv(dshHomeEnv)
-	if ok && value != "" {
-		return value, false
-	}
+	_, set := os.LookupEnv(dshHomeEnv)
 
-	return filepath.Join(home, dshDirName), ok
+	// The root itself is the shared resolver's: DSH_HOME verbatim, else
+	// <home>/.dsh. The second result is "set but empty", which DSH's own
+	// nullish coalescing treats as a real value and the doctor reports.
+	return roots(hostpath.DSH, home).ConfigRoot, set && os.Getenv(dshHomeEnv) == ""
 }
 
 // DSHDetected reports whether DSH is present: its home directory exists or the
 // dsh binary is on PATH.
 func DSHDetected(home string) (bool, error) {
-	dir, _ := DSHHome(home)
+	markers := surfaces(hostpath.DSH, home).Markers
 
-	found, err := anyExists(dir)
+	found, err := anyExists(roots(hostpath.DSH, home).ConfigRoot)
 	if err != nil || found {
 		return found, err
 	}
 
-	if _, err := exec.LookPath(dshBinary); err == nil {
-		return true, nil
+	for _, binary := range markers.Binaries {
+		if _, err := exec.LookPath(binary); err == nil {
+			return true, nil
+		}
 	}
 
 	return false, nil
@@ -67,9 +70,9 @@ func DSHDetected(home string) (bool, error) {
 // user-global instructions file and the skills directory. Both are write
 // surfaces (sync + creatable); the project chain adds per-file surfaces.
 func DSHSurfacePaths(home string) (rules, skills string) {
-	dir, _ := DSHHome(home)
+	resolved := surfaces(hostpath.DSH, home)
 
-	return filepath.Join(dir, agentsMarkdown), filepath.Join(dir, dshSkillsDir)
+	return resolved.Rules, resolved.Skills
 }
 
 // DSHAgentsHome resolves the shared agents root the way DSH does: a non-empty
@@ -79,11 +82,7 @@ func DSHSurfacePaths(home string) (rules, skills string) {
 // divergence). Like DSH_HOME, the non-empty value is taken literally: no
 // trim, no ~ expansion, and a relative path resolves from cwd.
 func DSHAgentsHome(home string) string {
-	if value := os.Getenv(dshAgentsHomeEnv); value != "" {
-		return value
-	}
-
-	return filepath.Join(home, dshAgentsDirName)
+	return surfaces(hostpath.DSH, home).SharedAgents
 }
 
 // DSHSharedSkillsDir returns the shared skill root DSH reads at rank 500:
@@ -91,27 +90,26 @@ func DSHAgentsHome(home string) string {
 // With the default agents home it is the ~/.agents/skills hub beadle's
 // shared surface owns.
 func DSHSharedSkillsDir(home string) string {
-	return filepath.Join(DSHAgentsHome(home), dshSkillsDir)
+	resolved := surfaces(hostpath.DSH, home)
+
+	// The shared root is the resolver's other read entry. A DSH_HOME inside
+	// ~/.agents makes the two coincide, so the list can be a single entry and
+	// the shared root is then the hub itself.
+	if other := withoutDir(resolved.SkillsReads, resolved.Skills); len(other) > 0 {
+		return other[0]
+	}
+
+	return filepath.Join(resolved.SharedAgents, dshSkillsDir)
 }
 
-// DSHProfiles lists the profile directories under <home>/profiles.
+// DSHProfiles lists the profile directories under the DSH home. The directory
+// and the listing are the shared resolver's, so the paths cannot drift from
+// what the resolver says DSH reads.
 func DSHProfiles(home string) []string {
-	dir, _ := DSHHome(home)
-
-	entries, err := os.ReadDir(filepath.Join(dir, dshProfilesDir))
+	names, err := hostpath.ListProfiles(surfaces(hostpath.DSH, home).ProfilesDir)
 	if err != nil {
 		return nil
 	}
-
-	var names []string
-
-	for _, entry := range entries {
-		if entry.IsDir() {
-			names = append(names, entry.Name())
-		}
-	}
-
-	slices.Sort(names)
 
 	return names
 }
@@ -127,6 +125,7 @@ func DSHProfiles(home string) []string {
 // (400) wins over the shared agents-home (500) — so the shared copy is
 // shadowed by design and never removed.
 func DSH(home, cwd string) *Agent {
+	dshResolved := surfaces(hostpath.DSH, home)
 	rules, skills := DSHSurfacePaths(home)
 	shared := DSHSharedSkillsDir(home)
 
@@ -143,7 +142,7 @@ func DSH(home, cwd string) *Agent {
 		},
 		&skillsSurface{
 			dir:         skills,
-			ignoreUnder: []string{filepath.Join(home, ".claude", "plugins")},
+			ignoreUnder: dshResolved.IgnoreRoots,
 			alsoReads:   []string{shared},
 			// DSH merges same-name skills by root rank: the user-dsh root
 			// (400) wins over the shared user-agents root (500).

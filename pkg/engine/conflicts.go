@@ -80,20 +80,63 @@ type ConflictView struct {
 	Patch     string            `json:"patch"`
 }
 
-// refusalError is an expected, reportable refusal (not a programming error).
-type refusalError struct {
+// RefusalError is an expected, reportable refusal (not a programming error).
+//
+// It is exported because it is the only beadle error that already carries a
+// machine-readable code, and a caller embedding beadle — the exit-code
+// classifier, for one — has to be able to name the type rather than match on
+// its message. The code is the same one beadle records in state.json, so the
+// two never drift.
+type RefusalError struct {
 	code    string
 	message string
 }
 
+// Code is the machine-readable refusal code, e.g. "risky-change". An error
+// that is not a RefusalError has no code, and a caller must not invent one.
+func (r RefusalError) Code() string { return r.code }
+
+// Message is the human-readable reason, without the code prefix.
+func (r RefusalError) Message() string { return r.message }
+
+// IsRefusal reports whether err is a policy refusal, and returns it when it is.
+// It is the one clause an embedder needs.
+func IsRefusal(err error) (RefusalError, bool) {
+	return errors.AsType[RefusalError](err)
+}
+
+// OpenConflictsError says a run ended with conflicts open: beadle refused to
+// reconcile what it could not reconcile and left the decision to the user. It
+// is a class, not a crash, and it is the class a script needs: a run that
+// printed "blocked" and exited 0 reads as success to anything but a human.
+type OpenConflictsError struct{ Conflicts int }
+
+func (e OpenConflictsError) Error() string {
+	return fmt.Sprintf("%d open conflict(s) hold changes back; run `beadle conflicts` to settle them", e.Conflicts)
+}
+
+// IsOpenConflicts reports whether err is, or wraps, open conflicts, and
+// returns it when it is.
+func IsOpenConflicts(err error) (OpenConflictsError, bool) {
+	return errors.AsType[OpenConflictsError](err)
+}
+
 const valueBase = "base"
 
-func (r refusalError) Error() string {
+func (r RefusalError) Error() string {
 	return r.code + ": " + r.message
 }
 
 func refusal(code, message string) error {
-	return refusalError{code: code, message: message}
+	return RefusalError{code: code, message: message}
+}
+
+// NewRefusalError builds a refusal a caller can raise without reaching into
+// the package's internals. The code must be one of the codes beadle records in
+// state.json, so a refusal raised here and a refusal recorded there are the
+// same thing to a reader.
+func NewRefusalError(code, message string) error {
+	return RefusalError{code: code, message: message}
 }
 
 // ConflictViews lists every open conflict in a stable, secret-redacted form.
@@ -315,7 +358,7 @@ func (e *Engine) resolveAll(st *state.State, ledger *rulings.Ledger, ids []strin
 		}
 
 		if err := e.resolveConflict(st, c, res); err != nil {
-			if refused, ok := errors.AsType[refusalError](err); ok {
+			if refused, ok := errors.AsType[RefusalError](err); ok {
 				out.refusals = append(out.refusals, e.recordRefusal(st, now, c, refused.code, refused.message))
 
 				continue

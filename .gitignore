@@ -46,6 +46,7 @@ docs/
 
 # Build artifacts
 /tmp/
+/beadle
 
 # Air hot reload
 tmp/

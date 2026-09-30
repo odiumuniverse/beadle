@@ -7,24 +7,24 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
 
 	yaml "go.yaml.in/yaml/v3"
 
+	"github.com/odiumuniverse/verger/pkg/hostpath"
+
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/mcp"
 )
 
+// The home-level user patch layer DSH applies over every profile's own layer
+// (upstream `homePatchPath`; verified live on 0.1.5-rc.3 for A-44) is the host's
+// MCP document, so the shared resolver names it: DSHPatchPath reads it from
+// there. DSH never creates the file itself.
 const (
-	// dshPatchFile is the home-level user patch layer DSH applies over every
-	// profile's own layer (upstream `homePatchPath`; verified live on
-	// 0.1.5-rc.3 for A-44). DSH never creates the file itself.
-	dshPatchFile = "cordis.patch.yml"
-
 	// dshMCPPlugin is the plugin a DSH MCP record must name.
 	dshMCPPlugin = "@deepseek-ai/dsh-mcp-client"
 
@@ -46,9 +46,8 @@ var dshMCPServerName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
 // DSHPatchPath returns the DSH home patch layer path. DSH applies the file
 // after every profile's own layer, so one file serves every profile.
 func DSHPatchPath(home string) string {
-	dir, _ := DSHHome(home)
-
-	return filepath.Join(dir, dshPatchFile)
+	// The patch layer is the DSH host's MCP document, so the resolver names it.
+	return surfaces(hostpath.DSH, home).MCPDoc
 }
 
 // dshMCPSurface writes canon MCP servers into the DSH home patch layer as

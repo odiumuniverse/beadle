@@ -248,16 +248,26 @@ func TestBundleSkipsBaseOwnedLeftover(t *testing.T) {
 
 		So(fsutil.Exists(f.claudeSkill("alpha")), ShouldBeFalse)
 
-		// An account sync or a manual copy recreates the base-owned leftover.
+		// An account sync or a manual copy recreates the leftover. The bundle
+		// owns the skills kind here, so beadle is not writing this directory and
+		// nothing manages that copy: it is not a delivery, and a farm built on
+		// the assumption that it is one is a farm that changes when the file
+		// changes. The bundle carries the skill instead. Another tool's copy in
+		// the same directory is a different case and is still credited - see
+		// TestBundleSkipsCoveredSkills.
 		write(t, f.claudeSkill("alpha"), "# alpha\n")
 
 		Convey("When sync runs", func() {
 			report := f.sync(t)
 
-			Convey("Then the bundle leaves the name to the file copy", func() {
-				So(fsutil.Exists(filepath.Join(coveredBundleSkillsDir(t, f), "alpha", "SKILL.md")), ShouldBeFalse)
-				So(fsutil.Exists(f.claudeSkill("alpha")), ShouldBeTrue)
-				So(report.Bundles, ShouldNotBeEmpty)
+			Convey("Then the bundle carries the name, because nothing manages the leftover", func() {
+				So(fsutil.Exists(filepath.Join(coveredBundleSkillsDir(t, f), "alpha", "SKILL.md")), ShouldBeTrue)
+				So(fsutil.Exists(f.claudeSkill("alpha")), ShouldBeTrue) // left alone, not deleted
+				// Nothing to report: the leftover did not change the render, so
+				// this sync did not touch the bundle. Reporting a result for a
+				// bundle nobody re-rendered is how a re-run starts looking like
+				// work.
+				So(report.Bundles, ShouldBeEmpty)
 			})
 		})
 	})

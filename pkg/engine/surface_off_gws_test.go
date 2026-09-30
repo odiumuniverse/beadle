@@ -3,6 +3,7 @@ package engine_test
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -60,6 +61,33 @@ func surfaceOffLine(issues []engine.Issue, agentID string, k kind.ID) engine.Iss
 	}
 
 	return engine.Issue{}
+}
+
+// surfaceOffCount reads the number the doctor line states — "surface is off;
+// N file(s) beadle synced earlier remain" — and reports whether such a line
+// exists at all. A line whose number cannot be read is a failure of its own:
+// the count is the whole message.
+func surfaceOffCount(t *testing.T, issues []engine.Issue, agentID string, k kind.ID) (int, bool) {
+	t.Helper()
+
+	const marker = "surface is off; "
+
+	for _, issue := range issues {
+		if issue.Agent != agentID || issue.Kind != k || !strings.Contains(issue.Message, marker) {
+			continue
+		}
+
+		rest, _, _ := strings.Cut(strings.SplitN(issue.Message, marker, 2)[1], " file(s)")
+
+		count, err := strconv.Atoi(rest)
+		if err != nil {
+			t.Fatalf("the surface-off line states no count: %q", issue.Message)
+		}
+
+		return count, true
+	}
+
+	return 0, false
 }
 
 // exists reports whether path is on disk.
@@ -184,6 +212,75 @@ func TestSurfaceOffNote(t *testing.T) {
 		Convey("When doctor runs", func() {
 			Convey("Then a foreign file is never counted as beadle's", func() {
 				So(surfaceOffLine(issues, agent.ClaudeCodeID, kind.Commands).Message, ShouldBeEmpty)
+			})
+		})
+	})
+}
+
+// TestSurfaceOffCountsTheFilesStillOnDisk pins the number in the doctor line.
+// The count is what tells the user how much beadle's earlier delivery is still
+// lying around, so it is asserted as a number and as the rendered text: a
+// counter that always answered 1, or that answered with every file beadle ever
+// wrote regardless of what is still there, would pass a test that only looked
+// for digits.
+func TestSurfaceOffCountsTheFilesStillOnDisk(t *testing.T) {
+	Convey("Given a synced commands surface with three of beadle's files on disk", t, func() {
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		for _, name := range []string{"greet", "farewell", "hello"} {
+			write(t, filepath.Join(f.vault.CommandsDir(), name+".md"),
+				"---\ndescription: "+name+"\n---\nSay $1.\n")
+		}
+
+		f.sync(t)
+
+		dir := filepath.Join(f.home, ".claude", "commands")
+
+		for _, name := range []string{"greet", "farewell", "hello"} {
+			So(exists(filepath.Join(dir, name+".md")), ShouldBeTrue)
+		}
+
+		f.config.SetMode(agent.ClaudeCodeID, kind.Commands, config.ModeOff)
+
+		So(os.Remove(filepath.Join(dir, "hello.md")), ShouldBeNil)
+
+		issues, err := f.engine.Doctor(t.Context())
+		So(err, ShouldBeNil)
+
+		Convey("When doctor runs", func() {
+			Convey("Then the line counts exactly the two files the user left behind", func() {
+				count, found := surfaceOffCount(t, issues, agent.ClaudeCodeID, kind.Commands)
+
+				So(found, ShouldBeTrue)
+				So(count, ShouldEqual, 2)
+				So(surfaceOffLine(issues, agent.ClaudeCodeID, kind.Commands).Message, ShouldContainSubstring,
+					"2 file(s) beadle synced earlier remain in "+dir)
+			})
+
+			Convey("Then the line is advice, not a finding the user must act on", func() {
+				// Nothing is wrong here: beadle never deletes on a mode flip,
+				// so the leftover files are the user's to remove or keep. The
+				// severity is the one that says so.
+				line := surfaceOffLine(issues, agent.ClaudeCodeID, kind.Commands)
+
+				So(line.Severity, ShouldEqual, engine.SeverityInfo)
+				So(line.Severity, ShouldNotEqual, engine.SeverityWarning)
+				So(line.Severity, ShouldNotEqual, engine.SeverityError)
+			})
+
+			Convey("And one more of them is removed by hand", func() {
+				So(os.Remove(filepath.Join(dir, "farewell.md")), ShouldBeNil)
+
+				again, againErr := f.engine.Doctor(t.Context())
+				So(againErr, ShouldBeNil)
+
+				Convey("Then the line counts the one file that is left", func() {
+					count, found := surfaceOffCount(t, again, agent.ClaudeCodeID, kind.Commands)
+
+					So(found, ShouldBeTrue)
+					So(count, ShouldEqual, 1)
+				})
 			})
 		})
 	})

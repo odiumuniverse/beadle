@@ -54,7 +54,7 @@ func (e *Engine) Explain(ctx context.Context, name string) ([]Explanation, error
 			continue
 		}
 
-		rows = append(rows, explainHost(a.ID, e.visibilityForAgent(a), name, digest, e.home)...)
+		rows = append(rows, explainHost(a.ID, e.visibilityForAgent(a, nil), name, digest, e.home)...)
 	}
 
 	return rows, nil

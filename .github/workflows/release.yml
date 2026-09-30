@@ -3,6 +3,17 @@ name: release
 on:
   push:
     tags: ["v*"]
+  # A full dry run of the release pipeline before the first tag exists: build
+  # and the three smoke runs happen exactly as they would for a tag, but
+  # nothing is published and the tap is not bumped. The version comes from the
+  # input, so a release candidate can be exercised under the name it will
+  # actually be published under.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build, without the leading v (e.g. 0.1.1-rc)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -15,6 +26,28 @@ jobs:
   build:
     runs-on: macos-latest
     steps:
+      # One definition of the version for the whole file, so a dispatch run and
+      # a tag run cannot disagree about what they are building. On a tag it is
+      # the tag; on a dispatch it is the input. A dispatch on a branch has
+      # GITHUB_REF_NAME set to the BRANCH name, which is why reading it blindly
+      # would name the artifacts after a branch.
+      - name: Resolve the version
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            version="${INPUT_VERSION}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          if [ -z "$version" ]; then
+            echo "::error::no version: push a v* tag, or pass one to workflow_dispatch" >&2
+            exit 1
+          fi
+          echo "building version ${version} (${EVENT})"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v7
@@ -47,14 +80,56 @@ jobs:
           } || echo "::warning::could not import the signing identity; releases fall back to ad-hoc signing"
 
       # Each tarball carries a bare `beadle` at its root because the formula
-      # does `bin.install "beadle"`. The linux binaries cross-compile from the
-      # mac runner: CGO_ENABLED=0 means no cgo, so no cross toolchain is needed
-      # and the result is static. They are NOT signed — a codesign signature is
-      # meaningless off darwin and codesign would reject it.
+      # does `bin.install "beadle"`, and a `man/` directory beside it because
+      # the formula does `man1.install Dir["man/*.1"]`. The linux binaries
+      # cross-compile from the mac runner: CGO_ENABLED=0 means no cgo, so no
+      # cross toolchain is needed and the result is static. They are NOT signed
+      # — a codesign signature is meaningless off darwin and codesign would
+      # reject it.
+
+      # The man pages come from the same cobra tree the binary is built from,
+      # so a flag cannot exist in one and not the other. Generated here rather
+      # than committed, because a checked-in page rots the moment a flag moves.
+      # Generated BEFORE the binaries, because every platform tarball carries
+      # the pages: brew installs the platform tarball, so a page that lives only
+      # in the separate beadle-man archive is a page no brew user ever gets.
+      - name: Generate the man pages
+        run: |
+          version="$VERSION"
+          mkdir -p dist/man
+          go run -mod=vendor ./cmd/gendocs -out dist/man -version "${version}" -date "$(date -u '+%b %Y')"
+          ls -l dist/man | head
+
+      # mandoc, not `man -l` and not groff: the macOS runner ships BSD man,
+      # whose -l flag does not exist, and it ships no groff at all. mandoc is
+      # in /usr/bin on every macOS runner and renders roff natively.
+      #
+      # `-W error`, not `-W warning`, and the reason is a known gap rather than
+      # a shrug: beadle's cmd/gendocs does not yet rewrite the header cobra
+      # renders through go-md2man, so all 69 pages carry the same two warnings
+      # verger's pages used to — an unparseable .TH date and a tab in filled
+      # text (549 warnings between them at warning level). verger fixed it in
+      # cmd/gendocs; beadle has not. Error level is the check that catches a
+      # genuinely broken page and it passes. Raising this to warning is one
+      # change to beadle/cmd/gendocs away and belongs with it, not here.
+      - name: Smoke the man pages
+        run: |
+          mandoc -T lint -W error dist/man/*.1
+          mandoc -T ascii dist/man/beadle.1 > /dev/null
+          echo "mandoc: $(find dist/man -name '*.1' | wc -l | tr -d ' ') pages lint clean and beadle.1 renders"
+
+      - name: Pack the man pages
+        run: |
+          version="$VERSION"
+          tar -czf "dist/beadle-man-${version}.tar.gz" -C dist/man .
+
       - name: Build every artifact
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="$VERSION"
           mkdir -p build/darwin-arm64 build/darwin-amd64 dist
+          # A platform tarball without a page is a packaging bug, not a
+          # downstream problem, so it fails here rather than in a user's brew.
+          test -f dist/man/beadle.1 || { echo "::error::dist/man/beadle.1 is missing; every platform tarball carries it"; exit 1; }
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -mod=vendor -ldflags "-X main.version=${version}" -o build/darwin-arm64/beadle ./cmd/beadle
           CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -mod=vendor -ldflags "-X main.version=${version}" -o build/darwin-amd64/beadle ./cmd/beadle
           lipo -create -output dist/beadle build/darwin-arm64/beadle build/darwin-amd64/beadle
@@ -66,15 +141,15 @@ jobs:
           else
             echo "::warning::no signing identity; dist/beadle stays ad-hoc signed"
           fi
-          tar -czf "dist/beadle-${version}-darwin-universal.tar.gz" -C dist beadle
+          tar -czf "dist/beadle-${version}-darwin-universal.tar.gz" -C dist beadle man
           rm -f dist/beadle
 
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=vendor -ldflags "-X main.version=${version}" -o dist/beadle ./cmd/beadle
-          tar -czf "dist/beadle-${version}-linux-amd64.tar.gz" -C dist beadle
+          tar -czf "dist/beadle-${version}-linux-amd64.tar.gz" -C dist beadle man
           rm -f dist/beadle
 
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -mod=vendor -ldflags "-X main.version=${version}" -o dist/beadle ./cmd/beadle
-          tar -czf "dist/beadle-${version}-linux-arm64.tar.gz" -C dist beadle
+          tar -czf "dist/beadle-${version}-linux-arm64.tar.gz" -C dist beadle man
           rm -f dist/beadle
 
           ls -l dist
@@ -133,6 +208,21 @@ jobs:
             asset: linux-arm64
     runs-on: ${{ matrix.runner }}
     steps:
+      # The smoke job names the same tarballs the build job produced, so it
+      # resolves the version the same way rather than re-deriving it from the
+      # ref, which on a dispatch would be a branch name.
+      - name: Resolve the version
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            version="${INPUT_VERSION}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
       - uses: actions/download-artifact@v4
         with:
           name: ${{ matrix.asset }}
@@ -140,11 +230,21 @@ jobs:
 
       - name: Run the packaged binary on this runner
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="$VERSION"
           tarball="dist/beadle-${version}-${{ matrix.asset }}.tar.gz"
           mkdir -p unpack
           tar -xzf "$tarball" -C unpack
           test -x unpack/beadle || { echo "::error::the tarball has no executable beadle at its root"; exit 1; }
+          # The page must be IN the platform tarball, not only in the separate
+          # beadle-man archive: brew installs the platform tarball, so this is
+          # the check that decides whether a brew user actually gets a manpage.
+          # Listing the archive first, then the unpacked tree, catches both a
+          # tarball that never had it and one that has it at the wrong depth.
+          tar -tzf "$tarball" | grep -qx 'man/beadle.1' \
+            || { echo "::error::${{ matrix.asset }} tarball has no man/beadle.1 at its expected path"; tar -tzf "$tarball"; exit 1; }
+          test -s unpack/man/beadle.1 \
+            || { echo "::error::unpacked man/beadle.1 is missing or empty"; exit 1; }
+
           # beadle reports its version through a --version FLAG, not a
           # `beadle version` subcommand: the subcommand is rejected with
           # "unknown command" (verified against the packaged binary), so the
@@ -155,11 +255,57 @@ jobs:
             *"${version}"*) ;;
             *) echo "::error::packaged binary reports '${got}', expected the tag version ${version}"; exit 1 ;;
           esac
+          # Completions must be non-empty for all three shells
+          for shell in bash zsh fish; do
+            out="$(unpack/beadle completion "$shell")"
+            [ -n "$out" ] || { echo "::error::beadle completion $shell is empty"; exit 1; }
+          done
+
+  # The publish job is skipped on a dispatch, which is the point of a dispatch
+  # — and that is exactly why a broken publish step can survive until the first
+  # real tag. This job runs on every dispatch and does the one thing that fails
+  # when publish is misconfigured: talking to the GitHub API. Read only, so it
+  # can never create, edit or upload anything.
+  publish-preflight:
+    # Needs nothing: it is cheap, it does not build, and it must be able to
+    # report a broken publish even when the build is the thing that is red.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Read the release API the way publish will
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Same env publish uses, on purpose: a preflight that does not set
+          # GH_REPO would pass while publish, which never checks the repo out,
+          # fails with "not a git repository".
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release list --limit 1
+          echo "gh can reach ${GH_REPO} without a checkout; publish will too"
+
 
   publish:
     needs: [build, smoke]
+    # A dispatch run proves the pipeline without publishing: no GitHub release
+    # is created and the tap is not bumped, so a candidate can be exercised as
+    # often as needed. Only a real tag publishes.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve the version
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            version="${INPUT_VERSION}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
       - uses: actions/download-artifact@v4
         with:
           name: darwin-universal
@@ -180,6 +326,12 @@ jobs:
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          # The publish job never checks the repository out, so there is no
+          # git remote in $GITHUB_WORKSPACE for gh to infer. Without this, gh
+          # falls back to the cwd and fails with "not a git repository" —
+          # which is how this shipped untested: the linux-tarball release has
+          # never run from a tag, so nothing had exercised this step yet.
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
             || gh release create "$GITHUB_REF_NAME" --generate-notes
@@ -196,7 +348,7 @@ jobs:
         env:
           TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="$VERSION"
           if [ -z "$TAP_TOKEN" ]; then
             echo "::error::TAP_TOKEN is not set; the homebrew-tap formula cannot be bumped" >&2
             exit 1
@@ -213,37 +365,63 @@ jobs:
             class Beadle < Formula
               desc "One configuration for every AI coding agent"
               homepage "https://github.com/odiumuniverse/beadle"
-              version "__VERSION__"
               license "MIT"
 
               on_macos do
-                url "__DARWIN_URL__"
-                sha256 "__DARWIN_SHA__"
+                # brew style rejects a bare url/sha256 directly inside
+                # on_macos/on_linux: the arch has to be stated, because
+                # "darwin-universal" and "linux-amd64" are not the same file.
+                # Both mac branches point at the same universal tarball, which
+                # is exactly what Homebrew expects a universal artifact to look
+                # like: one url, declared for both arches.
+                on_intel do
+                  url "__DARWIN_URL__"
+                  sha256 "__DARWIN_SHA__"
+                end
+
+                on_arm do
+                  url "__DARWIN_URL__"
+                  sha256 "__DARWIN_SHA__"
+                end
               end
 
               on_linux do
-                if OS::CPU == :arm64
-                  url "__ARM64_URL__"
-                  sha256 "__ARM64_SHA__"
-                else
+                on_intel do
                   url "__AMD64_URL__"
                   sha256 "__AMD64_SHA__"
+                end
+
+                on_arm do
+                  url "__ARM64_URL__"
+                  sha256 "__ARM64_SHA__"
                 end
               end
 
               def install
                 bin.install "beadle"
+                # The man page ships inside the platform tarball, so a brew
+                # install gets it without a second download. Dir[] because
+                # gendocs may add subcommand pages later and they should land
+                # without another edit here.
+                man1.install Dir["man/*.1"]
+                # No shells: list. The default is the set the binary actually
+                # generates, so adding a shell is a change in one place — the
+                # binary — instead of two.
+                generate_completions_from_executable(bin/"beadle", "completion")
               end
 
               test do
                 # beadle has no `version` subcommand; the flag is the only
                 # surface that prints the version, so `brew test` must use it.
                 assert_match version.to_s, shell_output("\#{bin}/beadle --version")
+                # `brew test` is the only place a missing man1.install shows up
+                # as a failure rather than as a user typing `man beadle` and
+                # getting nothing.
+                assert_path_exists man1/"beadle.1"
               end
             end
           FORMULA
           src = template
-            .gsub("__VERSION__", version)
             .gsub("__DARWIN_URL__", "#{base}/beadle-#{version}-darwin-universal.tar.gz")
             .gsub("__DARWIN_SHA__", sha_darwin)
             .gsub("__ARM64_URL__", "#{base}/beadle-#{version}-linux-arm64.tar.gz")

@@ -146,7 +146,15 @@ func TestMigrateVaultAgentIDs(t *testing.T) {
 
 func TestMigrateVaultAgentIDsIsIdempotent(t *testing.T) {
 	Convey("Given a vault that was already migrated", t, func() {
-		f := newFixture(t)
+		// A manager that claims the vault's plugin tree, so the first sync
+		// really finishes the farm migration. "Already migrated" then means
+		// what it says: the farm is gone, not merely recorded as gone.
+		manager := &recordingManager{}
+
+		f := newFixture(t, engine.WithPluginManager(manager), engine.WithVergerOwns(manager.Owns))
+		manager.claims = []string{filepath.Join(f.vault.Root(), "plugins"), filepath.Join(f.home, ".claude")}
+		manager.home = filepath.Join(f.vault.Root(), "verger")
+
 		seedV3Vault(t, f.vault)
 		f.sync(t)
 

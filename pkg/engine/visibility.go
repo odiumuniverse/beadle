@@ -36,7 +36,63 @@ type provider struct {
 	dir    string // the read directory the copy lives in
 	path   string // the copy path shown in reports
 	file   string // the flat `<name>.md` path when the copy is a flat file
+	root   string // the skill tree this copy is; ownership is keyed by it
 	digest cas.Hash
+	// independent is the verdict every consumer reads: does this copy mean
+	// somebody else delivers the element, or is it beadle's own delivery?
+	// resolveVisibility sets it from the ownership it is handed, so the farm
+	// render, a withdrawal and `explain` share one meaning. A root with no
+	// recorded ownership is independent, which is the safe default: a copy
+	// beadle never wrote really does deliver the element.
+	independent bool
+}
+
+// ownCopyUnchanged reports whether the copy at root is still exactly what the
+// base records: every file beadle wrote is present with its recorded hash, and
+// the base knows no file the copy no longer has. It is the comparison a
+// withdrawal already makes, so "beadle still owns this" cannot come to mean two
+// different things in two different places.
+func ownCopyUnchanged(root string, base state.Base, name string) bool {
+	tree, err := skill.ReadTree(root)
+	if err != nil {
+		// Unreadable is not "unchanged": a copy nobody can read is no evidence
+		// that beadle's delivery is still intact.
+		return false
+	}
+
+	files := make([]string, 0, len(tree))
+	snapshot := make(kind.Items, len(tree))
+
+	for rel, content := range tree {
+		key := name + "/" + rel
+		files = append(files, key)
+		snapshot[key] = content
+	}
+
+	slices.Sort(files)
+
+	return snapshotMatchesBase(snapshot, base, kind.Skills, name, files)
+}
+
+// ownership is what beadle itself delivered: the skill tree root it wrote, and
+// the digest of what it wrote there. It is the answer to "is this still the copy
+// beadle delivered?", passed in rather than read, so the decision stays a pure
+// function of (disk, ownership) and never touches the state itself.
+//
+// A root that is absent is a root beadle never wrote, and its copy is somebody
+// else's. That default is the safe one in both directions: a copy beadle did
+// not write really does deliver the element, and a copy beadle wrote is only
+// beadle's while the bytes are still the bytes it delivered.
+type ownership map[string]cas.Hash
+
+// delivered reports whether root holds exactly what beadle delivered there. A
+// copy the user has edited since no longer matches its digest, and an edited
+// copy is theirs: `your edits are yours` is the whole contract, so the edit
+// hands the copy back to being an independent provider.
+func (o ownership) delivered(root string, digest cas.Hash) bool {
+	want, ok := o[root]
+
+	return ok && want == digest
 }
 
 // resolution is the per-name verdict of the scan: which copies the host can
@@ -95,12 +151,17 @@ type coveredSkill struct {
 	Name     string
 	Provider string
 	Digest   cas.Hash
+	// Class is the provider's class, and the render needs it: a copy another
+	// tool made in the host's read area delivers the skill whoever owns the
+	// kind, while beadle's own copy there is only a delivery while beadle is
+	// the one writing that directory.
+	Class providerClass
 }
 
 // resolveVisibility decides, for every canon skill name, which copies the
 // host can read and whether a copy outside the bundle already delivers it.
 // It is pure: every filesystem read happens in the adapter.
-func resolveVisibility(canon map[string]skill.Tree, providers []provider, caps agent.SkillCaps, ch channels) visibility {
+func resolveVisibility(canon map[string]skill.Tree, providers []provider, caps agent.SkillCaps, ch channels, own ownership) visibility {
 	vis := visibility{Caps: caps, Channels: ch, Skills: make(map[string]resolution, len(canon)), Order: providerOrder(providers)}
 
 	for _, name := range slices.Sorted(maps.Keys(canon)) {
@@ -111,6 +172,7 @@ func resolveVisibility(canon map[string]skill.Tree, providers []provider, caps a
 				continue
 			}
 
+			p.independent = !own.delivered(p.root, p.digest)
 			res.Providers = append(res.Providers, p)
 
 			switch {
@@ -160,12 +222,12 @@ func (v visibility) bundleCoverage() coverage {
 			continue
 		}
 
-		matches := res.matchesOutside(classBundle)
+		matches := res.independentProviders()
 		if len(matches) == 0 {
 			continue
 		}
 
-		cov.Skills[name] = coveredSkill{Name: name, Provider: matches[0].path, Digest: res.Digest}
+		cov.Skills[name] = coveredSkill{Name: name, Provider: matches[0].path, Digest: res.Digest, Class: matches[0].class}
 	}
 
 	return cov
@@ -261,7 +323,7 @@ func (r resolution) visibleForks(caps agent.SkillCaps, order []string) []provide
 // withdraws such a copy, so covering the bundle with it would drop the name
 // and then delete the copy.
 func (r resolution) suppressedBundle(caps agent.SkillCaps, order []string, ch channels) bool {
-	matches := r.matchesOutside(classBundle)
+	matches := r.independentProviders()
 	if len(matches) == 0 {
 		return false
 	}
@@ -285,12 +347,18 @@ func (r resolution) suppressedBundle(caps agent.SkillCaps, order []string, ch ch
 	return false
 }
 
-// matchesOutside lists the matching copies that are not the given channel.
-func (r resolution) matchesOutside(class providerClass) []provider {
+// independentProviders lists the matching copies that deliver the element
+// without the bundle: everything outside the bundle except a copy beadle itself
+// delivered and nobody has edited since.
+//
+// This is the single meaning of "covered outside the bundle". The farm render,
+// a withdrawal and `explain` all read it, so they cannot drift apart on a
+// phrase that decides whether a skill is duplicated or dropped.
+func (r resolution) independentProviders() []provider {
 	out := make([]provider, 0, len(r.Matches))
 
 	for _, p := range r.Matches {
-		if p.class != class {
+		if p.class != classBundle && p.independent {
 			out = append(out, p)
 		}
 	}
@@ -346,8 +414,10 @@ func forkWarning(name string, forks []provider) string {
 }
 
 // visibilityForHost resolves the canon skills against the copies the bundle
-// host can read.
-func (e *Engine) visibilityForHost(host bundle.Host) visibility {
+// host can read. A nil st means the caller has no run in progress and the state
+// is read from disk; a sync passes the state it is holding, because the copies
+// it is about to judge include the ones this same run delivered.
+func (e *Engine) visibilityForHost(host bundle.Host, st *state.State) visibility {
 	if !slices.Contains(host.ContentKinds(), kind.Skills) {
 		return visibility{}
 	}
@@ -357,21 +427,32 @@ func (e *Engine) visibilityForHost(host bundle.Host) visibility {
 		return visibility{}
 	}
 
-	return e.visibilityForAgent(a)
+	return e.visibilityForAgent(a, st)
 }
 
-// visibilityForAgent resolves the canon skills against every copy the agent
-// can read, loading the state itself. It reads only; a scan error fails open
-// with a warning.
-func (e *Engine) visibilityForAgent(a *agent.Agent) visibility {
+// visibilityForAgent resolves the canon skills against every copy the agent can
+// read. It reads only; a scan error fails open with a warning.
+//
+// The state it consults is the one the caller holds. Re-reading the saved file
+// here is what made a run unable to see its own deliveries: the base for a copy
+// the sync had just written is in memory, while the file still holds the base
+// from before it - so the first render after `init` judged beadle's own copy as
+// somebody else's, dropped the skill from the farm, and the run after put it
+// back. That is the "the vault moved on a re-run" the gate keeps reporting.
+func (e *Engine) visibilityForAgent(a *agent.Agent, held *state.State) visibility {
 	surface := a.Surface(kind.Skills)
 	if surface == nil {
 		return visibility{}
 	}
 
-	st, err := state.Load(e.vault.StatePath())
-	if err != nil {
-		return visibility{Warnings: []string{"skills: cannot read the state for coverage: " + err.Error()}}
+	st := held
+	if st == nil {
+		loaded, err := state.Load(e.vault.StatePath())
+		if err != nil {
+			return visibility{Warnings: []string{"skills: cannot read the state for coverage: " + err.Error()}}
+		}
+
+		st = loaded
 	}
 
 	items, _, err := e.loadVault(kind.Skills)
@@ -385,7 +466,7 @@ func (e *Engine) visibilityForAgent(a *agent.Agent) visibility {
 // resolveSkillVisibility is the adapter part: it reads the skill copies the
 // agent can see, classifies them, and hands the decision to the pure resolver.
 func (e *Engine) resolveSkillVisibility(a *agent.Agent, surface agent.Surface, st *state.State, canon map[string]skill.Tree) visibility {
-	providers, warns := e.skillProviders(a, surface, st)
+	providers, own, warns := e.skillProviders(a, surface, st)
 
 	host, bundleHost := bundleHostFor(a.ID)
 
@@ -395,7 +476,7 @@ func (e *Engine) resolveSkillVisibility(a *agent.Agent, surface agent.Surface, s
 		warns = append(warns, bundleWarns...)
 	}
 
-	vis := resolveVisibility(canon, providers, skillCaps(surface), e.channelsFor(a, surface, st))
+	vis := resolveVisibility(canon, providers, skillCaps(surface), e.channelsFor(a, surface, st), own)
 
 	if area, ok := surface.(agent.SkillReadArea); ok {
 		vis.Order = area.ReadDirs()
@@ -407,15 +488,22 @@ func (e *Engine) resolveSkillVisibility(a *agent.Agent, surface agent.Surface, s
 }
 
 // skillProviders reads every skill copy the agent can see and classifies it.
-func (e *Engine) skillProviders(a *agent.Agent, surface agent.Surface, st *state.State) ([]provider, []string) {
+// skillProviders reads every skill copy the agent can see and classifies it.
+// It also returns the ownership those copies imply: the roots where what is on
+// disk is still exactly what beadle delivered. That is the one place with both
+// halves of the question — the tree it just read and the base recorded for that
+// directory — so it is the only place that answers it.
+func (e *Engine) skillProviders(a *agent.Agent, surface agent.Surface, st *state.State) ([]provider, ownership, []string) {
+	own := ownership{}
+
 	reader, ok := surface.(agent.SkillReader)
 	if !ok {
-		return nil, nil
+		return nil, own, nil
 	}
 
 	refs, err := reader.ReadableSkills()
 	if err != nil {
-		return nil, []string{fmt.Sprintf("skills: cannot scan the %s read area: %v", a.ID, err)}
+		return nil, own, []string{fmt.Sprintf("skills: cannot scan the %s read area: %v", a.ID, err)}
 	}
 
 	bases := e.skillSurfaceBases(st)
@@ -436,6 +524,16 @@ func (e *Engine) skillProviders(a *agent.Agent, surface agent.Surface, st *state
 			continue
 		}
 
+		// Ownership is recorded, not inferred later: a base holds content
+		// hashes while a tree digest is taken over contents, so the two can
+		// only be compared here, where the tree is in hand. The recorded value
+		// is the digest of the copy as it stands, and it is recorded only when
+		// the copy is still what beadle delivered - an edited copy is the
+		// user's, and `your edits are yours` is the whole contract.
+		if base := bases[ref.Dir]; len(base) > 0 && ownCopyUnchanged(ref.Root, base, ref.Name) {
+			own[ref.Root] = digest
+		}
+
 		link, symlink := skillLinkTarget(ref.Dir, ref.Name, ref.File)
 
 		path := filepath.Join(ref.Dir, ref.Name)
@@ -453,7 +551,7 @@ func (e *Engine) skillProviders(a *agent.Agent, surface agent.Surface, st *state
 		})
 	}
 
-	return providers, warns
+	return providers, own, warns
 }
 
 // classifySkillCopy places one readable copy on the delivery map: a farm link
@@ -704,16 +802,90 @@ func withdrawalDelivered(k kind.ID, req bundle.Request, cov coverage) map[string
 	return delivered
 }
 
-// bundleRenderRequest is the render-time request: skills another copy already
-// delivers stay with that copy. The disable path keeps the unfiltered canon,
-// so a covered name can still be materialized back.
-func (e *Engine) bundleRenderRequest(host bundle.Host) (bundle.Request, coverage, []string, []string, error) {
+// bundleRenderRequest is the render-time request: a skill another host already
+// delivers stays with that host, and the disable path keeps the unfiltered
+// canon so a covered name can still be materialized back.
+//
+// One copy is deliberately not credited: the one inside the host's own skills
+// surface. A bundle that owns the skills kind delivers them, so a copy sitting
+// in the host's skills directory — whether it is the one beadle wrote and the
+// withdrawal kept, or a leftover from before the kind was switched off — is not
+// somebody else delivering the skill. Crediting it made the rendered farm a
+// function of which files happened to be on disk: the first sync rendered with
+// the skill, the next one found the copy and rendered without it, and the vault
+// moved on a re-run. The render is now a function of the canon and of what
+// other hosts hold, which is the same question on the enable path and on every
+// refresh after it.
+//
+// The coverage that comes back is the real one, unadjusted, because the
+// ownsSkills is the caller's answer to "does this host's bundle deliver the
+// skills". It is a parameter rather than something read from the config because
+// the two callers know it at different moments and the config only agrees with
+// one of them: on the enable path the kinds have not been switched off yet, and
+// they will be by the end of the same call.
+func (e *Engine) bundleRenderRequest(host bundle.Host, st *state.State, ownsSkills bool) (bundle.Request, coverage, []string, []string, error) {
 	req, notes, warns, err := e.bundleRequest(host)
 	if err != nil {
 		return req, coverage{}, notes, warns, err
 	}
 
-	cov := e.visibilityForHost(host).bundleCoverage()
+	cov := e.visibilityForHost(host, st).bundleCoverage()
+	if ownsSkills {
+		cov = e.withoutFileSurface(host, cov)
+	}
 
 	return filterCovered(req, cov), cov, notes, warns, nil
+}
+
+// withoutFileSurface drops the coverage the host's own skills directory
+// provides, and it is only asked for when the bundle delivers those skills
+// instead of beadle writing that directory.
+//
+// While the file surface is the delivery path, a copy in it is exactly what it
+// looks like - beadle's own, or a foreign tool's symlink - and it delivers the
+// skill, so the bundle must not duplicate it. Once the bundle owns the kind
+// that directory is no longer a delivery path: the copy there is either the one
+// beadle wrote and the withdrawal kept, or a leftover from before the kind was
+// switched off, and crediting it made the rendered farm a function of which
+// files happened to be on disk. The first sync rendered with the skill, the next
+// found the copy and rendered without it, and the vault moved on a re-run.
+func (e *Engine) withoutFileSurface(host bundle.Host, cov coverage) coverage {
+	a := agent.ByID(e.agents, host.AgentID())
+	if a == nil {
+		return cov
+	}
+
+	surface := a.Surface(kind.Skills)
+	if surface == nil {
+		return cov
+	}
+
+	root := filepath.Clean(surface.Path())
+	out := coverage{Skills: make(map[string]coveredSkill, len(cov.Skills)), Warnings: cov.Warnings}
+
+	for name, skill := range cov.Skills {
+		// Another tool's copy in the read area is left alone: Claude reads that
+		// directory whoever owns the kind, so the skill really is delivered and
+		// duplicating it in the bundle would be waste. Only beadle's own copy
+		// stops counting, and only because beadle is no longer the one writing
+		// that directory - a copy nothing manages is not a delivery.
+		if skill.Class == classOwn && isUnder(filepath.Clean(skill.Provider), root) {
+			continue
+		}
+
+		out.Skills[name] = skill
+	}
+
+	return out
+}
+
+// isUnder reports whether path is root or lies inside it. Both are expected
+// cleaned; a provider outside the host's surface never matches, which is the
+// answer we want for every other host's copy.
+func isUnder(path, root string) bool {
+	if path == root {
+		return true
+	}
+
+	return strings.HasPrefix(path, root+string(filepath.Separator))
 }

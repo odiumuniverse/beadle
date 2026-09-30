@@ -89,10 +89,11 @@ func (e *Engine) pluginDuplicateIssues() []Issue {
 		}
 	}
 
-	if ledger, _, err := loadPluginLedger(e.vault.PluginsLedgerPath()); err == nil {
-		for _, warn := range e.pluginDedup(ledger).Warns {
-			issues = append(issues, Issue{Severity: SeverityWarn, Message: warn})
-		}
+	// Two marketplaces offering the same plugin name is a different question,
+	// and the registries answer it across keys: the dedup compares the copies
+	// themselves.
+	for _, warn := range e.pluginDedup().Warns {
+		issues = append(issues, Issue{Severity: SeverityWarn, Message: warn})
 	}
 
 	return issues

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -211,12 +212,38 @@ type resolveJSON struct {
 	Refusals []state.Refusal `json:"refusals"`
 }
 
+// refusalError is beadle's "the policy said no" exit, and it is typed rather
+// than a bare error: an embedder classifies it by type and prints the code, so
+// a run that was refused is never mistaken for a run that crashed.
 func refusalError(report *engine.Report) error {
 	if len(report.Refusals) == 0 {
 		return nil
 	}
 
-	return fmt.Errorf("%d conflict resolution(s) were refused", len(report.Refusals))
+	codes := make([]string, 0, len(report.Refusals))
+	for _, r := range report.Refusals {
+		codes = append(codes, r.Code)
+	}
+
+	sort.Strings(codes)
+
+	return engine.NewRefusalError(state.RefusalAmbiguous,
+		fmt.Sprintf("%d conflict resolution(s) were refused (%s)",
+			len(report.Refusals), strings.Join(dedupe(codes), ", ")))
+}
+
+// dedupe keeps the first occurrence of each code, so a message names every
+// reason once no matter how many conflicts share it.
+func dedupe(codes []string) []string {
+	var out []string
+
+	for i, code := range codes {
+		if i == 0 || codes[i-1] != code {
+			out = append(out, code)
+		}
+	}
+
+	return out
 }
 
 func printResolveJSON(w io.Writer, report *engine.Report) error {

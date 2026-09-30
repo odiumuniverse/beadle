@@ -23,17 +23,20 @@ var cursorRuleName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*\.mdc$`)
 type cursorRulesSurface struct {
 	dir string
 	id  string
+	// rulesRel is the project-relative directory the resolver names; it is
+	// empty when the host has no per-file rules directory.
+	rulesRel string
 }
 
 func (s *cursorRulesSurface) Kind() kind.ID { return kind.Projects }
 
 func (s *cursorRulesSurface) Path() string {
-	return filepath.Join(s.dir, filepath.FromSlash(cursorRulesDir))
+	return filepath.Join(s.dir, filepath.FromSlash(s.rulesRel))
 }
 
 func (s *cursorRulesSurface) WatchPaths() []string { return []string{s.Path()} }
 
-func (s *cursorRulesSurface) ProjectRel() string { return cursorRulesDir }
+func (s *cursorRulesSurface) ProjectRel() string { return s.rulesRel }
 
 func (s *cursorRulesSurface) ProjectDirectory() {}
 
@@ -45,7 +48,7 @@ func (s *cursorRulesSurface) Traits() Traits {
 	}
 }
 
-func (s *cursorRulesSurface) key(name string) string { return s.id + "/" + cursorRulesDir + "/" + name }
+func (s *cursorRulesSurface) key(name string) string { return s.id + "/" + s.rulesRel + "/" + name }
 
 func (s *cursorRulesSurface) rel(key string) (string, bool) {
 	group, name, ok := strings.Cut(key, "/"+cursorRulesDir+"/")

@@ -12,8 +12,7 @@ func TestExplainCommand(t *testing.T) {
 		home := t.TempDir()
 
 		t.Setenv("HOME", home)
-		t.Setenv("XDG_CONFIG_HOME", "")
-		t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
+		isolateTestRoots(t)
 
 		writeFile(t, filepath.Join(home, ".claude.json"), `{"mcpServers": {}}`)
 		writeFile(t, filepath.Join(home, ".claude", "CLAUDE.md"), "# rules\n")

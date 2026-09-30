@@ -122,6 +122,37 @@ func TestMemorySecretGateKeepsOrdinaryText(t *testing.T) {
 	})
 }
 
+// A note's literal secret leaving the file is something the user has to see
+// without asking for logs: their note was rewritten and the value now lives
+// in the vault store. The sync report says so; the log line is for a verbose
+// run.
+func TestMemorySecretMoveIsReported(t *testing.T) {
+	Convey("Given a memory note holding a literal secret", t, func() {
+		t.Setenv("XDG_CONFIG_HOME", "")
+
+		f := newFixture(t)
+		f.emptyConfigs(t)
+
+		write(t, claudeMemory(f, "-Users-a", "note.md"), "# note\ntoken: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\n")
+
+		Convey("When sync runs", func() {
+			report := f.sync(t)
+
+			Convey("Then the move is named once and the canon keeps a reference", func() {
+				So(strings.Join(report.Notes, "\n"), ShouldContainSubstring, "note secrets moved to the vault store count=1")
+				So(read(t, vaultMemory(f, "-Users-a", "note.md")), ShouldEqual, "# note\ntoken: {secret:SECRET}\n")
+
+				// The host file keeps the literal value: beadle guards the
+				// canon, and rewriting a user's own file is the user's call.
+				So(read(t, claudeMemory(f, "-Users-a", "note.md")), ShouldEqual, "# note\ntoken: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\n")
+
+				again := f.sync(t)
+				So(strings.Join(again.Notes, "\n"), ShouldNotContainSubstring, "moved to the vault store")
+			})
+		})
+	})
+}
+
 func TestMemoryCanonForeignEntriesSurvive(t *testing.T) {
 	Convey("Given foreign canon entries and a symlinked slug", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")

@@ -19,6 +19,42 @@ var (
 	isolatedBinDir string
 )
 
+// isolateTestRoots pins every host root that is not $HOME itself to the home
+// the test has just claimed. A test that moves HOME but leaves DSH_HOME at the
+// value TestMain pinned writes dsh's rules and skills into the *shared* suite
+// home, where the next test finds them: `beadle init` then enables dsh, and the
+// first sync opens a conflict out of the previous test's files. That is why
+// the suite only broke under `go test -count=3` — the second pass found the
+// first pass's files, and the pass that created them had answered correctly.
+//
+// It is deliberately not part of TestMain: that home is shared on purpose, and
+// the point here is that a per-test home is hermetic for *every* host, not only
+// for the ones that read $HOME.
+func isolateTestRoots(t *testing.T) {
+	t.Helper()
+
+	home := os.Getenv("HOME")
+
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("DSH_HOME", filepath.Join(home, ".dsh"))
+
+	// These fall back to a path under $HOME when empty, which is what
+	// isolation needs. Pinning them empty also stops a value inherited from
+	// the developer's shell from sending a host outside the test home.
+	for _, name := range []string{
+		"DSH_AGENTS_HOME", "PI_CONFIG_DIR", "PI_CODING_AGENT_DIR", "OMP_PROFILE",
+	} {
+		t.Setenv(name, "")
+	}
+
+	// The vault is the other root a test has to own. A test that moves HOME
+	// but leaves BEADLE_HOME at the suite's value runs `init` into a vault
+	// every other test shares, and the second pass of `go test -count=3`
+	// finds the first pass's state there — an already-absorbed local package,
+	// for one, whose source the first pass consumed.
+	t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
+}
+
 // isolateTestHome pins every variable that steers beadle to a host's files —
 // HOME, XDG_CONFIG_HOME, BEADLE_HOME, DSH_HOME, DSH_AGENTS_HOME, the omp root
 // and profile keys, BEADLE_ALLOW_HOME_MOVE and PATH — to a temp directory
@@ -29,6 +65,7 @@ var (
 // <home>/.config a fallback would resolve to, so tests that compute the path
 // from HOME keep matching. A test that needs another location overrides it
 // with t.Setenv, which wins.
+
 func isolateTestHome(m *testing.M) int {
 	home, err := os.MkdirTemp("", "beadle-test-home") //nolint:usetesting // TestMain has no *testing.T to hang t.TempDir on
 	if err != nil {

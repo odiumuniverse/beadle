@@ -3,9 +3,9 @@ package agent
 import (
 	"os"
 	"os/exec"
-	"path/filepath"
-	"slices"
 	"strings"
+
+	"github.com/odiumuniverse/verger/pkg/hostpath"
 
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
@@ -22,7 +22,6 @@ const (
 	ompDirName         = ".omp"
 	ompAgentDirName    = "agent"
 	ompProfilesDirName = "profiles"
-	ompConfigFile      = "config.yml"
 	ompBinary          = "omp"
 	ompHomeEnv         = "PI_CONFIG_DIR"
 	ompAgentDirEnv     = "PI_CODING_AGENT_DIR"
@@ -32,8 +31,6 @@ const (
 	// omp reads the project context and project MCP servers from the
 	// nearest non-empty .omp directory, not from the checkout root, so the
 	// project scope needs its own rel.
-	ompProjectRulesRel = ".omp/AGENTS.md"
-	ompProjectMCPRel   = ".omp/mcp.json"
 )
 
 // OmpHomeNote explains the empty PI_CONFIG_DIR case: omp ignores the empty
@@ -50,12 +47,11 @@ const OmpHomeNote = "PI_CONFIG_DIR is empty; omp ignores it and falls back to ~/
 // 18.4.1 — a skill placed in the absolute path is invisible, one in
 // $HOME/abs/path/agent/skills is discovered).
 func OmpHome(home string) (string, bool) {
-	value, ok := os.LookupEnv(ompHomeEnv)
-	if ok && value != "" {
-		return filepath.Join(home, value), false
-	}
+	value, set := os.LookupEnv(ompHomeEnv)
 
-	return filepath.Join(home, ompDirName), ok
+	// The root is the shared resolver's: PI_CONFIG_DIR is a name under HOME,
+	// not a root of its own, and the profile chain is applied on top.
+	return roots(hostpath.Omp, home).StateRoot, set && value == ""
 }
 
 // OmpProfile returns the active named profile: OMP_PROFILE wins when it is
@@ -83,30 +79,24 @@ func ompProfileName(value string) (string, bool) {
 // to <home>/profiles/<name>/agent and ignores PI_CODING_AGENT_DIR, which
 // otherwise overrides the default <home>/agent location.
 func OmpAgentDir(home string) string {
-	root, _ := OmpHome(home)
-
-	if profile, ok := OmpProfile(); ok {
-		return filepath.Join(root, ompProfilesDirName, profile, ompAgentDirName)
-	}
-
-	if value := os.Getenv(ompAgentDirEnv); value != "" {
-		return value
-	}
-
-	return filepath.Join(root, ompAgentDirName)
+	return roots(hostpath.Omp, home).ConfigRoot
 }
 
 // OmpDetected reports whether omp is present: its agent config.yml exists or
 // the omp binary is on PATH. Detection must stay total and cheap — an error
 // aborts the whole sync.
 func OmpDetected(home string) (bool, error) {
-	found, err := anyExists(filepath.Join(OmpAgentDir(home), ompConfigFile))
+	markers := surfaces(hostpath.Omp, home).Markers
+
+	found, err := anyExists(OmpMarker(home))
 	if err != nil || found {
 		return found, err
 	}
 
-	if _, err := exec.LookPath(ompBinary); err == nil {
-		return true, nil
+	for _, binary := range markers.Binaries {
+		if _, err := exec.LookPath(binary); err == nil {
+			return true, nil
+		}
 	}
 
 	return false, nil
@@ -117,7 +107,7 @@ func OmpDetected(home string) (bool, error) {
 // means beadle can deliver into a fresh home — so the doctor and status
 // distinguish "installed with a config" from "binary on PATH only".
 func OmpConfigured(home string) bool {
-	return fsutil.Exists(filepath.Join(OmpAgentDir(home), ompConfigFile))
+	return fsutil.Exists(OmpMarker(home))
 }
 
 // OmpStateRoot returns the directory that holds the profile-visible omp state
@@ -126,13 +116,7 @@ func OmpConfigured(home string) bool {
 // the one resolver every package must use — a second copy of this rule drifts
 // as soon as a profile is active.
 func OmpStateRoot(home string) string {
-	root, _ := OmpHome(home)
-
-	if profile, ok := OmpProfile(); ok {
-		return filepath.Join(root, ompProfilesDirName, profile)
-	}
-
-	return root
+	return roots(hostpath.Omp, home).StateRoot
 }
 
 // OmpPluginsDir returns the directory holding omp's plugin state
@@ -143,30 +127,24 @@ func OmpStateRoot(home string) string {
 // reads). PI_CODING_AGENT_DIR does not move it — the plugin state is a
 // sibling of agent/, not a child.
 func OmpPluginsDir(home string) string {
-	return filepath.Join(OmpStateRoot(home), "plugins")
+	return surfaces(hostpath.Omp, home).Plugins
 }
 
 // OmpProfiles lists the profile directories under <home>/profiles; it feeds
 // the doctor only.
 func OmpProfiles(home string) []string {
-	root, _ := OmpHome(home)
-
-	entries, err := os.ReadDir(filepath.Join(root, ompProfilesDirName))
+	names, err := hostpath.ListProfiles(surfaces(hostpath.Omp, home).ProfilesDir)
 	if err != nil {
 		return nil
 	}
 
-	var names []string
-
-	for _, entry := range entries {
-		if entry.IsDir() {
-			names = append(names, entry.Name())
-		}
-	}
-
-	slices.Sort(names)
-
 	return names
+}
+
+// ompMarker is the document omp writes on first run: its presence proves the
+// host is installed AND configured.
+func OmpMarker(home string) string {
+	return surfaces(hostpath.Omp, home).Markers.ConfigFile
 }
 
 // ompMCPFile returns the omp-native MCP config the adapter writes: the
@@ -174,7 +152,7 @@ func OmpProfiles(home string) []string {
 // file .mcp.json, but the primary file wins by precedence, so beadle only
 // ever writes mcp.json and leaves the compatibility file to omp.
 func ompMCPFile(home string) string {
-	return filepath.Join(OmpAgentDir(home), "mcp.json")
+	return surfaces(hostpath.Omp, home).MCPDoc
 }
 
 // Omp builds the oh-my-pi adapter: the user context file
@@ -188,9 +166,10 @@ func ompMCPFile(home string) string {
 // mcp.json}. omp's approval policy (tools.approval*, bash.patterns) lives in
 // the host-owned config.yml and is not managed.
 func Omp(home, cwd string) *Agent {
-	agentDir := OmpAgentDir(home)
-	skills := filepath.Join(agentDir, "skills")
-	shared := filepath.Join(home, ".agents", "skills")
+	ompResolved := surfaces(hostpath.Omp, home)
+	ompProject := projectSurfaces(hostpath.Omp, cwd)
+	skills := ompResolved.Skills
+	shared := withoutDir(ompResolved.SkillsReads, ompResolved.Skills)[0]
 
 	id := project.Resolve(cwd).ID
 
@@ -200,7 +179,7 @@ func Omp(home, cwd string) *Agent {
 		Detect: func() (bool, error) { return OmpDetected(home) },
 		Surfaces: []Surface{
 			&rulesSurface{
-				path: filepath.Join(agentDir, agentsMarkdown),
+				path: ompResolved.Rules,
 				traits: Traits{
 					DefaultMode: config.ModeSync,
 					Creatable:   true,
@@ -219,7 +198,7 @@ func Omp(home, cwd string) *Agent {
 			},
 			&skillsSurface{
 				dir:         skills,
-				ignoreUnder: []string{filepath.Join(home, ".claude", "plugins")},
+				ignoreUnder: ompResolved.IgnoreRoots,
 				alsoReads:   []string{shared},
 				// omp dedups skills by name, priority-first: native .omp
 				// skills (100) win over the shared agents home (70).
@@ -236,8 +215,8 @@ func Omp(home, cwd string) *Agent {
 				kind:     kind.Subagents,
 				label:    subagentLabel,
 				model:    subagentModel{},
-				readDirs: []string{filepath.Join(agentDir, "agents")},
-				writeDir: filepath.Join(agentDir, "agents"),
+				readDirs: ompResolved.AgentsReads,
+				writeDir: ompResolved.Agents,
 				codec:    ompSubagentCodec{},
 				traits: Traits{
 					DefaultMode: config.ModeSync,
@@ -249,8 +228,8 @@ func Omp(home, cwd string) *Agent {
 				kind:     kind.Commands,
 				label:    commandLabel,
 				model:    commandModel{},
-				readDirs: []string{filepath.Join(agentDir, "commands")},
-				writeDir: filepath.Join(agentDir, "commands"),
+				readDirs: ompResolved.CommandsReads,
+				writeDir: ompResolved.Commands,
 				codec:    commandCodec{host: "omp", args: commandArgsOmp},
 				traits: Traits{
 					DefaultMode: config.ModeSync,
@@ -258,8 +237,8 @@ func Omp(home, cwd string) *Agent {
 					ReloadHint:  "omp has no command watcher: /reload-plugins or restart",
 				},
 			},
-			&projectMCPSurface{dir: cwd, rel: ompProjectMCPRel, id: id},
-			&projectRulesSurface{dir: cwd, file: ompProjectRulesRel, id: id},
+			&projectMCPSurface{dir: cwd, rel: projectRel(cwd, ompProject.MCPDoc), id: id},
+			&projectRulesSurface{dir: cwd, file: projectRel(cwd, ompProject.Rules), id: id},
 		},
 	}
 }

@@ -26,6 +26,9 @@ const (
 	Projects    ID = "projects"
 	Subagents   ID = "subagents"
 	Commands    ID = "commands"
+	// Plugins is the verger spec+lock pair: beadle's canon for what plugins a
+	// machine installs, merged across machines like every other kind.
+	Plugins ID = "plugins"
 )
 
 const RulesKey = "main"
@@ -58,6 +61,7 @@ var specs = []Spec{
 	{ID: Projects, NoImplicitDelete: true, Merge: mergeFile, Group: firstSegment},
 	{ID: Subagents, Merge: mergeFile, Lift: subagent.Lift, Group: firstSegment},
 	{ID: Commands, Merge: mergeFile, Lift: command.Lift, Group: firstSegment},
+	{ID: Plugins, Merge: mergeFile, Group: firstSegment},
 }
 
 func All() []Spec {

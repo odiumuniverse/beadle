@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
+
+	"github.com/odiumuniverse/verger/pkg/hostpath"
 
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
 )
@@ -16,6 +17,10 @@ import (
 // override (~/.pi/agent/mcp.json by default)»).
 const PiMCPAdapterPackage = "pi-mcp-adapter"
 
+// piSettingsFile is the settings document the resolver lists among the probes;
+// its contents are the only thing a path cannot answer.
+const piSettingsFile = "settings.json"
+
 // PiMCPAdapterPresent reports whether the third-party pi-mcp-adapter is
 // registered for Pi. Detection is a best-effort check of where `pi install`
 // records a package: the packages/extensions lists in the settings file and
@@ -24,23 +29,42 @@ const PiMCPAdapterPackage = "pi-mcp-adapter"
 // package hand-installed into a global npm root leaves no file marker beadle
 // can see; callers word their findings accordingly.
 func PiMCPAdapterPresent(home, cwd string) bool {
-	if piAdapterDirPresent(filepath.Join(home, ".pi", "agent")) {
+	// The resolver names the probe paths; the *content* scan of settings.json
+	// stays here, because a path cannot say whether a file mentions the
+	// adapter package.
+	//
+	// Live probe (pi 0.74.2, macOS, isolated HOME,
+	// `pi install npm:pi-mcp-adapter`): the user-scope install writes ONE
+	// thing, the registration in <agentDir>/settings.json, and puts the package
+	// payload in the GLOBAL npm root — not in <agentDir>/node_modules and not
+	// in <agentDir>/npm/node_modules. So the resolver's user set is right and
+	// beadle's old `npm/node_modules` probe could never fire: it is dropped.
+	// The payload's real home is a user-level npm prefix, which is outside
+	// every surface beadle resolves, so an adapter that is not a pi install
+	// target simply has no adapter.
+	probes := surfaces(hostpath.Pi, home).AdapterProbes
+
+	if piAdapterProbesPresent(probes) {
 		return true
 	}
 
-	return cwd != "" && piAdapterDirPresent(filepath.Join(cwd, ".pi"))
+	return cwd != "" && piAdapterProbesPresent(projectSurfaces(hostpath.Pi, cwd).AdapterProbes)
 }
 
-// piAdapterDirPresent checks one Pi config directory (user or project scope).
-func piAdapterDirPresent(dir string) bool {
-	if piSettingsMentionAdapter(filepath.Join(dir, "settings.json")) {
-		return true
+// piAdapterProbesPresent checks the resolver's probe list for one scope: the
+// settings file is scanned, the rest are existence checks.
+func piAdapterProbesPresent(probes []string) bool {
+	for _, probe := range probes {
+		if filepath.Base(probe) == piSettingsFile && piSettingsMentionAdapter(probe) {
+			return true
+		}
+
+		if strings.Contains(filepath.ToSlash(probe), PiMCPAdapterPackage) && fsutil.Exists(probe) {
+			return true
+		}
 	}
 
-	return slices.ContainsFunc([]string{
-		filepath.Join(dir, "npm", "node_modules", PiMCPAdapterPackage),
-		filepath.Join(dir, "extensions", PiMCPAdapterPackage),
-	}, fsutil.Exists)
+	return false
 }
 
 // piSettingsMentionAdapter scans the packages and local extensions of a Pi

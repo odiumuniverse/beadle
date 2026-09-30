@@ -14,7 +14,7 @@ import (
 func runCLI(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 
-	root := newRootCmd(Options{Version: "test"})
+	root := newRootCmd(testOptions())
 
 	var out bytes.Buffer
 
@@ -45,8 +45,7 @@ func TestFirstRunFlow(t *testing.T) {
 		home := t.TempDir()
 
 		t.Setenv("HOME", home)
-		t.Setenv("XDG_CONFIG_HOME", "")
-		t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
+		isolateTestRoots(t)
 
 		writeFile(t, filepath.Join(home, ".claude.json"), `{"mcpServers": {"alpha": {"type": "stdio", "command": "a"}}}`)
 		writeFile(t, filepath.Join(home, ".claude", "CLAUDE.md"), "# claude rules\n")
@@ -72,9 +71,12 @@ func TestFirstRunFlow(t *testing.T) {
 					So(errors.Is(statErr, fs.ErrNotExist), ShouldBeTrue)
 
 					Convey("And a real sync reports the rules conflict", func() {
+						// The conflict this flow provokes is still open, and a
+						// run that leaves a conflict open exits with the
+						// conflict class instead of success.
 						out, err := runCLI(t, "sync")
-						So(err, ShouldBeNil)
-						So(out, ShouldContainSubstring, "1 open conflict(s)")
+						So(gwsBlocked(err), ShouldBeTrue)
+						So(out, ShouldContainSubstring, "blocked [1]")
 
 						out, err = runCLI(t, "conflicts")
 						So(err, ShouldBeNil)
@@ -122,7 +124,6 @@ func TestResolveNeedsADecision(t *testing.T) {
 		home := t.TempDir()
 
 		t.Setenv("HOME", home)
-		t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
 
 		_, err := runCLI(t, "init")
 		So(err, ShouldBeNil)
@@ -143,8 +144,7 @@ func TestReloadHintOutput(t *testing.T) {
 		home := t.TempDir()
 
 		t.Setenv("HOME", home)
-		t.Setenv("XDG_CONFIG_HOME", "")
-		t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
+		isolateTestRoots(t)
 
 		writeFile(t, filepath.Join(home, ".claude.json"), `{"mcpServers": {"alpha": {"type": "stdio", "command": "a"}}}`)
 		writeFile(t, filepath.Join(home, ".claude", "CLAUDE.md"), "# rules\n")

@@ -26,7 +26,7 @@ func (a *app) newSkillsSeedCmd() *cobra.Command {
 
 	seed := &cobra.Command{
 		Use:   "seed",
-		Short: "Copy the built-in beadle skills into the vault canon",
+		Short: "Copy the built-in beadle skills into your configuration",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			v, err := a.resolveVault()
@@ -66,8 +66,8 @@ func (a *app) newSkillsAdoptCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "adopt <skill>",
-		Short: "Replace a foreign copy of a canon skill with beadle delivery",
-		Long: "Adopt moves the foreign copy of a canon skill (a user symlink or an\n" +
+		Short: "Replace a foreign copy of a skill with beadle delivery",
+		Long: "Adopt moves the foreign copy of a skill (a user symlink or an\n" +
 			"unmanaged directory) into the vault stash, so the next sync delivers the\n" +
 			"skill through beadle. Nothing is deleted: skills unadopt moves the\n" +
 			"original back.",
@@ -93,7 +93,7 @@ func (a *app) newSkillsAdoptCmd() *cobra.Command {
 				return nil
 			}
 
-			fmt.Fprintln(out, "  run beadle sync to deliver the canon through beadle")
+			fmt.Fprintln(out, "  run beadle sync to deliver your configuration")
 
 			return nil
 		},

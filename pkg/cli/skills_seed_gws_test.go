@@ -16,7 +16,7 @@ import (
 func seedRun(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 
-	root := newRootCmd(Options{Version: "test"})
+	root := newRootCmd(testOptions())
 
 	var out bytes.Buffer
 

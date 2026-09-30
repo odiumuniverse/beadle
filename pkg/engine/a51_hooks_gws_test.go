@@ -71,20 +71,20 @@ func TestA51CodexPluginHookReachesClaudeBundle(t *testing.T) {
 		_, _, report := enableClaude(t, f)
 		So(report.Errors(), ShouldBeEmpty)
 
-		pivot := filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current")
+		install := dir
 
 		Convey("When the bundle and the Codex file render", func() {
 			bundleHooks := a51ReadDir(t, filepath.Join(f.vault.BundlesDir(), "claude"))
 			codexHooks := read(t, a36CodexHooks(f))
 
 			Convey("Then Claude gets the hook, pointing at the plugin pivot", func() {
-				So(bundleHooks, ShouldContainSubstring, pivot)
+				So(bundleHooks, ShouldContainSubstring, install)
 				So(bundleHooks, ShouldNotContainSubstring, "${PLUGIN_ROOT}")
 			})
 
 			Convey("And the Codex file does not duplicate its own plugin's hook", func() {
 				So(codexHooks, ShouldContainSubstring, "echo hi")
-				So(codexHooks, ShouldNotContainSubstring, pivot)
+				So(codexHooks, ShouldNotContainSubstring, install)
 			})
 		})
 	})
@@ -111,7 +111,7 @@ func TestA51ClaudePluginHookStaysOutOfClaudeBundle(t *testing.T) {
 		_, _, report := enableClaude(t, f)
 		So(report.Errors(), ShouldBeEmpty)
 
-		pivot := filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current")
+		install := dir
 
 		Convey("When the bundle and the Codex file render", func() {
 			bundleHooks := a51ReadDir(t, filepath.Join(f.vault.BundlesDir(), "claude"))
@@ -119,11 +119,11 @@ func TestA51ClaudePluginHookStaysOutOfClaudeBundle(t *testing.T) {
 
 			Convey("Then Claude runs its own plugin's hook natively, not from the bundle", func() {
 				So(bundleHooks, ShouldContainSubstring, "echo hi")
-				So(bundleHooks, ShouldNotContainSubstring, pivot)
+				So(bundleHooks, ShouldNotContainSubstring, install)
 			})
 
 			Convey("And the other hosts get it from their files", func() {
-				So(codexHooks, ShouldContainSubstring, pivot)
+				So(codexHooks, ShouldContainSubstring, install)
 			})
 		})
 	})
@@ -291,12 +291,9 @@ func TestA51HookPlaceholdersAcrossSources(t *testing.T) {
 			canon, err := hooks.Load(f.vault.HooksPath())
 			So(err, ShouldBeNil)
 
-			Convey("Then the roots resolve to the pivots and the workspace path is refused", func() {
-				cursorPivot := filepath.Join(f.vault.PluginsDir(), "cursor", "ctool", "current")
-				geminiPivot := filepath.Join(f.vault.PluginsDir(), "gemini", "gtool", "current")
-
-				So(canon["ctool--pre-tool-1"].Command, ShouldContainSubstring, cursorPivot)
-				So(canon["gtool--pre-tool-1"].Command, ShouldContainSubstring, geminiPivot)
+			Convey("Then the roots resolve to the install paths and the workspace path is refused", func() {
+				So(canon["ctool--pre-tool-1"].Command, ShouldContainSubstring, cursor)
+				So(canon["gtool--pre-tool-1"].Command, ShouldContainSubstring, gemini)
 				So(canon, ShouldHaveLength, 2)
 				So(a36HasText(report.Warnings, "unsupported fields"), ShouldBeTrue)
 

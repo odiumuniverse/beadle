@@ -1,8 +1,9 @@
 package agent
 
 import (
-	"os"
 	"path/filepath"
+
+	"github.com/odiumuniverse/verger/pkg/hostpath"
 
 	"github.com/odiumuniverse/beadle/pkg/agentid"
 	"github.com/odiumuniverse/beadle/pkg/config"
@@ -35,15 +36,12 @@ func Canonical(id string) string {
 	return agentid.Canonical(id)
 }
 
-// antigravityHomeDir is the directory Antigravity CLI installs into under
-// ~/.gemini. It is the host's own name and not the beadle agent id
-// (AntigravityCLIID, "agy"); renaming the id must not move this directory.
-const antigravityHomeDir = "antigravity-cli"
-
 func ClaudeCode(home, cwd string) *Agent {
-	dir := filepath.Join(home, ".claude")
-	appState := filepath.Join(home, ".claude.json")
+	claudeResolved := surfaces(hostpath.Claude, home)
+	dir := roots(hostpath.Claude, home).ConfigRoot
+	appState := claudeResolved.MCPDoc
 	id := project.Resolve(cwd).ID
+	claudeProject := projectSurfaces(hostpath.Claude, cwd)
 
 	return &Agent{
 		ID:     ClaudeCodeID,
@@ -61,20 +59,20 @@ func ClaudeCode(home, cwd string) *Agent {
 				traits:  Traits{DefaultMode: config.ModeSync, ReloadHint: "new Claude Code sessions load MCP changes"},
 			},
 			&skillsSurface{
-				dir:              filepath.Join(dir, "skills"),
-				ignoreUnder:      []string{filepath.Join(dir, "plugins")},
+				dir:              claudeResolved.Skills,
+				ignoreUnder:      claudeResolved.IgnoreRoots,
 				namespacedBundle: true,
 				traits:           Traits{DefaultMode: config.ModeSync, Creatable: true},
 			},
 			&memorySurface{
-				projects: filepath.Join(dir, "projects"),
+				projects: claudeResolved.ProjectsDir,
 			},
 			&subagentSurface{
 				kind:      kind.Subagents,
 				label:     subagentLabel,
 				model:     subagentModel{},
-				readDirs:  []string{filepath.Join(dir, "agents")},
-				writeDir:  filepath.Join(dir, "agents"),
+				readDirs:  claudeResolved.AgentsReads,
+				writeDir:  claudeResolved.Agents,
 				recursive: true,
 				codec:     claudeSubagentCodec{},
 				traits: Traits{
@@ -87,8 +85,8 @@ func ClaudeCode(home, cwd string) *Agent {
 				kind:     kind.Commands,
 				label:    commandLabel,
 				model:    commandModel{},
-				readDirs: []string{filepath.Join(dir, "commands")},
-				writeDir: filepath.Join(dir, "commands"),
+				readDirs: claudeResolved.CommandsReads,
+				writeDir: claudeResolved.Commands,
 				codec: commandCodec{
 					host: "claude", args: commandArgsClaude,
 					model: true, hint: true, arguments: true, disable: true,
@@ -101,34 +99,34 @@ func ClaudeCode(home, cwd string) *Agent {
 				},
 			},
 			&permSurface{
-				file:    fixedPath(filepath.Join(dir, "settings.json")),
+				file:    fixedPath(claudeResolved.Hooks),
 				pointer: "/permissions",
 				codec:   claudePerms,
 				traits:  Traits{DefaultMode: config.ModeSync},
 			},
-			&projectMCPSurface{dir: cwd, rel: ".mcp.json", id: id},
-			&claudeRulesSurface{dir: cwd, id: id},
-			&projectRulesSurface{dir: cwd, file: agentsMarkdown, id: id},
+			&projectMCPSurface{dir: cwd, rel: projectRel(cwd, claudeProject.MCPDoc), id: id},
+			&claudeRulesSurface{dir: cwd, id: id, rulesRel: projectRel(cwd, claudeProject.RulesPerFile)},
+			&projectRulesSurface{dir: cwd, file: projectRel(cwd, claudeProject.Rules), id: id},
 		},
 	}
 }
 
 func OpenCode(home, cwd string) *Agent {
-	dir := filepath.Join(home, ".config", "opencode")
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		dir = filepath.Join(xdg, "opencode")
-	}
+	openCodeResolved := surfaces(hostpath.OpenCode, home)
+	dir := roots(hostpath.OpenCode, home).ConfigRoot
 
 	id := project.Resolve(cwd).ID
 
+	// The candidate list is the resolver's, most preferred first, and the last
+	// entry is the document a host with neither gets.
 	configFile := func() string {
-		for _, name := range []string{"opencode.jsonc", "opencode.json"} {
-			if path := filepath.Join(dir, name); fsutil.Exists(path) {
-				return path
+		for _, candidate := range openCodeResolved.MCPDocCandidates {
+			if fsutil.Exists(candidate) {
+				return candidate
 			}
 		}
 
-		return filepath.Join(dir, "opencode.json")
+		return openCodeResolved.MCPDoc
 	}
 
 	return &Agent{
@@ -152,9 +150,9 @@ func OpenCode(home, cwd string) *Agent {
 				},
 			},
 			&skillsSurface{
-				dir:         filepath.Join(dir, "skills"),
-				ignoreUnder: []string{filepath.Join(home, ".claude", "plugins")},
-				alsoReads:   []string{filepath.Join(home, ".claude", "skills"), filepath.Join(home, ".agents", "skills")},
+				dir:         openCodeResolved.Skills,
+				ignoreUnder: openCodeResolved.IgnoreRoots,
+				alsoReads:   withoutDir(openCodeResolved.SkillsReads, openCodeResolved.Skills),
 				// Verified on OpenCode v2.0.12 with marker probes: the host
 				// keeps one copy per skill id, the own config directory wins
 				// over ~/.agents/skills, which wins over ~/.claude/skills.
@@ -162,11 +160,7 @@ func OpenCode(home, cwd string) *Agent {
 				// globals (probed); the project scope is outside beadle's
 				// model.
 				shadowing: true,
-				readOrder: []string{
-					filepath.Join(dir, "skills"),
-					filepath.Join(home, ".agents", "skills"),
-					filepath.Join(home, ".claude", "skills"),
-				},
+				readOrder: openCodeResolved.SkillsReads,
 				// Verified against the host source (glob {*.md,**/SKILL.md}):
 				// a root-level <name>.md is a skill named by its basename.
 				flatSkills: true,
@@ -218,8 +212,10 @@ func OpenCode(home, cwd string) *Agent {
 }
 
 func GeminiCLI(home, cwd string) *Agent {
-	dir := filepath.Join(home, ".gemini")
-	settings := filepath.Join(dir, "settings.json")
+	geminiResolved := surfaces(hostpath.Gemini, home)
+	dir := roots(hostpath.Gemini, home).ConfigRoot
+	geminiProject := projectSurfaces(hostpath.Gemini, cwd)
+	settings := geminiResolved.MCPDoc
 	id := project.Resolve(cwd).ID
 
 	return &Agent{
@@ -228,7 +224,7 @@ func GeminiCLI(home, cwd string) *Agent {
 		Detect: func() (bool, error) { return anyExists(settings, dir) },
 		Surfaces: []Surface{
 			&rulesSurface{
-				path:   filepath.Join(dir, "GEMINI.md"),
+				path:   geminiResolved.Rules,
 				traits: Traits{DefaultMode: config.ModeSync, Creatable: true},
 			},
 			&mcpSurface{
@@ -239,9 +235,9 @@ func GeminiCLI(home, cwd string) *Agent {
 				},
 			},
 			&skillsSurface{
-				dir:         filepath.Join(dir, "skills"),
-				ignoreUnder: []string{filepath.Join(home, ".claude", "plugins")},
-				alsoReads:   []string{filepath.Join(home, ".agents", "skills")},
+				dir:         geminiResolved.Skills,
+				ignoreUnder: geminiResolved.IgnoreRoots,
+				alsoReads:   withoutDir(geminiResolved.SkillsReads, geminiResolved.Skills),
 				traits:      Traits{DefaultMode: config.ModeSync, Creatable: true},
 			},
 			&permSurface{
@@ -255,8 +251,8 @@ func GeminiCLI(home, cwd string) *Agent {
 				kind:     kind.Subagents,
 				label:    subagentLabel,
 				model:    subagentModel{},
-				readDirs: []string{filepath.Join(dir, "agents")},
-				writeDir: filepath.Join(dir, "agents"),
+				readDirs: geminiResolved.AgentsReads,
+				writeDir: geminiResolved.Agents,
 				codec:    geminiSubagentCodec{},
 				traits: Traits{
 					DefaultMode: config.ModeSync,
@@ -269,8 +265,8 @@ func GeminiCLI(home, cwd string) *Agent {
 				kind:       kind.Commands,
 				label:      commandLabel,
 				model:      commandModel{},
-				readDirs:   []string{filepath.Join(dir, "commands")},
-				writeDir:   filepath.Join(dir, "commands"),
+				readDirs:   geminiResolved.CommandsReads,
+				writeDir:   geminiResolved.Commands,
 				nestedNote: "nested command ids are not synced yet",
 				exts:       []string{".toml"},
 				codec:      geminiCommandCodec{},
@@ -280,20 +276,43 @@ func GeminiCLI(home, cwd string) *Agent {
 					ReloadHint:  "Gemini CLI reads commands at startup: restart Gemini CLI to load the changes",
 				},
 			},
-			&projectRulesSurface{dir: cwd, file: "GEMINI.md", id: id},
+			&projectRulesSurface{dir: cwd, file: projectRel(cwd, geminiProject.Rules), id: id},
 		},
 	}
 }
 
 func AntigravityCLI(home, cwd string) *Agent {
-	dir := filepath.Join(home, ".gemini", antigravityHomeDir)
-	mcpConfig := filepath.Join(home, ".gemini", "config", "mcp_config.json")
+	// dir is the host's own state directory (~/.gemini/antigravity-cli): the
+	// host's name, not the beadle agent id (agy). The shared resolver owns it,
+	// so renaming the id can never move it.
+	agyResolved := surfaces(hostpath.Agy, home)
+	agyProject := projectSurfaces(hostpath.Agy, cwd)
+	dir := agyResolved.StateDir
+	mcpConfig := agyResolved.MCPDoc
 	id := project.Resolve(cwd).ID
 
 	return &Agent{
 		ID:     AntigravityCLIID,
 		Name:   "Antigravity CLI",
 		Detect: func() (bool, error) { return anyExists(dir, mcpConfig) },
+		// Antigravity is the honest case (W7-UX §5.3): its adapter is
+		// experimental and has never been live-probed, so the screen must not
+		// claim it looked and found nothing — it says the probe never ran.
+		// The claim is stated here rather than inferred from a missing marker,
+		// because an inference would apply the same words to every host that
+		// happens to lack one.
+		DetectReason: func() (Detection, error) {
+			found, err := anyExists(dir, mcpConfig)
+			if err != nil {
+				return Detection{}, err
+			}
+
+			if found {
+				return Detection{Found: true, Reason: "found at " + dir}, nil
+			}
+
+			return Detection{Found: false, Missing: NeverProbed}, nil
+		},
 		Surfaces: []Surface{
 			&mcpSurface{
 				file:    fixedPath(mcpConfig),
@@ -308,8 +327,8 @@ func AntigravityCLI(home, cwd string) *Agent {
 				kind:      kind.Subagents,
 				label:     subagentLabel,
 				model:     subagentModel{},
-				readDirs:  []string{filepath.Join(home, ".gemini", "config", "agents")},
-				writeDir:  filepath.Join(home, ".gemini", "config", "agents"),
+				readDirs:  agyResolved.AgentsReads,
+				writeDir:  agyResolved.Agents,
 				recursive: true,
 				nameCheck: nameCheckNestedAgent,
 				codec:     antigravitySubagentCodec{},
@@ -320,14 +339,16 @@ func AntigravityCLI(home, cwd string) *Agent {
 					Note:        "workspace .agents/agents/ subagents are not synced yet (A-28)",
 				},
 			},
-			&projectMCPSurface{dir: cwd, rel: ".agents/mcp_config.json", id: id},
+			&projectMCPSurface{dir: cwd, rel: projectRel(cwd, agyProject.MCPDoc), id: id},
 		},
 	}
 }
 
 func Cursor(home, cwd string) *Agent {
-	dir := filepath.Join(home, ".cursor")
-	mcpFile := filepath.Join(dir, "mcp.json")
+	cursorResolved := surfaces(hostpath.Cursor, home)
+	dir := roots(hostpath.Cursor, home).ConfigRoot
+	cursorProject := projectSurfaces(hostpath.Cursor, cwd)
+	mcpFile := cursorResolved.MCPDoc
 	id := project.Resolve(cwd).ID
 
 	return &Agent{
@@ -342,16 +363,16 @@ func Cursor(home, cwd string) *Agent {
 				traits:  Traits{DefaultMode: config.ModeSync, ReloadHint: "Cursor reads mcp.json at startup: reload MCP servers or restart Cursor"},
 			},
 			&skillsSurface{
-				dir:         filepath.Join(dir, "skills"),
-				ignoreUnder: []string{filepath.Join(home, ".claude", "plugins")},
-				alsoReads:   []string{filepath.Join(home, ".claude", "skills"), filepath.Join(home, ".agents", "skills")},
+				dir:         cursorResolved.Skills,
+				ignoreUnder: cursorResolved.IgnoreRoots,
+				alsoReads:   withoutDir(cursorResolved.SkillsReads, cursorResolved.Skills),
 				traits: Traits{
 					DefaultMode: config.ModePull,
 					Note:        "Cursor reads ~/.claude/skills and ~/.agents/skills natively",
 				},
 			},
 			&permSurface{
-				file:    fixedPath(filepath.Join(dir, "cli-config.json")),
+				file:    fixedPath(cursorResolved.Settings),
 				pointer: "/permissions",
 				codec:   cursorPerms,
 				traits:  Traits{DefaultMode: config.ModeSync},
@@ -360,8 +381,8 @@ func Cursor(home, cwd string) *Agent {
 				kind:     kind.Subagents,
 				label:    subagentLabel,
 				model:    subagentModel{},
-				readDirs: []string{filepath.Join(dir, "agents")},
-				writeDir: filepath.Join(dir, "agents"),
+				readDirs: cursorResolved.AgentsReads,
+				writeDir: cursorResolved.Agents,
 				exts:     []string{".md", ".mdc", ".markdown"},
 				codec:    cursorSubagentCodec{},
 				traits: Traits{
@@ -384,8 +405,8 @@ func Cursor(home, cwd string) *Agent {
 				kind:     kind.Commands,
 				label:    commandLabel,
 				model:    commandModel{},
-				readDirs: []string{filepath.Join(dir, "commands")},
-				writeDir: filepath.Join(dir, "commands"),
+				readDirs: cursorResolved.CommandsReads,
+				writeDir: cursorResolved.Commands,
 				codec:    cursorCommandCodec{},
 				traits: Traits{
 					DefaultMode: config.ModeSync,
@@ -397,14 +418,15 @@ func Cursor(home, cwd string) *Agent {
 						"frontmatter command file is not Cursor's and is left alone",
 				},
 			},
-			&projectMCPSurface{dir: cwd, rel: ".cursor/mcp.json", id: id},
-			&cursorRulesSurface{dir: cwd, id: id},
+			&projectMCPSurface{dir: cwd, rel: projectRel(cwd, cursorProject.MCPDoc), id: id},
+			&cursorRulesSurface{dir: cwd, id: id, rulesRel: projectRel(cwd, cursorProject.RulesPerFile)},
 		},
 	}
 }
 
 func Codex(home, cwd string) *Agent {
-	dir := filepath.Join(home, ".codex")
+	codexResolved := surfaces(hostpath.Codex, home)
+	dir := roots(hostpath.Codex, home).ConfigRoot
 	id := project.Resolve(cwd).ID
 
 	return &Agent{
@@ -426,9 +448,13 @@ func Codex(home, cwd string) *Agent {
 				},
 			},
 			&skillsSurface{
-				dir:         filepath.Join(dir, "skills"),
-				ignoreUnder: []string{filepath.Join(home, ".claude", "plugins")},
-				alsoReads:   []string{filepath.Join(home, ".agents", "skills")},
+				// The write target is the shared hub, which Codex reads
+				// natively; ~/.codex/skills is the deprecated location and
+				// stays a read. Both values come from the shared resolver
+				// (hostpath fills Skills=hub, SkillsReads=[hub, legacy]).
+				dir:         codexResolved.Skills,
+				ignoreUnder: codexResolved.IgnoreRoots,
+				alsoReads:   withoutDir(codexResolved.SkillsReads, codexResolved.Skills),
 				traits: Traits{
 					DefaultMode: config.ModePull,
 					Note:        "Codex reads ~/.agents/skills natively; ~/.codex/skills is the deprecated location",
@@ -468,7 +494,9 @@ func Codex(home, cwd string) *Agent {
 }
 
 func Pi(home, cwd string) *Agent {
-	dir := filepath.Join(home, ".pi", "agent")
+	piResolved := surfaces(hostpath.Pi, home)
+	piProject := projectSurfaces(hostpath.Pi, cwd)
+	dir := roots(hostpath.Pi, home).ConfigRoot
 	id := project.Resolve(cwd).ID
 
 	return &Agent{
@@ -477,11 +505,11 @@ func Pi(home, cwd string) *Agent {
 		Detect: func() (bool, error) { return anyExists(dir) },
 		Surfaces: []Surface{
 			&rulesSurface{
-				path:   filepath.Join(dir, agentsMarkdown),
+				path:   piResolved.Rules,
 				traits: Traits{DefaultMode: config.ModeSync, Note: "AGENTS.override.md takes precedence over AGENTS.md"},
 			},
 			&mcpSurface{
-				file:    fixedPath(filepath.Join(dir, "mcp.json")),
+				file:    fixedPath(piResolved.MCPDoc),
 				pointer: mcpServersPointer,
 				codec:   piMCP,
 				traits: Traits{
@@ -491,9 +519,9 @@ func Pi(home, cwd string) *Agent {
 				},
 			},
 			&skillsSurface{
-				dir:         filepath.Join(dir, "skills"),
-				ignoreUnder: []string{filepath.Join(home, ".claude", "plugins")},
-				alsoReads:   []string{filepath.Join(home, ".agents", "skills")},
+				dir:         piResolved.Skills,
+				ignoreUnder: piResolved.IgnoreRoots,
+				alsoReads:   withoutDir(piResolved.SkillsReads, piResolved.Skills),
 				// Pi docs: root .md files are skills in ~/.pi/agent/skills
 				// and .pi/skills, while root .md files in ~/.agents/skills
 				// are ignored (nested group files are picked up).
@@ -516,13 +544,13 @@ func Pi(home, cwd string) *Agent {
 					ReloadHint:  "Pi reads prompt templates at startup: restart Pi to load the changes",
 				},
 			},
-			&projectRulesSurface{dir: cwd, file: agentsMarkdown, id: id},
+			&projectRulesSurface{dir: cwd, file: projectRel(cwd, piProject.Rules), id: id},
 		},
 	}
 }
 
 func Kilo(home, cwd string) *Agent {
-	dir := filepath.Join(home, ".config", "kilo")
+	dir := KiloConfigDir(home)
 	id := project.Resolve(cwd).ID
 
 	configFile := func() string {
@@ -536,9 +564,20 @@ func Kilo(home, cwd string) *Agent {
 	}
 
 	return &Agent{
-		ID:     KiloID,
-		Name:   "Kilo Code",
-		Detect: func() (bool, error) { return anyExists(dir, filepath.Join(home, ".kilo")) },
+		ID:   KiloID,
+		Name: "Kilo Code",
+		// The legacy ~/.kilo directory is how older copies of the host are
+		// found; the resolver carries it as a read directory, so the detect
+		// root comes from there rather than a second literal.
+		Detect: func() (bool, error) {
+			for _, candidate := range append([]string{dir}, surfaces(hostpath.Kilo, home).SkillsReads...) {
+				if found, err := anyExists(candidate); err != nil || found {
+					return found, err
+				}
+			}
+
+			return false, nil
+		},
 		Surfaces: []Surface{
 			&rulesSurface{
 				path: filepath.Join(dir, agentsMarkdown),
@@ -583,14 +622,20 @@ func Kilo(home, cwd string) *Agent {
 }
 
 func SharedSkills(home string) *Agent {
+	// The hub is beadle's pseudo-agent, not one of the resolver's ten host
+	// ids, so it has its own entry point rather than an eleventh id: giving it
+	// one would let a caller ask for a config root, a rules file and a hooks
+	// document it does not have.
+	hub := sharedHub(home)
+
 	return &Agent{
 		ID:     SharedID,
 		Name:   "Shared skills (~/.agents/skills)",
 		Detect: func() (bool, error) { return true, nil },
 		Surfaces: []Surface{
 			&skillsSurface{
-				dir:         filepath.Join(home, ".agents", "skills"),
-				ignoreUnder: []string{filepath.Join(home, ".claude", "plugins")},
+				dir:         hub.Skills,
+				ignoreUnder: hub.IgnoreRoots,
 				traits: Traits{
 					DefaultMode: config.ModeSync,
 					Creatable:   true,

@@ -16,6 +16,7 @@ func TestDaemonSpecResolvesVaultRoot(t *testing.T) {
 		root := filepath.Join(home, "custom-vault")
 
 		t.Setenv("HOME", home)
+		isolateTestRoots(t)
 		t.Setenv("BEADLE_HOME", root)
 
 		So(vault.New(root).Init(), ShouldBeNil)

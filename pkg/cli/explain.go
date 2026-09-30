@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"text/tabwriter"
 
@@ -32,14 +31,10 @@ func (a *app) newExplainCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 
 			if asJSON {
-				data, err := json.MarshalIndent(map[string]any{"skill": args[0], "rows": rows}, "", "  ")
-				if err != nil {
-					return err
-				}
-
-				fmt.Fprintln(out, string(data))
-
-				return nil
+				return writeJSON(out, envelope{
+					name:    "beadle.explain",
+					payload: map[string]any{"skill": args[0], "rows": rows},
+				})
 			}
 
 			table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)

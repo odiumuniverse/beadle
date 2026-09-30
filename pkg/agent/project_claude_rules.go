@@ -23,17 +23,20 @@ var claudeRuleName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*\.md$`)
 type claudeRulesSurface struct {
 	dir string
 	id  string
+	// rulesRel is the project-relative directory the resolver names; it is
+	// empty when the host has no per-file rules directory.
+	rulesRel string
 }
 
 func (s *claudeRulesSurface) Kind() kind.ID { return kind.Projects }
 
 func (s *claudeRulesSurface) Path() string {
-	return filepath.Join(s.dir, filepath.FromSlash(claudeRulesDir))
+	return filepath.Join(s.dir, filepath.FromSlash(s.rulesRel))
 }
 
 func (s *claudeRulesSurface) WatchPaths() []string { return []string{s.Path()} }
 
-func (s *claudeRulesSurface) ProjectRel() string { return claudeRulesDir }
+func (s *claudeRulesSurface) ProjectRel() string { return s.rulesRel }
 
 func (s *claudeRulesSurface) ProjectDirectory() {}
 
@@ -45,7 +48,7 @@ func (s *claudeRulesSurface) Traits() Traits {
 	}
 }
 
-func (s *claudeRulesSurface) key(name string) string { return s.id + "/" + claudeRulesDir + "/" + name }
+func (s *claudeRulesSurface) key(name string) string { return s.id + "/" + s.rulesRel + "/" + name }
 
 func (s *claudeRulesSurface) rel(key string) (string, bool) {
 	group, name, ok := strings.Cut(key, "/"+claudeRulesDir+"/")

@@ -79,15 +79,24 @@ type Report struct {
 	DryRun    bool             `json:"dry_run"`
 	Kinds     []KindReport     `json:"kinds"`
 	Conflicts []state.Conflict `json:"conflicts,omitempty"`
-	Plugins   []PluginResult   `json:"plugins,omitempty"`
-	Farm      []FarmResult     `json:"farm,omitempty"`
-	Digest    []DigestResult   `json:"digest,omitempty"`
-	Bundles   []BundleResult   `json:"bundles,omitempty"`
-	Warnings  []string         `json:"warnings,omitempty"`
-	Notes     []string         `json:"notes,omitempty"`
-	Resolved  []string         `json:"resolved,omitempty"`
-	Refusals  []state.Refusal  `json:"refusals,omitempty"`
-	Adoptions []AdoptResult    `json:"adoptions,omitempty"`
+	// NoActiveAgents says the vault has no enabled, detected agent at all. It
+	// is a different fact from "every kind reported nothing": with no agent
+	// there was nobody to write to, and a reader who sees an empty delivery
+	// must be told why rather than told the run delivered.
+	NoActiveAgents bool `json:"no_active_agents,omitempty"`
+	// Packages is what the vault's package spec asked for and what this
+	// machine did about it. The section a user sees is named `plugins` - the
+	// word they type (`beadle plugins`) - while "package" stays the word for
+	// what the spec names. It is always printed, so "applied nothing" and
+	// "never looked" cannot be confused.
+	Packages  *state.PackagesReport `json:"plugins,omitempty"`
+	Digest    []DigestResult        `json:"digest,omitempty"`
+	Bundles   []BundleResult        `json:"bundles,omitempty"`
+	Warnings  []string              `json:"warnings,omitempty"`
+	Notes     []string              `json:"notes,omitempty"`
+	Resolved  []string              `json:"resolved,omitempty"`
+	Refusals  []state.Refusal       `json:"refusals,omitempty"`
+	Adoptions []AdoptResult         `json:"adoptions,omitempty"`
 
 	RulingsApplied    []RulingEvent `json:"rulings_applied,omitempty"`
 	RulingSuggestions []RulingEvent `json:"ruling_suggestions,omitempty"`

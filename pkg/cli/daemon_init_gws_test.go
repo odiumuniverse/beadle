@@ -12,24 +12,38 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/daemon"
 )
 
-func fakeDaemonRunner(t *testing.T, run daemon.Runner) {
-	t.Helper()
+// withDaemonRunner returns the suite's options with the install call replaced by
+// run. It is an options value, not a package variable, so a test that drives
+// the service installer cannot change what another test's run does — which is
+// what made this suite order-dependent under `go test -count=3`.
+func withDaemonRunner(run daemon.Runner) Options {
+	opts := testOptions()
+	opts.DaemonInstall = run
 
-	previous := daemonInstallRunner
-	daemonInstallRunner = run
-
-	t.Cleanup(func() { daemonInstallRunner = previous })
+	return opts
 }
 
-// fakeDaemonTempHome overrides the temporary-home check: the CLI tests run in a
-// temp home, so the install path needs the gate lifted explicitly.
-func fakeDaemonTempHome(t *testing.T, temporary bool) {
-	t.Helper()
+// withTemporaryHome returns the suite's options with the temporary-root check
+// answering `temporary`: the CLI tests run in a temp home, so the install path
+// needs the gate lifted. It is an options value, not a package variable — the
+// old helper assigned a global and restored it in a cleanup, so under
+// `go test -count=3` a later iteration, and anything running meanwhile, saw
+// whichever value happened to be left behind.
+func withTemporaryHome(temporary bool) Options {
+	opts := testOptions()
+	opts.DaemonTemporaryHome = func(string) bool { return temporary }
 
-	previous := daemonTempHome
-	daemonTempHome = func(string) bool { return temporary }
+	return opts
+}
 
-	t.Cleanup(func() { daemonTempHome = previous })
+// daemonOpts is the pair the daemon tests need in one value: the temporary-root
+// check and the install recorder. Composing them here means a test cannot set
+// one and leave the other at the suite default by accident.
+func daemonOpts(temporary bool, run daemon.Runner) Options {
+	opts := withTemporaryHome(temporary)
+	opts.DaemonInstall = run
+
+	return opts
 }
 
 func daemonUnitPath(t *testing.T, home string) string {
@@ -49,18 +63,17 @@ func unitFileExists(t *testing.T, path string) bool {
 func TestInitDaemonInstallsWatcher(t *testing.T) {
 	Convey("Given a fresh HOME and a fake service runner", t, func() {
 		home := gwsHome(t)
-		fakeDaemonTempHome(t, false)
 
 		var calls [][]string
 
-		fakeDaemonRunner(t, func(_ context.Context, name string, args ...string) error {
+		opts := daemonOpts(false, func(_ context.Context, name string, args ...string) error {
 			calls = append(calls, append([]string{name}, args...))
 
 			return nil
 		})
 
 		Convey("When init --daemon runs", func() {
-			out, err := gwsRun(t, "init", "--daemon")
+			out, err := gwsRunOpts(t, opts, nil, "init", "--daemon")
 			So(err, ShouldBeNil)
 
 			Convey("Then the unit file exists and the service was registered", func() {
@@ -80,24 +93,23 @@ func TestInitDaemonInstallsWatcher(t *testing.T) {
 func TestInitDaemonIsIdempotent(t *testing.T) {
 	Convey("Given a fake service runner", t, func() {
 		home := gwsHome(t)
-		fakeDaemonTempHome(t, false)
 
 		runs := 0
 
-		fakeDaemonRunner(t, func(context.Context, string, ...string) error {
+		opts := daemonOpts(false, func(context.Context, string, ...string) error {
 			runs++
 
 			return nil
 		})
 
 		Convey("When init --daemon runs twice", func() {
-			_, err := gwsRun(t, "init", "--daemon")
+			_, err := gwsRunOpts(t, opts, nil, "init", "--daemon")
 			So(err, ShouldBeNil)
 
 			first := runs
 			So(first, ShouldBeGreaterThan, 0)
 
-			out, err := gwsRun(t, "init", "--daemon")
+			out, err := gwsRunOpts(t, opts, nil, "init", "--daemon")
 			So(err, ShouldBeNil)
 
 			Convey("Then it re-registers without an error", func() {
@@ -112,18 +124,17 @@ func TestInitDaemonIsIdempotent(t *testing.T) {
 func TestInitDaemonFlags(t *testing.T) {
 	Convey("Given a fresh HOME and a fake service runner", t, func() {
 		home := gwsHome(t)
-		fakeDaemonTempHome(t, false)
 
 		calls := 0
 
-		fakeDaemonRunner(t, func(context.Context, string, ...string) error {
+		opts := daemonOpts(false, func(context.Context, string, ...string) error {
 			calls++
 
 			return nil
 		})
 
 		Convey("When init runs with --no-daemon", func() {
-			out, err := gwsRun(t, "init", "--no-daemon")
+			out, err := gwsRunOpts(t, opts, nil, "init", "--no-daemon")
 			So(err, ShouldBeNil)
 
 			Convey("Then nothing is installed and no hint is printed", func() {
@@ -136,7 +147,7 @@ func TestInitDaemonFlags(t *testing.T) {
 		})
 
 		Convey("When init runs without flags", func() {
-			out, err := gwsRun(t, "init")
+			out, err := gwsRunOpts(t, opts, nil, "init")
 			So(err, ShouldBeNil)
 
 			Convey("Then the watcher is installed by default", func() {
@@ -148,7 +159,7 @@ func TestInitDaemonFlags(t *testing.T) {
 		})
 
 		Convey("When both flags are passed", func() {
-			_, err := gwsRun(t, "init", "--daemon", "--no-daemon")
+			_, err := gwsRunOpts(t, opts, nil, "init", "--daemon", "--no-daemon")
 
 			Convey("Then it is rejected", func() {
 				So(err, ShouldBeError)
@@ -164,17 +175,17 @@ func TestInitDaemonSkipsTemporaryHome(t *testing.T) {
 
 		calls := 0
 
-		fakeDaemonRunner(t, func(context.Context, string, ...string) error {
+		opts := withDaemonRunner(func(context.Context, string, ...string) error {
 			calls++
 
 			return nil
 		})
 
-		_, err := gwsRun(t, "init", "--no-daemon")
+		_, err := gwsRunOpts(t, opts, nil, "init", "--no-daemon")
 		So(err, ShouldBeNil)
 
 		Convey("When init runs without daemon flags", func() {
-			out, err := gwsRun(t, "init")
+			out, err := gwsRunOpts(t, opts, nil, "init")
 			So(err, ShouldBeNil)
 
 			Convey("Then the watcher is skipped with a note", func() {
@@ -186,7 +197,7 @@ func TestInitDaemonSkipsTemporaryHome(t *testing.T) {
 		})
 
 		Convey("When init --daemon runs", func() {
-			_, err := gwsRun(t, "init", "--daemon")
+			_, err := gwsRunOpts(t, opts, nil, "init", "--daemon")
 
 			Convey("Then the explicit request is refused with the init hint", func() {
 				So(err, ShouldBeError)
@@ -197,7 +208,7 @@ func TestInitDaemonSkipsTemporaryHome(t *testing.T) {
 		})
 
 		Convey("When daemon install runs", func() {
-			_, err := gwsRun(t, "daemon", "install")
+			_, err := gwsRunOpts(t, opts, nil, "daemon", "install")
 
 			Convey("Then it is refused without offering the init-only flag", func() {
 				So(err, ShouldBeError)
@@ -213,14 +224,12 @@ func TestInitDaemonSkipsTemporaryHome(t *testing.T) {
 func TestInitDaemonPinsEnv(t *testing.T) {
 	Convey("Given a permanent home and a fake service runner", t, func() {
 		home := gwsHome(t)
-		fakeDaemonTempHome(t, false)
-
-		fakeDaemonRunner(t, func(context.Context, string, ...string) error { return nil })
+		opts := daemonOpts(false, func(context.Context, string, ...string) error { return nil })
 
 		Convey("When init --daemon runs with a custom vault", func() {
 			t.Setenv("BEADLE_HOME", filepath.Join(home, "vault-elsewhere"))
 
-			_, err := gwsRun(t, "init", "--daemon")
+			_, err := gwsRunOpts(t, opts, nil, "init", "--daemon")
 			So(err, ShouldBeNil)
 
 			Convey("Then the unit pins the home, the vault and PATH", func() {
@@ -233,7 +242,7 @@ func TestInitDaemonPinsEnv(t *testing.T) {
 		})
 
 		Convey("When init --daemon runs with the default vault", func() {
-			_, err := gwsRun(t, "init", "--daemon")
+			_, err := gwsRunOpts(t, opts, nil, "init", "--daemon")
 			So(err, ShouldBeNil)
 
 			Convey("Then BEADLE_HOME stays implicit and HOME is pinned", func() {
@@ -249,14 +258,12 @@ func TestInitDaemonPinsEnv(t *testing.T) {
 func TestDaemonInstallRewritesEnv(t *testing.T) {
 	Convey("Given an installed unit with an outdated environment", t, func() {
 		home := gwsHome(t)
-		fakeDaemonTempHome(t, false)
+		opts := daemonOpts(false, func(context.Context, string, ...string) error { return nil })
 
-		fakeDaemonRunner(t, func(context.Context, string, ...string) error { return nil })
-
-		_, err := gwsRun(t, "init", "--no-daemon")
+		_, err := gwsRunOpts(t, opts, nil, "init", "--no-daemon")
 		So(err, ShouldBeNil)
 
-		_, err = gwsRun(t, "daemon", "install")
+		_, err = gwsRunOpts(t, opts, nil, "daemon", "install")
 		So(err, ShouldBeNil)
 
 		before, err := daemon.UnitEnvFromFile(daemonUnitPath(t, home))
@@ -266,7 +273,7 @@ func TestDaemonInstallRewritesEnv(t *testing.T) {
 		Convey("When the environment changes and install runs again", func() {
 			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-new"))
 
-			_, err := gwsRun(t, "daemon", "install")
+			_, err := gwsRunOpts(t, opts, nil, "daemon", "install")
 			So(err, ShouldBeNil)
 
 			Convey("Then the unit carries the new value and stays a single file", func() {
@@ -283,11 +290,9 @@ func TestDaemonInstallRewritesEnv(t *testing.T) {
 func TestInitDaemonSkipsExistingService(t *testing.T) {
 	Convey("Given an existing service file", t, func() {
 		home := gwsHome(t)
-		fakeDaemonTempHome(t, false)
-
 		calls := 0
 
-		fakeDaemonRunner(t, func(context.Context, string, ...string) error {
+		opts := daemonOpts(false, func(context.Context, string, ...string) error {
 			calls++
 
 			return nil
@@ -298,7 +303,7 @@ func TestInitDaemonSkipsExistingService(t *testing.T) {
 		So(os.WriteFile(path, []byte("plist"), 0o600), ShouldBeNil)
 
 		Convey("When init runs", func() {
-			out, err := gwsRun(t, "init")
+			out, err := gwsRunOpts(t, opts, nil, "init")
 			So(err, ShouldBeNil)
 
 			Convey("Then the existing watcher is left alone", func() {

@@ -12,6 +12,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/engine"
 	"github.com/odiumuniverse/beadle/pkg/hooks"
+	"github.com/odiumuniverse/verger/pkg/digest"
 )
 
 // a31InstallPlugin writes a fake Claude plugin cache entry for one installed
@@ -24,18 +25,6 @@ func a31InstallPlugin(t *testing.T, f *fixture, marketplace, name, hooksJSON str
 
 	write(t, filepath.Join(f.home, ".claude", "plugins", "installed_plugins.json"),
 		fmt.Sprintf(`{"plugins":{%q:[{"scope":"user","installPath":%q,"version":"1.0.0"}]}}`, name+"@"+marketplace, install))
-
-	pivot := filepath.Join(f.vault.PluginsDir(), marketplace, name, "current")
-
-	if err := os.MkdirAll(filepath.Dir(pivot), 0o700); err != nil {
-		t.Fatalf("mkdir pivot: %v", err)
-	}
-
-	_ = os.Remove(pivot)
-
-	if err := os.Symlink(install, pivot); err != nil {
-		t.Fatalf("link pivot: %v", err)
-	}
 
 	return install
 }
@@ -53,9 +42,10 @@ const a31Hooks = `{
   }
 }`
 
-// a31PivotCommand is the pivot-expanded command of a plugin hook.
-func a31PivotCommand(f *fixture, marketplace, name, script string) string {
-	return fmt.Sprintf("bash %q", filepath.Join(f.vault.PluginsDir(), marketplace, name, "current", script))
+// a31HookCommand is the command a plugin hook carries once its
+// plugin-root placeholder has been expanded to the plugin's install directory.
+func a31HookCommand(install, script string) string {
+	return fmt.Sprintf("bash %q", filepath.Join(install, script))
 }
 
 // a31HookIssues filters doctor issues down to the plugin-hooks check.
@@ -76,7 +66,7 @@ func TestPluginHooksApprove(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := newFixture(t)
-		a31InstallPlugin(t, f, "acme", "tool", a31Hooks)
+		install := a31InstallPlugin(t, f, "acme", "tool", a31Hooks)
 
 		Convey("When the plugin is approved", func() {
 			report, err := f.engine.ApprovePluginHooks("acme/tool")
@@ -91,13 +81,16 @@ func TestPluginHooksApprove(t *testing.T) {
 				So(ok, ShouldBeTrue)
 				So(post.Event, ShouldEqual, "post-tool")
 				So(post.Matcher, ShouldEqual, "Bash")
-				So(post.Command, ShouldEqual, a31PivotCommand(f, "acme", "tool", "hook.sh"))
+				So(post.Command, ShouldEqual, a31HookCommand(install, "hook.sh"))
 				So(post.Timeout, ShouldEqual, 30)
 				So(post.Source, ShouldEqual, "plugin:acme/tool")
 
-				So(canon["tool--session-start-1"].Command, ShouldEqual, a31PivotCommand(f, "acme", "tool", "start.sh"))
-				So(f.config.HookApproved("tool--post-tool-1"), ShouldBeTrue)
-				So(f.config.HookApproved("tool--session-start-1"), ShouldBeTrue)
+				So(canon["tool--session-start-1"].Command, ShouldEqual, a31HookCommand(install, "start.sh"))
+				// The consent is the library's, keyed by the package and the hash
+				// of the hooks the user was shown; config.json keeps no name.
+				So(f.manager.consents, ShouldContainKey, "plugin:acme/tool")
+				So(f.config.HookApproved("tool--post-tool-1"), ShouldBeFalse)
+				So(f.config.HookApproved("tool--session-start-1"), ShouldBeFalse)
 			})
 
 			Convey("Then the unexpressible definitions are aggregated and warned", func() {
@@ -140,7 +133,7 @@ func TestPluginHooksDrift(t *testing.T) {
 			t.Fatalf("approve: %v", err)
 		}
 
-		a31InstallPlugin(t, f, "acme", "tool",
+		install := a31InstallPlugin(t, f, "acme", "tool",
 			`{"hooks": {"PostToolUse": [{"hooks": [{"type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hook-v2.sh\""}]}]}}`)
 
 		Convey("Then doctor reports the drift", func() {
@@ -156,7 +149,7 @@ func TestPluginHooksDrift(t *testing.T) {
 
 			canon, err := hooks.Load(f.vault.HooksPath())
 			So(err, ShouldBeNil)
-			So(canon["tool--post-tool-1"].Command, ShouldEqual, a31PivotCommand(f, "acme", "tool", "hook-v2.sh"))
+			So(canon["tool--post-tool-1"].Command, ShouldEqual, a31HookCommand(install, "hook-v2.sh"))
 			So(canon, ShouldNotContainKey, "tool--session-start-1")
 		})
 	})
@@ -167,7 +160,7 @@ func TestPluginHooksCollision(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := newFixture(t)
-		a31InstallPlugin(t, f, "acme", "tool", a31Hooks)
+		install := a31InstallPlugin(t, f, "acme", "tool", a31Hooks)
 
 		write(t, f.vault.HooksPath(), `{"tool--post-tool-1": {"event": "stop", "command": "authored.sh"}}`)
 
@@ -188,10 +181,16 @@ func TestPluginHooksCollision(t *testing.T) {
 				canon, err := hooks.Load(f.vault.HooksPath())
 				So(err, ShouldBeNil)
 				So(canon["tool--post-tool-1"].Command, ShouldEqual, "authored.sh")
-				So(canon["tool--session-start-1"].Command, ShouldEqual, a31PivotCommand(f, "acme", "tool", "start.sh"))
+				So(canon["tool--session-start-1"].Command, ShouldEqual, a31HookCommand(install, "start.sh"))
 
+				// The collided name stays the authored hook's, so the plugin's
+				// consent covers only what the plugin actually contributed - and
+				// it is the library's record, not a name in config.json.
+				approved, err := f.manager.HooksApprovedFor("plugin:acme/tool", "", a31LiveHash(t, f))
+				So(err, ShouldBeNil)
+				So(approved, ShouldBeTrue)
 				So(f.config.HookApproved("tool--post-tool-1"), ShouldBeFalse)
-				So(f.config.HookApproved("tool--session-start-1"), ShouldBeTrue)
+				So(f.config.HookApproved("tool--session-start-1"), ShouldBeFalse)
 			})
 
 			Convey("Then doctor reports the collision once, not as drift", func() {
@@ -292,49 +291,19 @@ func TestPluginHooksCounters(t *testing.T) {
 }
 
 func TestPluginHooksGhostInstall(t *testing.T) {
-	Convey("Given an installed plugin whose cache directory is gone but its pivot resolves", t, func() {
+	Convey("Given an installed plugin whose install directory is gone", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := newFixture(t)
 		install := a31InstallPlugin(t, f, "acme", "tool", a31Hooks)
 
-		older := filepath.Join(filepath.Dir(install), "0.9.0")
-		So(os.MkdirAll(older, 0o700), ShouldBeNil)
 		So(os.RemoveAll(install), ShouldBeNil)
-
-		pivot := filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current")
-		So(os.Remove(pivot), ShouldBeNil)
-		So(os.Symlink(older, pivot), ShouldBeNil)
 
 		Convey("Then approving refuses instead of reporting zero hooks", func() {
 			_, err := f.engine.ApprovePluginHooks("acme/tool")
 			So(err, ShouldBeError)
 			So(err.Error(), ShouldContainSubstring, "install path")
 			So(err.Error(), ShouldContainSubstring, "is missing")
-		})
-	})
-}
-
-func TestPluginHooksPivotRequired(t *testing.T) {
-	Convey("Given an installed plugin without a pivot", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
-		f := newFixture(t)
-		a31InstallPlugin(t, f, "acme", "tool", a31Hooks)
-
-		pivot := filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current")
-		So(os.Remove(pivot), ShouldBeNil)
-
-		Convey("Then approving refuses until the pivot exists", func() {
-			_, err := f.engine.ApprovePluginHooks("acme/tool")
-			So(err, ShouldBeError)
-			So(err.Error(), ShouldContainSubstring, "run `beadle sync` first")
-		})
-
-		Convey("Then doctor warns about the missing pivot", func() {
-			issues, err := f.engine.Doctor(t.Context())
-			So(err, ShouldBeNil)
-			So(a31HookIssues(issues, "pivot"), ShouldHaveLength, 1)
 		})
 	})
 }
@@ -412,7 +381,7 @@ func TestPluginHooksDelivery(t *testing.T) {
 
 		write(t, filepath.Join(f.home, ".codex", "config.toml"), "")
 
-		a31InstallPlugin(t, f, "acme", "tool",
+		install := a31InstallPlugin(t, f, "acme", "tool",
 			`{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/start.sh\""}]}]}}`)
 
 		if _, err := f.engine.ApprovePluginHooks("acme/tool"); err != nil {
@@ -422,7 +391,7 @@ func TestPluginHooksDelivery(t *testing.T) {
 		f.sync(t)
 
 		Convey("Then the Cursor and Codex hooks files carry the expanded command", func() {
-			expanded := a31PivotCommand(f, "acme", "tool", "start.sh")
+			expanded := a31HookCommand(install, "start.sh")
 
 			So(a36Events(t, a36CursorHooks(f))["sessionStart"], ShouldResemble, []any{
 				map[string]any{"command": expanded},
@@ -477,4 +446,18 @@ func TestPluginHooksClaudeBundleExclusion(t *testing.T) {
 			So(agy, ShouldContainKey, "from-plugin")
 		})
 	})
+}
+
+// a31LiveHash asks the engine's own consent answer for the canon as it stands,
+// so a test can tell a live consent from a lapsed one without pinning the
+// hash encoding.
+func a31LiveHash(t *testing.T, f *fixture) digest.Hash {
+	t.Helper()
+
+	canon, err := hooks.Load(f.vault.HooksPath())
+	if err != nil {
+		t.Fatalf("load canon: %v", err)
+	}
+
+	return pluginHookSetHashForTest(canon, "acme/tool")
 }

@@ -19,6 +19,42 @@ import (
 
 const forkMigratingSuffix = ".migrating"
 
+// skillsDirs lists the host skills directories this sync may touch. modeGated
+// skips the surfaces the user turned off (the doctor asks that way); the
+// migrations pass false, because pruning must run whatever the mode.
+func (e *Engine) skillsDirs(ctx context.Context, modeGated bool) ([]string, error) {
+	if e.home == "" {
+		return nil, nil
+	}
+
+	active, err := e.activeAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var dirs []string
+
+	for _, a := range active {
+		surface := a.Surface(kind.Skills)
+		if surface == nil {
+			continue
+		}
+
+		if modeGated && e.config.ModeFor(a.ID, kind.Skills, surface.Traits().DefaultMode) == config.ModeOff {
+			continue
+		}
+
+		dirs = append(dirs, surface.Path())
+	}
+
+	return dirs, nil
+}
+
+// joinNotes folds the notes of one row into the single line a report prints.
+func joinNotes(notes []string) string {
+	return strings.Join(slices.DeleteFunc(notes, func(note string) bool { return note == "" }), "; ")
+}
+
 // linkReason explains why a cache link can or cannot be repointed to its vault
 // pivot.
 type linkReason int
@@ -69,17 +105,13 @@ func cacheSkillTarget(home, target string) (string, string, bool) {
 	return pluginKey(marketplace, name), skillName, true
 }
 
-func (e *Engine) cacheLinkKey(link string, ledger pluginLedger) (string, string, bool) {
-	key, skillName, ok := cacheSkillTarget(e.home, link)
-	if !ok {
-		return "", "", false
-	}
-
-	if _, inLedger := ledger.Plugins[key]; !inLedger {
-		return "", "", false
-	}
-
-	return key, skillName, true
+// cacheLinkKey reads a link target that points into a host's plugin cache. The
+// path shape is the whole test: a link into a cache whose plugin is not
+// installed any more is exactly the case a user needs reported, so the key is
+// recognised whether or not anything is registered under it. Whether the
+// plugin is parked is the plan's answer, not this one's.
+func (e *Engine) cacheLinkKey(link string) (string, string, bool) {
+	return cacheSkillTarget(e.home, link)
 }
 
 // skillsDirAgents maps every active host skills directory to its agent.
@@ -114,15 +146,38 @@ func (e *Engine) skillsDirAgents(ctx context.Context, modeGated bool) (map[strin
 	return out, nil
 }
 
+// MigrateHostSkills moves the host skills that are symlinks into a plugin
+// cache into the vault: the canon keeps the content, the link points at the
+// canon, and a link chain or a fork the canon cannot hold is left exactly as
+// it is. It was `beadle heal`'s job while the farm existed and the farm is
+// gone, so it is the engine's own operation now.
+//
+// dryRun reports what would move without touching anything.
+func (e *Engine) MigrateHostSkills(ctx context.Context, dryRun bool) ([]MigrateResult, error) {
+	release, err := e.lock(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	defer release()
+
+	results, warns := e.migrateHosts(ctx, dryRun)
+	if len(warns) > 0 {
+		return results, errors.New(joinNotes(warns))
+	}
+
+	return results, nil
+}
+
 func (e *Engine) migrateHosts(ctx context.Context, dryRun bool) ([]MigrateResult, []string) {
 	if e.home == "" {
 		return nil, nil
 	}
 
-	ledger, _, err := loadPluginLedger(e.vault.PluginsLedgerPath())
-	if err != nil {
-		return nil, []string{"plugin migrate: " + err.Error()}
-	}
+	// The links this migration follows point into a host's plugin cache, so
+	// the host registries are the record of what is installed. The farm's
+	// ledger used to answer that and nothing writes it any more.
+	ledger := e.hostPluginLedger()
 
 	plan, _ := e.buildFarmPlan(ledger)
 
@@ -183,7 +238,7 @@ func (m *migrateState) link(path, name string) {
 		return
 	}
 
-	key, skillName, ok := m.engine.cacheLinkKey(link, m.ledger)
+	key, skillName, ok := m.engine.cacheLinkKey(link)
 	if !ok {
 		return
 	}
@@ -194,7 +249,14 @@ func (m *migrateState) link(path, name string) {
 		return
 	}
 
-	pivot, _ := m.engine.agentSkillTarget(m.agent, key, skillName)
+	target, _ := m.engine.agentSkillTarget(m.agent, key, skillName)
+
+	// A link that already points at the plugin's install is done. Without this
+	// the migration would report the same move on every run, because its
+	// destination is the same cache path the link followed all along.
+	if samePath(filepath.Clean(strings.TrimSuffix(link, "/")), target) {
+		return
+	}
 
 	if m.dryRun {
 		m.moved[key]++
@@ -202,7 +264,7 @@ func (m *migrateState) link(path, name string) {
 		return
 	}
 
-	if err := fsutil.ReplaceSymlink(path, pivot); err != nil {
+	if err := fsutil.ReplaceSymlink(path, target); err != nil {
 		m.note(key, "cannot repoint %s: %v", path, err)
 
 		return
@@ -290,14 +352,24 @@ func (m *migrateState) noteUnmigratable(reason linkReason, key, skillName, name 
 	m.note(key, "%s; %s left in place", m.engine.linkReasonText(m.plan, reason, key, skillName), name)
 }
 
-func (m *migrateState) note(key, format string, args ...any) {
-	m.notes[key] = append(m.notes[key], fmt.Sprintf(format, args...))
-}
-
+// results is one row per plugin the migration touched: the links and forks it
+// moved, and the ones it could not move but has something to say about. A key
+// that only has a note still gets a row - a fork the user was told about is
+// better than a silence they have to notice themselves.
 func (m *migrateState) results() []MigrateResult {
+	keys := slices.Sorted(maps.Keys(m.moved))
+
+	for key := range m.notes {
+		if _, moved := m.moved[key]; !moved {
+			keys = append(keys, key)
+		}
+	}
+
+	slices.Sort(keys)
+
 	var results []MigrateResult
 
-	for _, key := range slices.Sorted(maps.Keys(m.moved)) {
+	for _, key := range slices.Compact(keys) {
 		notes := slices.Compact(slices.Sorted(slices.Values(m.notes[key])))
 
 		results = append(results, MigrateResult{
@@ -310,8 +382,12 @@ func (m *migrateState) results() []MigrateResult {
 	return results
 }
 
-// linkReason classifies why a cache link target can or cannot be repointed to
-// the vault pivot.
+func (m *migrateState) note(key, format string, args ...any) {
+	m.notes[key] = append(m.notes[key], fmt.Sprintf(format, args...))
+}
+
+// linkReason classifies why a cache link or fork can or cannot be pointed at
+// the plugin's own install.
 func (e *Engine) linkReason(agentID string, plan farmPlan, key, skillName string) linkReason {
 	if _, parked := plan.Parked[key]; !parked {
 		return linkPluginNotParked
@@ -419,10 +495,17 @@ func hasExtraEntries(dir string, lot skill.Tree) bool {
 	return extra
 }
 
-func (e *Engine) pluginMigrationIssues(ctx context.Context, ledger pluginLedger) []Issue {
+// pluginMigrationIssues reports what the host-skills migration would do: the
+// links and forks that still point into a plugin cache, and the ones it would
+// refuse. Everything comes from the host registries, the same record the
+// migration itself uses - the vault's farm ledger no longer describes what is
+// installed.
+func (e *Engine) pluginMigrationIssues(ctx context.Context) []Issue {
 	if e.home == "" {
 		return nil
 	}
+
+	ledger := e.hostPluginLedger()
 
 	plan, _ := e.buildFarmPlan(ledger)
 
@@ -458,7 +541,7 @@ func (e *Engine) pluginMigrationIssues(ctx context.Context, ledger pluginLedger)
 
 			switch {
 			case entry.Type()&fs.ModeSymlink != 0:
-				issues = append(issues, e.migrationLinkIssues(agentID, plan, ledger, path, name)...)
+				issues = append(issues, e.migrationLinkIssues(agentID, plan, path, name)...)
 			case entry.IsDir():
 				issues = append(issues, e.migrationForkIssues(agentID, plan, path, name)...)
 			}
@@ -468,23 +551,28 @@ func (e *Engine) pluginMigrationIssues(ctx context.Context, ledger pluginLedger)
 	return issues
 }
 
-func (e *Engine) migrationLinkIssues(agentID string, plan farmPlan, ledger pluginLedger, path, name string) []Issue {
+// migrationLinkIssues reports a link into a plugin cache that the migration
+// would refuse: a plugin that is not installed any more, a skill another
+// plugin owns, or a skill the plugin no longer offers. A link that resolves to
+// the plugin's own skill is exactly where it belongs - the plugin manager
+// keeps the content there - so it is not reported.
+func (e *Engine) migrationLinkIssues(agentID string, plan farmPlan, path, name string) []Issue {
 	link, err := os.Readlink(path)
 	if err != nil {
 		return nil
 	}
 
-	key, skillName, ok := e.cacheLinkKey(link, ledger)
+	key, skillName, ok := e.cacheLinkKey(link)
 	if !ok {
 		return nil
 	}
 
 	reason := e.linkReason(agentID, plan, key, skillName)
 	if reason == linkMigratable {
-		return []Issue{{Severity: SeverityWarn, Message: fmt.Sprintf("skill %s points into the plugin cache (%s); run beadle heal", name, link)}}
+		return nil
 	}
 
-	return []Issue{{Severity: SeverityWarn, Message: fmt.Sprintf("skill %s points into the plugin cache; %s (run beadle sync or remove the stale link)", name, e.linkReasonText(plan, reason, key, skillName))}}
+	return []Issue{{Severity: SeverityWarn, Message: fmt.Sprintf("skill %s points into the plugin cache; %s (remove the stale link, or let the plugin offer the skill again)", name, e.linkReasonText(plan, reason, key, skillName))}}
 }
 
 func (e *Engine) migrationForkIssues(agentID string, plan farmPlan, path, name string) []Issue {

@@ -2,7 +2,6 @@ package engine_test
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -41,37 +40,6 @@ func TestA47SourceIDsMatchAgents(t *testing.T) {
 			}
 
 			So(plugin.SourceHosts()[0], ShouldEqual, plugin.SourceClaudeCode)
-		})
-	})
-}
-
-func TestA47CodexPluginIsParkedAndFarmed(t *testing.T) {
-	Convey("Given a Codex plugin cache", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
-		f := newFixture(t)
-		f.emptyConfigs(t)
-
-		dir := codexPluginTree(t, f.home, "acme", "tool", "1.0.0")
-		writeSkill(t, dir, "alpha", "# alpha\n")
-
-		report := f.sync(t)
-
-		Convey("When the sync runs", func() {
-			Convey("Then the Codex plugin is parked and farmed like a Claude plugin", func() {
-				result := pluginResult(t, report, "acme/tool")
-				So(result.Action, ShouldEqual, engine.PluginCreated)
-				So(result.Target, ShouldEqual, dir)
-
-				So(pivotLink(t, f, "acme", "tool"), ShouldEqual, dir)
-
-				want := filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current", "skills", "alpha")
-				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, want)
-				So(farmLink(t, openCodeSkillsDir(f.home), "alpha"), ShouldEqual, want)
-
-				rec := ledgerRecord(t, f, "acme/tool")
-				So(rec.Source, ShouldEqual, plugin.SourceCodex)
-			})
 		})
 	})
 }
@@ -121,86 +89,6 @@ func TestA47DoctorShowsReaderWarnings(t *testing.T) {
 	})
 }
 
-func TestA47PinOfNonClaudePluginWarns(t *testing.T) {
-	Convey("Given a version pin for a Codex plugin", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
-		f := newFixture(t)
-		f.emptyConfigs(t)
-
-		codexPluginTree(t, f.home, "acme", "tool", "1.0.0")
-
-		f.sync(t)
-
-		So(f.config.SetPluginPin(agent.ClaudeCodeID, "acme/tool", "1.0.0"), ShouldBeNil)
-		So(f.config.Save(f.vault.ConfigPath()), ShouldBeNil)
-
-		issues, err := f.engine.Doctor(t.Context())
-		So(err, ShouldBeNil)
-
-		Convey("When doctor runs", func() {
-			Convey("Then the pin is reported as having no effect", func() {
-				So(hasIssue(issues, engine.SeverityWarn, "belongs to codex; version pins cover the Claude Code plugin cache only"), ShouldBeTrue)
-			})
-		})
-	})
-}
-
-func TestA47SameKeyFromTwoSourcesPresentsOnce(t *testing.T) {
-	Convey("Given the same plugin installed in Claude and Codex", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
-		f := newFixture(t)
-		f.emptyConfigs(t)
-
-		claude := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-		writeSkill(t, claude, "alpha", "# alpha\n")
-
-		codex := codexPluginTree(t, f.home, "acme", "tool", "1.0.0")
-		writeSkill(t, codex, "alpha", "# alpha\n")
-
-		report := f.sync(t)
-
-		Convey("When the sync runs", func() {
-			Convey("Then the first source wins with a note", func() {
-				So(pivotLink(t, f, "acme", "tool"), ShouldEqual, claude)
-				So(ledgerRecord(t, f, "acme/tool").Source, ShouldEqual, plugin.SourceClaudeCode)
-				So(containsWarning(report.Notes, "presenting the claude copy"), ShouldBeTrue)
-				So(containsWarning(report.Warnings, "different content"), ShouldBeFalse)
-			})
-		})
-	})
-}
-
-func TestA47UnreadableCopyDoesNotHideTheWorkingOne(t *testing.T) {
-	Convey("Given a Claude registry entry whose install is gone and a working Codex copy", t, func() {
-		t.Setenv("XDG_CONFIG_HOME", "")
-
-		f := newFixture(t)
-		f.emptyConfigs(t)
-
-		claude := pluginTree(t, f.home, "acme", "tool", "1.0.0")
-		writeSkill(t, claude, "alpha", "# alpha\n")
-
-		codex := codexPluginTree(t, f.home, "acme", "tool", "1.0.0")
-		writeSkill(t, codex, "alpha", "# alpha\n")
-
-		So(os.RemoveAll(claude), ShouldBeNil)
-
-		f.sync(t)
-
-		Convey("When the sync runs", func() {
-			Convey("Then the working copy is parked and presented", func() {
-				So(pivotLink(t, f, "acme", "tool"), ShouldEqual, codex)
-				So(ledgerRecord(t, f, "acme/tool").Source, ShouldEqual, plugin.SourceCodex)
-
-				want := filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current", "skills", "alpha")
-				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, want)
-			})
-		})
-	})
-}
-
 func TestA47SameKeyDivergentCopiesWarn(t *testing.T) {
 	Convey("Given divergent copies of one plugin key", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")
@@ -214,15 +102,13 @@ func TestA47SameKeyDivergentCopiesWarn(t *testing.T) {
 		codex := codexPluginTree(t, f.home, "acme", "tool", "1.0.0")
 		writeSkill(t, codex, "alpha", "# different\n")
 
-		report := f.sync(t)
+		f.sync(t)
 
 		issues, err := f.engine.Doctor(t.Context())
 		So(err, ShouldBeNil)
 
-		Convey("When the sync runs", func() {
+		Convey("When the doctor runs", func() {
 			Convey("Then the divergence is reported, not hidden", func() {
-				So(pivotLink(t, f, "acme", "tool"), ShouldEqual, claude)
-				So(containsWarning(report.Warnings, "different content"), ShouldBeTrue)
 				So(hasIssue(issues, engine.SeverityWarn, "different content"), ShouldBeTrue)
 			})
 		})

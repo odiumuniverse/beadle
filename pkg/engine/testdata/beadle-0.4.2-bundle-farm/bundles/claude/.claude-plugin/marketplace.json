@@ -1,0 +1,14 @@
+{
+  "description": "beadle vault canon: skills, MCP servers and approved hooks",
+  "name": "beadle",
+  "owner": {
+    "name": "beadle"
+  },
+  "plugins": [
+    {
+      "name": "beadle-canon",
+      "source": "./plugins/beadle-canon",
+      "version": "0.0.0-0bf8dbd0b4b4"
+    }
+  ]
+}

@@ -90,12 +90,27 @@ func TestSyncAutoEnablesUntouchedHost(t *testing.T) {
 				So(f.config.ModeFor(agent.ClaudeCodeID, kind.MCP, config.ModeSync), ShouldEqual, config.ModeOff)
 			})
 
-			Convey("And the next sync neither re-attempts nor re-registers", func() {
+			Convey("And the next sync is a no-op: the first pass already settled the version", func() {
+				// The settling pass is gone. The render now sees the deliveries the
+				// same run made, so the version the first sync wrote is the final
+				// one and a second pass has nothing left to converge.
 				calls := len(cli.calls)
+				before := loadState(t, f).Bundles["claude"]
 
 				second := f.runOn(t, e, engine.SyncOptions{})
 				So(second.Bundles, ShouldBeEmpty)
 				So(len(cli.calls), ShouldEqual, calls)
+
+				// A no-op asserted as a no-op, not merely as the absence of a
+				// result: every field a re-probe would rewrite is exactly what the
+				// first pass left, so nothing was re-rendered and nothing re-asked.
+				after := loadState(t, f).Bundles["claude"]
+				So(after.Version, ShouldEqual, before.Version)
+				So(after.Registered, ShouldEqual, before.Registered)
+				So(after.VerifyTier, ShouldEqual, before.VerifyTier)
+				So(after.Enabled, ShouldEqual, before.Enabled)
+				So(after.AutoAttempt.Tier, ShouldEqual, before.AutoAttempt.Tier)
+				So(after.AutoAttempt.Version, ShouldEqual, before.AutoAttempt.Version)
 			})
 		})
 	})
@@ -132,21 +147,34 @@ func TestSyncAutoEnableProbeFailureKeepsModes(t *testing.T) {
 				So(entry.AutoAttempt.Tier, ShouldEqual, state.VerifyFailed)
 			})
 
-			Convey("And one settling pass converges the rendered version", func() {
-				before := loadState(t, f).Bundles["claude"].Version
+			Convey("And the failed probe is already final, so the next sync is a no-op", func() {
+				// The settling pass is gone here too, and for the same reason: the
+				// render saw what this run delivered, so the version written by
+				// the first pass is the one a user would have to re-enable against
+				// and there is nothing for a second pass to converge. A failed
+				// probe is a result, not a beginning.
+				calls := len(cli.calls)
+				before := loadState(t, f).Bundles["claude"]
 
 				second := f.runOn(t, e, engine.SyncOptions{})
-				So(bundleResult(t, second, "claude").Tier, ShouldEqual, state.VerifyFailed)
+				So(second.Bundles, ShouldBeEmpty)
+				So(len(cli.calls), ShouldEqual, calls)
 
-				settled := loadState(t, f).Bundles["claude"]
-				So(settled.Version, ShouldNotEqual, before)
+				// Explicitly a no-op rather than merely silent: the attempt the
+				// first pass recorded is the one still standing, unchanged in both
+				// the version it was made against and the tier it reached.
+				after := loadState(t, f).Bundles["claude"]
+				So(after.Version, ShouldEqual, before.Version)
+				So(after.AutoAttempt.Version, ShouldEqual, before.AutoAttempt.Version)
+				So(after.AutoAttempt.Tier, ShouldEqual, state.VerifyFailed)
 
-				calls := len(cli.calls)
-
-				Convey("And further syncs do not probe again", func() {
+				Convey("And a further sync stays a no-op too", func() {
 					third := f.runOn(t, e, engine.SyncOptions{})
 					So(third.Bundles, ShouldBeEmpty)
 					So(len(cli.calls), ShouldEqual, calls)
+
+					settled := loadState(t, f).Bundles["claude"]
+					So(settled.Version, ShouldEqual, after.Version)
 				})
 			})
 		})
@@ -387,16 +415,22 @@ func TestSyncAutoEnableRefreshDoesNotRetryFailedProbe(t *testing.T) {
 		second := f.runOn(t, e, engine.SyncOptions{})
 		So(bundleResult(t, second, "claude").Tier, ShouldEqual, state.VerifyFailed)
 
-		Convey("When the next syncs run", func() {
-			settle := f.runOn(t, e, engine.SyncOptions{})
-			So(bundleResult(t, settle, "claude").Tier, ShouldEqual, state.VerifyFailed)
-
+		Convey("When the next sync runs", func() {
+			// The settling pass is gone, and the canon is why: the render reads
+			// what this run's canon holds, so the sync that probed beta was
+			// already rendering the final farm. Nothing is left to converge, and
+			// a failed probe is not retried on a re-run.
 			calls := len(cli.calls)
+			settled := loadState(t, f).Bundles["claude"]
 
-			Convey("Then the failed probe settles and is not retried", func() {
-				third := f.runOn(t, e, engine.SyncOptions{})
-				So(third.Bundles, ShouldBeEmpty)
-				So(len(cli.calls), ShouldEqual, calls)
+			third := f.runOn(t, e, engine.SyncOptions{})
+			So(third.Bundles, ShouldBeEmpty)
+			So(len(cli.calls), ShouldEqual, calls)
+
+			Convey("And the failed probe stands as the pass that probed it left it", func() {
+				after := loadState(t, f).Bundles["claude"]
+				So(after.Version, ShouldEqual, settled.Version)
+				So(after.VerifyTier, ShouldEqual, state.VerifyFailed)
 			})
 		})
 	})

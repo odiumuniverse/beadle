@@ -61,7 +61,7 @@ func (a *app) newHooksListCmd() *cobra.Command {
 				}
 
 				state := "pending"
-				if cfg.HookApproved(name) {
+				if hookApproved(a, cfg, canon, name) {
 					state = "approved"
 				}
 
@@ -211,6 +211,25 @@ func (a *app) newHooksApproveCmd() *cobra.Command {
 				return fmt.Errorf("unknown hook %q", args[0])
 			}
 
+			key, fromPlugin := canon[args[0]].PluginKey()
+			if fromPlugin {
+				// A plugin hook is approved as part of its package: the library
+				// holds one consent per package, keyed by the hash of the hooks
+				// the user is shown now.
+				e, err := a.engine()
+				if err != nil {
+					return err
+				}
+
+				if err := e.ApprovePluginHookSet(key); err != nil {
+					return err
+				}
+
+				fmt.Fprintf(cmd.OutOrStdout(), "hook %s approved: plugin %s hooks approved as a set\n", args[0], key)
+
+				return nil
+			}
+
 			cfg.ApproveHook(args[0])
 
 			if err := cfg.Save(v.ConfigPath()); err != nil {
@@ -289,6 +308,31 @@ func (a *app) newHooksRevokeCmd() *cobra.Command {
 				return errors.New("a hook name is required (or use --plugin <key>)")
 			}
 
+			canon, err := hooks.Load(v.HooksPath())
+			if err != nil {
+				return err
+			}
+
+			if _, ok := canon[args[0]]; !ok {
+				return fmt.Errorf("unknown hook %q", args[0])
+			}
+
+			key, fromPlugin := canon[args[0]].PluginKey()
+			if fromPlugin {
+				e, err := a.engine()
+				if err != nil {
+					return err
+				}
+
+				if err := e.RevokePluginHookConsent(key); err != nil {
+					return err
+				}
+
+				fmt.Fprintf(cmd.OutOrStdout(), "hook %s revoked: plugin %s hook consent taken back\n", args[0], key)
+
+				return nil
+			}
+
 			cfg.RevokeHook(args[0])
 
 			if err := cfg.Save(v.ConfigPath()); err != nil {
@@ -301,7 +345,7 @@ func (a *app) newHooksRevokeCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&pluginKey, "plugin", "", "revoke every hook a plugin contributed, dropping its canon entries and approvals (<marketplace>/<name>)")
+	cmd.Flags().StringVar(&pluginKey, "plugin", "", "revoke every hook a plugin contributed, dropping its entries in your configuration and its approvals (<marketplace>/<name>)")
 
 	return cmd
 }
@@ -315,29 +359,19 @@ func (a *app) revokePluginHooks(cmd *cobra.Command, v *vault.Vault, cfg *config.
 		return err
 	}
 
-	revoked := 0
+	revoked := dropPluginHooks(canon, key)
 
-	for _, name := range slices.Sorted(maps.Keys(canon)) {
-		hookKey, fromPlugin := canon[name].PluginKey()
-		if !fromPlugin || hookKey != key {
-			continue
-		}
-
-		cfg.RevokeHook(name)
-		delete(canon, name)
-
-		revoked++
+	// The consent lives in the library, so it is taken back there, not here.
+	e, err := a.engine()
+	if err != nil {
+		return err
 	}
 
-	modules := 0
-
-	for _, entry := range slices.Clone(cfg.ApprovedHooks) {
-		if moduleKey, ok := hooks.HookModulePlugin(entry); ok && moduleKey == key {
-			cfg.RevokeHook(entry)
-
-			modules++
-		}
+	if err := e.RevokePluginHookConsent(key); err != nil {
+		return err
 	}
+
+	modules := dropPluginModules(cfg, key)
 
 	if revoked == 0 && modules == 0 {
 		fmt.Fprintf(cmd.OutOrStdout(), "no hooks of plugin %s\n", key)
@@ -356,4 +390,58 @@ func (a *app) revokePluginHooks(cmd *cobra.Command, v *vault.Vault, cfg *config.
 	fmt.Fprintf(cmd.OutOrStdout(), "revoked %d hook(s) and %d hook module approval(s) of plugin %s\n", revoked, modules, key)
 
 	return nil
+}
+
+// dropPluginHooks removes every canon entry this plugin contributed and returns
+// how many went. Sorted names keep the count, and the canon's own shape on
+// disk, identical between runs.
+func dropPluginHooks(canon map[string]hooks.Hook, key string) int {
+	dropped := 0
+
+	for _, name := range slices.Sorted(maps.Keys(canon)) {
+		hookKey, fromPlugin := canon[name].PluginKey()
+		if !fromPlugin || hookKey != key {
+			continue
+		}
+
+		delete(canon, name)
+
+		dropped++
+	}
+
+	return dropped
+}
+
+// dropPluginModules revokes this plugin's hook-module approvals and returns how
+// many were revoked. The list is cloned because the loop removes from the field
+// it ranges over.
+func dropPluginModules(cfg *config.Config, key string) int {
+	revoked := 0
+
+	for _, entry := range slices.Clone(cfg.ApprovedHooks) {
+		if moduleKey, ok := hooks.HookModulePlugin(entry); ok && moduleKey == key {
+			cfg.RevokeHook(entry)
+
+			revoked++
+		}
+	}
+
+	return revoked
+}
+
+// hookApproved reports one canon hook's approval state. A plugin hook is
+// answered by the library, which owns that consent; everything else is beadle's
+// own list of names.
+func hookApproved(a *app, cfg *config.Config, canon map[string]hooks.Hook, name string) bool {
+	key, fromPlugin := canon[name].PluginKey()
+	if !fromPlugin {
+		return cfg.HookApproved(name)
+	}
+
+	e, err := a.engine()
+	if err != nil {
+		return false
+	}
+
+	return e.PluginHookApprovedFor(canon, key)
 }

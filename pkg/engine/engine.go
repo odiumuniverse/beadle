@@ -56,6 +56,16 @@ type Engine struct {
 	// the trees again (tests and diagnosis).
 	skillCache    map[string]state.SkillTree
 	skillCacheOff bool
+	// owns reports the paths the plugin manager owns (verger, user and project
+	// scope). It is the DESIGN ownership invariant: an artifact verger delivers
+	// is never pulled into beadle's canon. A nil owns means nothing is owned by
+	// anyone else, which is the state of a beadle that has not opened the
+	// plugin manager.
+	owns func(path string) (string, bool)
+	// manager is the embedded plugin manager the farm migration needs. A nil
+	// manager means the migration does not run and the farm stays exactly as
+	// it is.
+	manager PluginManager
 }
 
 type Option func(*Engine)
@@ -91,6 +101,20 @@ func WithBundleAutoEnable() Option {
 // WithUnattended marks a run nobody watches (the watcher): it never records
 // where it finds a host CLI, because its PATH is the service manager's, not
 // the user's.
+// WithPluginManager installs the embedded plugin manager. The farm migration
+// runs on the first sync after the upgrade and needs it; without it beadle
+// leaves the farm untouched rather than half-moving it.
+func WithPluginManager(manager PluginManager) Option {
+	return func(e *Engine) { e.manager = manager }
+}
+
+// WithVergerOwns installs the plugin manager's ownership predicate. Every
+// kind's pull consults it, so a path the plugin manager owns stays out of the
+// canon at both user and project scope.
+func WithVergerOwns(owns func(path string) (string, bool)) Option {
+	return func(e *Engine) { e.owns = owns }
+}
+
 func WithUnattended() Option {
 	return func(e *Engine) { e.unattended = true }
 }
@@ -200,50 +224,93 @@ func (e *Engine) sync(ctx context.Context, opts SyncOptions) (*Report, error) {
 		return nil, err
 	}
 
-	e.recordSyncHome(st)
-
 	active, err := e.activeAgents(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	report := &Report{DryRun: opts.DryRun}
+	// "No agent" means no HOST agent: beadle's own shared skills surface is
+	// always on and is a directory beadle owns, not a host whose files the user
+	// could have removed. Counting it would make every fresh vault look like it
+	// had something to be in sync with.
+	noActiveAgents := true
+
+	for _, a := range active {
+		if a.ID != agent.SharedID {
+			noActiveAgents = false
+
+			break
+		}
+	}
+
+	report := &Report{DryRun: opts.DryRun, NoActiveAgents: noActiveAgents}
+
+	// The delivery record ("beadle wrote this file here") is a fact about THIS
+	// machine's host directories, so the state carries the machine it belongs
+	// to. The record is machine-local and the vault's .gitignore keeps it out
+	// of git — but a vault copied with `cp -a`, or a state file carried by
+	// hand, arrives stamped with someone else's home. Reading that record here
+	// would turn "this host has no such file yet" into "the user deleted it",
+	// and report a mass deletion of beadle's own skills at a user who never
+	// had them.
+	// The stamp happens at the commit, not here: the kind loop below reads this
+	// very record to tell "beadle wrote this here" from "another machine did",
+	// so overwriting it first would make the question unaskable.
+	if !e.deliveryRecordIsOurs(st) {
+		report.Notes = append(report.Notes, fmt.Sprintf(
+			"delivery record belongs to another machine (%s): beadle wrote nothing on this one, "+
+				"so every file is new here", st.Home))
+	}
+
+	// One note for the whole run, because the fact is about the vault and not
+	// about any one kind: there is nobody to write to, and the way to change
+	// that is a command, not a per-kind exception.
+	if report.NoActiveAgents {
+		report.Notes = append(report.Notes, "no agent is on for this vault (run `beadle agents enable <agent>`)")
+	}
+
 	e.warnKeyring(report)
 	e.noteConfigMigration(report, opts)
 	e.migrateAgentIDs(report, opts)
 	e.beginRulings(opts)
 
-	if !opts.DryRun {
-		report.Warnings = append(report.Warnings, e.recordHostCLIs()...)
-		e.syncPluginSurfaces(ctx, report, active, opts)
-	}
+	// A farm an older build wrote is taken FIRST — copied, and stripped of the
+	// files beadle wrote — because this build writes `bundles/<host>` too and a
+	// stale-file sweep later in the sync would delete a file the user owns before
+	// anyone had copied it. The other half of the move, publishing the canon as a
+	// package, runs after the canon package is rendered.
+	farm := e.takeBundleFarm(st, report, opts)
 
-	for _, spec := range kind.All() {
-		if !e.config.KindEnabled(spec.ID) || !selected(opts.Kinds, spec.ID) {
-			continue
-		}
-
-		report.Kinds = append(report.Kinds, e.syncKind(ctx, spec, active, st, opts))
-	}
+	e.runSyncMigrations(ctx, st, report, opts)
+	e.syncKinds(ctx, report, active, st, opts)
 
 	e.liftRulings(report)
 
-	var autoHandled map[string]bool
+	e.autoEnableAndRefreshBundles(ctx, active, st, report, opts)
 
-	if e.autoBundles && !opts.DryRun && fullForwardSync(opts) {
-		// The unattended attempt runs after the kind loop: the bundle then
-		// renders from the merged canon (host edits were adopted first) and
-		// from the same host state refresh will see, so the rendered version
-		// stays stable within the sync.
-		handled, err := e.autoEnableBundles(ctx, active, st, report)
-		if err != nil {
-			report.Warnings = append(report.Warnings, "bundles: "+err.Error())
-		}
+	// The plugin library reconciles the machine with the vault's spec and lock,
+	// and it runs LAST: after the kinds pulled, adopted and rendered, so a spec
+	// or a lock that arrived in this pass is applied by the same pass that
+	// reports on it. Run earlier it answered about a vault state the sync had
+	// not reached yet - a run that delivered a package still printed "the vault
+	// carries no package spec". The result is a section of the report either
+	// way, including "nothing to do": a silent no-op is how a vault ends up
+	// carrying a spec no machine applies.
+	if e.manager != nil {
+		pkgReport, err := e.manager.ApplyPackages(ctx, opts.DryRun)
 
-		autoHandled = handled
+		report.Packages = mergePackages(report.Packages, pkgReport, err)
 	}
 
-	e.refreshBundles(ctx, st, report, opts, autoHandled)
+	e.renderCanonPackage(ctx, report, opts)
+
+	// The canon the farm becomes is published here: the package it comes from
+	// is rendered just above, and the library applies it in the same pass.
+	if farm != nil {
+		if err := farm.publish(ctx); err != nil {
+			report.Warnings = append(report.Warnings, "bundles: "+err.Error())
+		}
+	}
 
 	e.noteSkillReferencesIfFull(st, active, report, opts)
 
@@ -262,12 +329,126 @@ func (e *Engine) sync(ctx context.Context, opts SyncOptions) (*Report, error) {
 	return e.commitSync(ctx, st, report, opts)
 }
 
+// takeBundleFarm copies a farm an older build wrote and strips beadle's own
+// files from it, before anything this build renders can prune the directory. It
+// returns nil when there is nothing to take, and the second half of the move —
+// publishing the canon as a package — runs after the canon package is rendered.
+func (e *Engine) takeBundleFarm(st *state.State, report *Report, opts SyncOptions) *bundleFarm {
+	if e.manager == nil || opts.DryRun {
+		return nil
+	}
+
+	farm := &bundleFarm{engine: e, state: st, report: report}
+	if err := farm.take(); err != nil {
+		report.Warnings = append(report.Warnings, "bundles: "+err.Error())
+	}
+
+	return farm
+}
+
+// runSyncMigrations is the part of the sync that only reads the vault as the
+// user left it. It runs before the plugin pass on purpose: the farm migration
+// and the hook-consent migration must both see the pre-pass state, because
+// this run's own reconcile rewrites the ledger and retires what it no longer
+// finds.
+func (e *Engine) runSyncMigrations(ctx context.Context, st *state.State, report *Report, opts SyncOptions) {
+	// The farm migration runs BEFORE the plugin pass on purpose: it must see
+	// the farm exactly as the user left it, because this run's own reconcile
+	// rewrites the ledger and retires what it no longer finds. Migrating after
+	// it would migrate a ledger this process had already changed.
+	e.migrateFarm(ctx, st, report, opts)
+
+	// Hook consent moves into the plugin library the same way: before the
+	// plugin pass reads the canon, so the pass already sees the library's
+	// answer, and never before the user is told about it.
+	if !opts.DryRun && fullForwardSync(opts) {
+		if canon, err := hooks.Load(e.vault.HooksPath()); err == nil {
+			if err := e.migratePluginHookConsent(canon, report); err != nil {
+				report.Warnings = append(report.Warnings, err.Error())
+			}
+		}
+	}
+
+	// A vault in git carries what another machine needs and nothing that is
+	// true of this one. A vault committed before those rules still tracks the
+	// library's machine-local state, and `.gitignore` alone cannot untrack a
+	// path - so the migration does it, once, and says what it stopped
+	// tracking. Nothing is committed and nothing is deleted: the files stay on
+	// this machine.
+	if !opts.DryRun && fullForwardSync(opts) {
+		untracked, err := e.vault.UntrackVergerState(ctx)
+		if err != nil {
+			report.Warnings = append(report.Warnings, err.Error())
+		} else if len(untracked) > 0 {
+			report.Notes = append(report.Notes, fmt.Sprintf(
+				"stopped tracking %d machine-local verger file(s) (they stay on this machine): %s",
+				len(untracked), strings.Join(untracked, ", ")))
+		}
+	}
+
+	if !opts.DryRun {
+		report.Warnings = append(report.Warnings, e.recordHostCLIs()...)
+	}
+}
+
+// syncKinds pulls, adopts and renders every selected kind, and reports the
+// secrets that moved into the vault store while it did.
+func (e *Engine) syncKinds(ctx context.Context, report *Report, active []*agent.Agent, st *state.State, opts SyncOptions) {
+	// A literal secret that leaves a host note is something the user has to
+	// see without asking for logs: their file was rewritten and the value now
+	// lives in the vault store. The note counts values that *entered* the
+	// store this run, so a note that is already guarded does not repeat the
+	// warning on every sync; the per-run scan stays in the log.
+	secretsBefore := len(e.secrets.Names())
+
+	for _, spec := range kind.All() {
+		if !e.config.KindEnabled(spec.ID) || !selected(opts.Kinds, spec.ID) {
+			continue
+		}
+
+		report.Kinds = append(report.Kinds, e.syncKind(ctx, spec, active, st, opts))
+	}
+
+	if stored := len(e.secrets.Names()) - secretsBefore; stored > 0 && !opts.DryRun {
+		report.Notes = append(report.Notes, fmt.Sprintf("note secrets moved to the vault store count=%d", stored))
+	}
+}
+
+// autoEnableAndRefreshBundles renders the bundles after the kinds have merged
+// the canon, so the rendered version stays stable within one sync.
+func (e *Engine) autoEnableAndRefreshBundles(ctx context.Context, active []*agent.Agent, st *state.State, report *Report, opts SyncOptions) {
+	var autoHandled map[string]bool
+
+	if e.autoBundles && !opts.DryRun && fullForwardSync(opts) {
+		// The unattended attempt runs after the kind loop: the bundle then
+		// renders from the merged canon (host edits were adopted first) and
+		// from the same host state refresh will see, so the rendered version
+		// stays stable within the sync.
+		handled, err := e.autoEnableBundles(ctx, active, st, report)
+		if err != nil {
+			report.Warnings = append(report.Warnings, "bundles: "+err.Error())
+		}
+
+		autoHandled = handled
+	}
+
+	e.refreshBundles(ctx, st, report, opts, autoHandled)
+}
+
 func (e *Engine) commitSync(ctx context.Context, st *state.State, report *Report, opts SyncOptions) (*Report, error) {
 	if err := e.secrets.Save(); err != nil {
 		return report, err
 	}
 
 	e.pruneSkillTrees(st)
+
+	// The record this run is about to save is this machine's: the bases written
+	// above describe what this run wrote to this machine's host directories,
+	// and the stamp is what makes the next run on this machine able to read
+	// them as its own.
+	if e.home != "" {
+		st.Home = e.home
+	}
 
 	if err := st.Save(e.vault.StatePath()); err != nil {
 		return report, err
@@ -346,7 +527,13 @@ func (e *Engine) approveCanonHooks(report *Report) {
 
 	var approved []string
 
-	for name := range canon {
+	for name, hook := range canon {
+		// A plugin hook is the library's to approve; beadle's own list never
+		// takes it, and the v3 auto-approval must not put it back.
+		if _, fromPlugin := hook.PluginKey(); fromPlugin {
+			continue
+		}
+
 		if e.config.HookApproved(name) {
 			continue
 		}

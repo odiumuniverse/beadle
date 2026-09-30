@@ -14,8 +14,8 @@ func newSecretsVault(t *testing.T) string {
 	home := t.TempDir()
 
 	t.Setenv("HOME", home)
-	t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
-	t.Setenv("XDG_CONFIG_HOME", "")
+
+	isolateTestRoots(t)
 
 	if _, err := runCLI(t, "init"); err != nil {
 		t.Fatalf("init: %v", err)

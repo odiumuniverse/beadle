@@ -3,14 +3,16 @@ package agent
 import (
 	"path/filepath"
 
+	"github.com/odiumuniverse/verger/pkg/hostpath"
+
 	"github.com/odiumuniverse/beadle/pkg/config"
 )
 
-// Kilo path layout (Kilo CLI 1.0, an OpenCode fork). The host code reads
-// skills from {configDir}/{skill,skills}, where configDir is ~/.config/kilo
-// (KILO_CONFIG_DIR can move it); the docs name ~/.kilo/skills. Agent and
-// command files use the same singular/plural pairs ({agent,agents} and
-// {command,commands}) and are pinned here for the future kinds (A-28/A-29).
+// Kilo path layout (Kilo CLI 1.0, an OpenCode fork). Every path comes from
+// verger's shared resolver (D-C): KILO_CONFIG_DIR, then XDG_CONFIG_HOME, then
+// <home>/.config/kilo, with the host's own singular/plural read pairs. The
+// directory names below are the host's own and stay here only as documentation
+// of what the resolver returns.
 const (
 	kiloSkillsDirName   = "skills"
 	kiloSkillDirName    = "skill"
@@ -20,16 +22,28 @@ const (
 	kiloCommandDirName  = "command"
 )
 
-// KiloConfigDir is the global config directory the Kilo host code resolves
-// (~/.config/kilo).
+// KiloConfigDir is the global config directory the Kilo host code resolves.
+// KILO_CONFIG_DIR wins, then XDG_CONFIG_HOME, then <home>/.config/kilo.
 func KiloConfigDir(home string) string {
-	return filepath.Join(home, ".config", "kilo")
+	return roots(hostpath.Kilo, home).ConfigRoot
+}
+
+// KiloConfigRoots lists every config root Kilo still reads, the write target
+// first. With KILO_CONFIG_DIR set the host reads that root AND the effective
+// XDG root, which a first-non-empty-wins chain cannot express.
+func KiloConfigRoots(home string) []string {
+	resolved := surfaces(hostpath.Kilo, home)
+	if len(resolved.ConfigReads) > 0 {
+		return resolved.ConfigReads
+	}
+
+	return []string{roots(hostpath.Kilo, home).ConfigRoot}
 }
 
 // KiloSkillsDir is the canonical Kilo skills write target: the plural
 // directory inside the config directory the host code reads.
 func KiloSkillsDir(home string) string {
-	return filepath.Join(KiloConfigDir(home), kiloSkillsDirName)
+	return surfaces(hostpath.Kilo, home).Skills
 }
 
 // KiloSkillReadDirs lists every global directory Kilo can read skills from,
@@ -37,12 +51,7 @@ func KiloSkillsDir(home string) string {
 // {configDir}/{skill,skills}; ~/.kilo/{skills,skill} is the path the Kilo
 // docs name and older copies may live there.
 func KiloSkillReadDirs(home string) []string {
-	return []string{
-		KiloSkillsDir(home),
-		filepath.Join(KiloConfigDir(home), kiloSkillDirName),
-		filepath.Join(home, ".kilo", kiloSkillsDirName),
-		filepath.Join(home, ".kilo", kiloSkillDirName),
-	}
+	return surfaces(hostpath.Kilo, home).SkillsReads
 }
 
 // KiloAgentDirs lists the global directories Kilo reads agent markdown files
@@ -50,19 +59,13 @@ func KiloSkillReadDirs(home string) []string {
 // a future task (A-28); the paths are pinned here so the adapter and its
 // tests share one definition.
 func KiloAgentDirs(home string) []string {
-	return []string{
-		filepath.Join(KiloConfigDir(home), kiloAgentsDirName),
-		filepath.Join(KiloConfigDir(home), kiloAgentDirName),
-	}
+	return surfaces(hostpath.Kilo, home).AgentsReads
 }
 
 // KiloCommandDirs lists the global directories Kilo reads command markdown
 // files from: the host code globs {command,commands}/**/*.md (A-29).
 func KiloCommandDirs(home string) []string {
-	return []string{
-		filepath.Join(KiloConfigDir(home), kiloCommandsDirName),
-		filepath.Join(KiloConfigDir(home), kiloCommandDirName),
-	}
+	return surfaces(hostpath.Kilo, home).CommandsReads
 }
 
 // kiloSkillsSurface is the Kilo skills surface. Beadle reads every directory
@@ -79,11 +82,15 @@ func KiloCommandDirs(home string) []string {
 // global config directory, so the winner between the two awaits a live probe
 // (COVERAGE A-35).
 func kiloSkillsSurface(home string) *skillsSurface {
-	readOrder := append(KiloSkillReadDirs(home), filepath.Join(home, ".agents", "skills"))
+	resolved := surfaces(hostpath.Kilo, home)
+	hub := filepath.Join(sharedAgentsDir(hostpath.Kilo, home), "skills")
+	readOrder := make([]string, 0, len(resolved.SkillsReads)+1)
+	readOrder = append(readOrder, resolved.SkillsReads...)
+	readOrder = append(readOrder, hub)
 
 	return &skillsSurface{
 		dir:         readOrder[0],
-		ignoreUnder: []string{filepath.Join(home, ".claude", "plugins")},
+		ignoreUnder: resolved.IgnoreRoots,
 		alsoReads:   readOrder[1:],
 		shadowing:   true,
 		readOrder:   readOrder,

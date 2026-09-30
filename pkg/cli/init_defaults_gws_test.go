@@ -40,12 +40,8 @@ func TestInitEnablesProjectFilesInGitRepo(t *testing.T) {
 			t.Fatalf("git init: %v: %s", err, out)
 		}
 
-		projectAutoEnable = true
-
-		t.Cleanup(func() { projectAutoEnable = false })
-
 		Convey("When init runs", func() {
-			out, err := gwsRun(t, "init")
+			out, err := gwsRunProjects(t, "init")
 			So(err, ShouldBeNil)
 
 			Convey("Then the present files are enabled with secrets kept out", func() {
@@ -83,12 +79,8 @@ func TestInitLeavesPlainDirectoryAlone(t *testing.T) {
 
 		gwsWrite(t, filepath.Join(dir, "AGENTS.md"), "# not a repo\n")
 
-		projectAutoEnable = true
-
-		t.Cleanup(func() { projectAutoEnable = false })
-
 		Convey("When init runs", func() {
-			out, err := gwsRun(t, "init")
+			out, err := gwsRunProjects(t, "init")
 			So(err, ShouldBeNil)
 
 			Convey("Then no project file is enabled", func() {

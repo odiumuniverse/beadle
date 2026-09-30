@@ -1,10 +1,8 @@
 package cli
 
 import (
-	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -12,40 +10,6 @@ import (
 )
 
 const nitsSecret = "ghp_abcdefghijklmnopqrstuvwxyz012345"
-
-func captureLogs(t *testing.T, fn func() (string, error)) (string, error) {
-	t.Helper()
-
-	old := os.Stdout
-
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	os.Stdout = writer
-
-	done := make(chan string, 1)
-
-	go func() {
-		data, _ := io.ReadAll(reader)
-		done <- string(data)
-	}()
-
-	_, runErr := fn()
-
-	_ = writer.Close()
-
-	os.Stdout = old
-
-	captured := <-done
-
-	_ = reader.Close()
-
-	return ansiPattern.ReplaceAllString(captured, ""), runErr
-}
-
-var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func TestDoctorDoesNotClaimSecretMove(t *testing.T) {
 	Convey("Given a memory note with a secret-like line", t, func() {
@@ -57,22 +21,39 @@ func TestDoctorDoesNotClaimSecretMove(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		// A memory is delivered to an agent that is enabled, so with no
+		// agent enabled the sync has nowhere to put the note: nothing is
+		// moved and the count below would be 0 for a reason that has
+		// nothing to do with secrets. Enabling one makes the assertion
+		// about the secret actually able to fail.
+		if _, err := gwsRun(t, "agents", "enable", "claude"); err != nil {
+			t.Fatal(err)
+		}
+
+		// beadle's notices travel on the command's own stderr, not on the
+		// process os.Stderr, so they are read through the command's
+		// streams. Piping os.Stderr captured nothing and made "never claims"
+		// pass against an empty string.
 		Convey("When doctor runs", func() {
-			logs, err := captureLogs(t, func() (string, error) { return gwsRun(t, "doctor") })
+			stdout, stderr, err := gwsRunSplit(t, "doctor")
 			So(err, ShouldBeNil)
 
 			Convey("Then it never claims a secret move", func() {
-				So(logs, ShouldNotContainSubstring, "moved to the vault store")
+				So(stdout+stderr, ShouldNotContainSubstring, "moved to the vault store")
 			})
 		})
 
+		// The move reaches the user as a note on the report, and the report
+		// is what sync prints, so this is stdout. The logger's own copy of
+		// the sentence is not what the user reads, and asserting on it
+		// would test the log line rather than the promise.
 		Convey("When sync runs", func() {
-			logs, err := captureLogs(t, func() (string, error) { return gwsRun(t, "sync") })
+			stdout, _, err := gwsRunSplit(t, "sync")
 			So(err, ShouldBeNil)
 
 			Convey("Then it reports the move once with a count", func() {
-				So(strings.Count(logs, "moved to the vault store"), ShouldEqual, 1)
-				So(logs, ShouldContainSubstring, "count=1")
+				So(strings.Count(stdout, "moved to the vault store"), ShouldEqual, 1)
+				So(stdout, ShouldContainSubstring, "count=1")
 			})
 		})
 	})

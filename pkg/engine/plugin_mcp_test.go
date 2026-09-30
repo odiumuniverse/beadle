@@ -25,10 +25,6 @@ func writeMCPServers(t *testing.T, pluginDir, content string) {
 	write(t, filepath.Join(pluginDir, ".mcp.json"), content)
 }
 
-func pluginPivot(f *fixture, marketplace, name string) string {
-	return filepath.Join(f.vault.PluginsDir(), marketplace, name, "current")
-}
-
 func hostMCPServers(t *testing.T, path, pointer string) map[string]map[string]any {
 	t.Helper()
 
@@ -103,7 +99,7 @@ func TestPluginMCPRendersIntoHosts(t *testing.T) {
 
 		f.sync(t)
 
-		pivot := pluginPivot(f, "acme", "tool")
+		install := plugin
 
 		claude := hostMCPServers(t, f.claudeConfig(), "mcpServers")
 		env, ok := claude["plug"]["env"].(map[string]any)
@@ -123,16 +119,16 @@ func TestPluginMCPRendersIntoHosts(t *testing.T) {
 				So(report, ShouldNotBeNil)
 				So(report.Kind(kind.MCP).Warnings, ShouldBeEmpty)
 
-				So(claude["plug"]["command"], ShouldEqual, pivot+"/bin/plug")
-				So(claude["plug"]["args"], ShouldResemble, []any{"serve", pivot})
-				So(env["ROOT"], ShouldEqual, pivot)
+				So(claude["plug"]["command"], ShouldEqual, install+"/bin/plug")
+				So(claude["plug"]["args"], ShouldResemble, []any{"serve", install})
+				So(env["ROOT"], ShouldEqual, install)
 
 				So(claude["web"]["type"], ShouldEqual, "http")
 				So(claude["web"]["url"], ShouldEqual, "https://example.com/mcp")
 				So(claude["events"]["type"], ShouldEqual, "sse")
 
 				So(openCode["plug"]["type"], ShouldEqual, "local")
-				So(openCode["plug"]["command"], ShouldResemble, []any{pivot + "/bin/plug", "serve", pivot})
+				So(openCode["plug"]["command"], ShouldResemble, []any{install + "/bin/plug", "serve", install})
 				So(openCode["web"]["type"], ShouldEqual, "remote")
 				So(openCode["events"]["type"], ShouldEqual, "remote")
 
@@ -162,8 +158,6 @@ func TestPluginMCPSurvivesUpgrade(t *testing.T) {
 
 		f.sync(t)
 
-		pivot := pluginPivot(f, "acme", "tool")
-
 		upgraded := codexPluginTree(t, f.home, "acme", "tool", "2.0.0")
 		writeMCPServers(t, upgraded, `{"mcpServers": {"plug": {"command": "${CLAUDE_PLUGIN_ROOT}/bin/plug", "args": ["v2"]}}}`)
 
@@ -174,13 +168,13 @@ func TestPluginMCPSurvivesUpgrade(t *testing.T) {
 		report := f.sync(t)
 
 		Convey("When the upgraded content resolves", func() {
-			Convey("Then the pivot path is stable and the server updates", func() {
-				So(hostMCPServers(t, f.claudeConfig(), "mcpServers")["plug"]["command"], ShouldEqual, pivot+"/bin/plug")
+			Convey("Then the command follows the installed version and the name is kept", func() {
+				So(hostMCPServers(t, f.claudeConfig(), "mcpServers")["plug"]["command"], ShouldEqual, upgraded+"/bin/plug")
 				So(ledgerServers(t, f, "acme/tool"), ShouldResemble, []string{"plug"})
 
-				So(claude["plug"]["command"], ShouldEqual, pivot+"/bin/plug")
+				So(claude["plug"]["command"], ShouldEqual, upgraded+"/bin/plug")
 				So(claude["plug"]["args"], ShouldResemble, []any{"v2"})
-				So(read(t, filepath.Join(pivot, ".mcp.json")), ShouldContainSubstring, `"v2"`)
+				So(read(t, filepath.Join(upgraded, ".mcp.json")), ShouldContainSubstring, `"v2"`)
 				So(report.Action(kind.MCP, agent.ClaudeCodeID), ShouldEqual, engine.ActionNoop)
 			})
 		})
@@ -306,7 +300,7 @@ func TestPluginMCPUserEditNotAdopted(t *testing.T) {
 
 		Convey("When it re-renders", func() {
 			Convey("Then the plugin server is restored and never adopted", func() {
-				So(claude["plug"]["command"], ShouldEqual, pluginPivot(f, "acme", "tool")+"/bin/plug")
+				So(claude["plug"]["command"], ShouldEqual, plugin+"/bin/plug")
 
 				_, canonErr := os.Stat(f.vault.ServersPath())
 				So(errors.Is(canonErr, fs.ErrNotExist), ShouldBeTrue)
@@ -589,7 +583,6 @@ func TestPluginMCPBundlePluginIsCanonOnly(t *testing.T) {
 				_, hasGhost := claude["ghost"]
 				So(hasGhost, ShouldBeFalse)
 				So(warnedAbout(report, "ghost"), ShouldBeFalse)
-				So(read(t, f.vault.PluginsLedgerPath()), ShouldNotContainSubstring, "beadle-canon")
 			})
 		})
 	})

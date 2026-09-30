@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,16 +26,50 @@ func (fakeDaemonChecker) Run(string, []string, []byte) ([]byte, int, error) {
 	return nil, 1, nil
 }
 
-// TestMain turns the unattended defaults off for the suite: every test runs
-// against a temp home, and a default must not reach the developer's machine
-// (host CLIs, launchctl/systemctl) or enable the project files of the beadle
-// checkout itself. The defaults have their own tests, which opt back in.
-func TestMain(m *testing.M) {
-	bundleAutoEnable = false
-	projectAutoEnable = false
-	daemonInstallRunner = func(context.Context, string, ...string) error { return nil }
-	daemonCheckRunner = fakeDaemonChecker{}
+// captureLogs captures the process stderr, for the tests that build an app
+// directly and point its errOut at os.Stderr. A command run through gwsRun has
+// its own stderr buffer instead, and those tests read that.
+func captureLogs(t *testing.T, fn func() (string, error)) (string, error) {
+	t.Helper()
 
+	old := os.Stderr
+
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	os.Stderr = writer
+
+	done := make(chan string, 1)
+
+	go func() {
+		data, _ := io.ReadAll(reader)
+		done <- string(data)
+	}()
+
+	_, runErr := fn()
+
+	_ = writer.Close()
+
+	// The captured stream is stderr, so stderr is what goes back. Restoring
+	// stdout here left the process writing to a closed pipe for the rest of
+	// the run and swallowed the test reporter's own output.
+	os.Stderr = old
+
+	captured := <-done
+
+	_ = reader.Close()
+
+	return captured, runErr
+}
+
+// TestMain pins the environment for the suite: every test runs against a temp
+// home, and a default must not reach the developer's machine (host CLIs,
+// launchctl/systemctl) or enable the project files of the beadle checkout
+// itself. The unattended defaults themselves are per-app now (see testOptions),
+// and the tests that exercise a default ask for it in their own run.
+func TestMain(m *testing.M) {
 	os.Exit(isolateTestHome(m))
 }
 
@@ -147,19 +181,15 @@ func TestInitAutoEnablesBundles(t *testing.T) {
 
 		t.Setenv("PATH", autoBinDir(t))
 
-		bundleAutoEnable = true
-
-		t.Cleanup(func() { bundleAutoEnable = false })
-
 		Convey("When init runs", func() {
-			out, err := gwsRun(t, "init")
+			out, err := gwsRunAuto(t, "init")
 			So(err, ShouldBeNil)
 
 			Convey("Then the rendered bundle and the instruction are reported", func() {
 				So(out, ShouldContainSubstring, "bundles")
 				So(out, ShouldContainSubstring, "claude")
 				So(out, ShouldContainSubstring, "(auto)")
-				So(out, ShouldContainSubstring, "generated")
+				So(out, ShouldContainSubstring, "delivered")
 				So(out, ShouldContainSubstring, "unverifiable")
 				So(out, ShouldContainSubstring, "run: claude plugin marketplace add")
 
@@ -186,12 +216,8 @@ func TestInitAutoEnableVerifiedFlipsModesInTable(t *testing.T) {
 
 		t.Setenv("PATH", claudeStubDir(t))
 
-		bundleAutoEnable = true
-
-		t.Cleanup(func() { bundleAutoEnable = false })
-
 		Convey("When init runs", func() {
-			out, err := gwsRun(t, "init")
+			out, err := gwsRunAuto(t, "init")
 			So(err, ShouldBeNil)
 
 			Convey("Then the modes table shows the bundle-managed kinds off", func() {
@@ -219,9 +245,10 @@ func TestWatchSyncLogsBundleLines(t *testing.T) {
 
 		Convey("When the background sync logs the report", func() {
 			logs, err := captureLogs(t, func() (string, error) {
-				// The app is built inside the capture: the dev logger binds
-				// os.Stdout when it is created.
-				a := &app{logger: embedlog.NewDevLogger(), errOut: os.Stderr}
+				// The app is built inside the capture: the logger binds the
+				// stream it writes to when it is created, and beadle's
+				// background lines travel on stderr.
+				a := &app{logger: embedlog.NewLogger(false, false), errOut: os.Stderr}
 
 				a.logSyncReport(t.Context(), report)
 
@@ -248,10 +275,6 @@ func TestBundlesDisablePositionalHostOptsOut(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		bundleAutoEnable = true
-
-		t.Cleanup(func() { bundleAutoEnable = false })
-
 		Convey("When disable runs with a positional host", func() {
 			out, err := gwsRun(t, "bundles", "disable", "claude")
 			So(err, ShouldBeNil)
@@ -260,6 +283,9 @@ func TestBundlesDisablePositionalHostOptsOut(t *testing.T) {
 				So(out, ShouldContainSubstring, "no enabled bundle")
 				So(loadCliState(t, home).BundleOptedOut("claude"), ShouldBeTrue)
 
+				// The scenario is clean: nothing is in conflict, so the run
+				// succeeds. What is asserted here is that no bundle was
+				// attempted, not what the run did with a conflict.
 				syncOut, err := gwsRun(t, "sync")
 				So(err, ShouldBeNil)
 				So(syncOut, ShouldNotContainSubstring, "(auto)")
@@ -296,16 +322,15 @@ func TestSyncAutoEnablesBundlesOnce(t *testing.T) {
 
 		t.Setenv("PATH", autoBinDir(t))
 
+		// "Untouched" is the premise: the init must not attempt the bundle, or
+		// the sync under test would find the attempt already recorded and have
+		// nothing to say.
 		if _, err := gwsRun(t, "init"); err != nil {
 			t.Fatal(err)
 		}
 
-		bundleAutoEnable = true
-
-		t.Cleanup(func() { bundleAutoEnable = false })
-
 		Convey("When a full sync runs", func() {
-			out, err := gwsRun(t, "sync")
+			out, err := gwsRunAuto(t, "sync")
 			So(err, ShouldBeNil)
 
 			Convey("Then the untouched host is attempted once", func() {
@@ -317,7 +342,7 @@ func TestSyncAutoEnablesBundlesOnce(t *testing.T) {
 				So(entry.AutoAttempt.Tier, ShouldEqual, state.VerifyUnverifiable)
 
 				Convey("And the next sync does not attempt again", func() {
-					again, err := gwsRun(t, "sync")
+					again, err := gwsRunAuto(t, "sync")
 					So(err, ShouldBeNil)
 					So(again, ShouldNotContainSubstring, "(auto)")
 				})

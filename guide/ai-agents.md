@@ -37,6 +37,11 @@ agent both changed the same item it records a **conflict** instead of guessing.
   own CLI. Escape hatches: `beadle kinds disable permissions`,
   `beadle agents disable shared`, `beadle bundles disable <host>`,
   `beadle project disable <file>`.
+- **A farm from an older build is named, not hidden.** When the state on disk
+  came from an older beadle and it still points at a plugin farm, `doctor`
+  reports the directory and the command that moves it; `beadle sync` then backs
+  the farm up, moves what it owns to the plugin manager, and prints one line per
+  move with the backup path. A second sync has nothing left to say.
 - **Hooks run only after a personal approve.** Plugin command hooks are scanned
   and reported as `doctor` Info; nothing is written until the human runs
   `beadle hooks approve --plugin <origin>/<name>`. The plugin's own host runs
@@ -57,6 +62,39 @@ agent both changed the same item it records a **conflict** instead of guessing.
 </important>
 
 ## Plugin flow
+
+There are two plugin surfaces, and they are not the same thing.
+
+**`beadle plugins …` is verger, embedded.** One spec, one lock, the same exit
+classes, and `beadle status` reads the same receipts any other beadle state is
+read from. Use it to install, remove, pin and inspect packages:
+
+```
+beadle plugins list --json
+beadle plugins install <ref>...
+beadle plugins remove <id>
+beadle plugins pin <marketplace>/<name> <version> --agent <id>
+beadle plugins unpin <marketplace>/<name> --agent <id>
+beadle plugins canon enable | disable
+beadle plugins eject
+```
+
+`install` and `remove` refuse to overwrite a file the human edited since it
+was delivered. `--force` is the only way past that and it is never yours to
+use on your own initiative. The `plugins` document is `beadle.plugins`.
+
+**What the library owns, beadle never touches — in either direction.** A file
+verger delivered is not a canon item: `beadle sync` neither adopts it into the
+vault nor deletes it from the host, for every kind, and the receipts under
+`<vault>/verger` are what it answers with. If you see a package's skill in
+`beadle doctor`'s "not in the vault yet" list, that is the bug this rule
+exists to prevent, not a file of yours to adopt.
+
+**The farm is beadle's own**, and is what the rest of this section is about:
+plugins already installed in a host's own directory are scanned, parked in the
+vault and presented to the other hosts. It is what feeds `bundles` and what
+`hooks approve` refers to. It is not reached through `beadle plugins`.
+
 
 A plugin installed into **any host with file-based plugins** (Claude Code, Codex, Gemini CLI
 extensions, Antigravity, Cursor, oh-my-pi) is scanned, parked in the vault and presented
@@ -99,7 +137,75 @@ collisions, canon shadows and quarantines without syncing.
    the three expected hashes (see the `beadle-conflicts` skill).
 5. `beadle doctor` — confirm nothing drifts, is refused or unapproved.
 6. `beadle guide` — this document; `beadle guide --humans` for the human guide.
+
 </workflow>
+
+## Machine contract
+
+Everything below is what lets you work without guessing. It is read off the
+built binary, not from a plan.
+
+**`--json` is global.** It works before or after the verb — `beadle --json
+status` and `beadle status --json` are the same command, and both print one
+object. The first field is always the envelope, and `schema.name` is the only
+reliable way to tell the documents apart:
+
+```
+{"schema":{"name":"beadle.status","version":1}, ...}
+```
+
+| command | `schema.name` |
+|---|---|
+| `beadle status --json` | `beadle.status` |
+| `beadle sync --json` | `beadle.sync` |
+| `beadle doctor --json` | `beadle.doctor` |
+| `beadle agents --json` | `beadle.agents` |
+| `beadle conflicts --json` | `beadle.conflicts` |
+| `beadle history <kind> --json` | `beadle.history` |
+| `beadle plugins list --json` | `beadle.plugins` |
+| `beadle bundles status --json` | `beadle.bundles` |
+
+`beadle.sync` carries one `status` per kind — `delivered`, `in sync` or
+`skipped`, the same words the human table prints — and a `detail` saying why when
+it is not `delivered`. `no_active_agents` says the run had no enabled host agent
+at all, which is why every kind is `skipped`; `notes` carries the run-level
+hints, such as the command that enables one.
+
+Switch on `schema.name`, never on the fields: a document grows fields within a
+version, so a field you read today is not the whole document. `version` is `1`
+for all of them.
+
+**Exit classes.** One code, one class, for every beadle and verger command:
+
+| code | name | what it means for you |
+|---|---|---|
+| 0 | ok | the run did what it said |
+| 1 | unexpected | an error with no more specific class — show it, do not retry blind |
+| 2 | usage | wrong flag, argument or command; nothing was written |
+| 3 | conflict | a destructive conflict the human must settle — `beadle conflicts` |
+| 4 | policy refusal | a managed-settings policy forbids it; not yours to override |
+| 5 | consent needed | a package needs approval before it runs — ask the human |
+| 6 | host unavailable | the host cannot be reached or has no schema; the rest still ran |
+| 7 | schema newer | written by a newer beadle — do not rewrite, report it |
+
+**`-y` is global** and means "answer yes to the prompts this command asks". It
+never resolves a destructive conflict and never discards a file the human
+edited. Those are class 3 and `--force` respectively, and you do not reach
+them on your own: `-y` is for the confirmations the human handed you.
+
+**Flags worth knowing before you reach for them:**
+
+- `beadle status --outdated-only` computes pending changes without writing
+  them. `--check` is the old name and still works.
+- `beadle kinds enable|disable <kind>` changes the kind's default for every
+  agent. Add `--agent <id>` to change it for named agents only, and repeat the
+  flag to reach several. Without it the default moves; with it the default is
+  left alone.
+- `beadle plugins install|remove --force` overwrites a file the human edited
+  since it was delivered. Never pass it unasked. The previous version is kept
+  under `<vault>/state/backups/<timestamp>/` and the path is printed, so it is
+  recoverable — that is not a reason to use it without a human saying so.
+- `beadle version` and `beadle --version` print the same thing.
 
 <never>
 - Never edit the vault and an agent file for the same item and then sync: one
@@ -107,7 +213,9 @@ collisions, canon shadows and quarantines without syncing.
 - Never approve a hook (or a plugin) without reading what it runs.
 - Never copy a secret value out of a config file into the vault, a note or a
   chat; use `{secret:NAME}` references.
-- Never touch files under the plugin farm by hand: beadle owns and prunes them.
+- Never touch files under the plugin farm by hand: beadle owns and prunes
+  them. The farm and `beadle plugins` are different surfaces - do not
+  "fix" a farm file with a plugins command, or the other.
 - Never resolve `permissions` or an MCP `command`/`url` without asking a human.
 - Never edit `state.json`, the conflict files or the CAS objects by hand.
 </never>

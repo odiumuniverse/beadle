@@ -73,8 +73,20 @@ func hashTree(t *testing.T, root string) string {
 	return out.String()
 }
 
-func pivotSkillsDir(f *fixture, marketplace, name string) string {
-	return filepath.Join(f.vault.PluginsDir(), marketplace, name, "current", "skills")
+// installSkillsDir is where a plugin's skills live on this machine: the host
+// cache directory the plugin manager installed them into. The farm's pivot
+// used to sit in front of it, and the migration pointed there; it points at
+// the install itself now.
+func installSkillsDir(t *testing.T, f *fixture, marketplace, name string) string {
+	t.Helper()
+
+	installs := readRegistry(t, f.home)[name+"@"+marketplace]
+	So(installs, ShouldNotBeEmpty)
+
+	path, isString := installs[0]["installPath"].(string)
+	So(isString, ShouldBeTrue)
+
+	return filepath.Join(path, "skills")
 }
 
 func TestMigrateVersionedLinks(t *testing.T) {
@@ -100,10 +112,10 @@ func TestMigrateVersionedLinks(t *testing.T) {
 
 		brewBefore := hashTree(t, filepath.Join(f.home, "brew"))
 
-		results, err := f.engine.Heal(t.Context(), false)
+		results, err := f.engine.MigrateHostSkills(t.Context(), false)
 		So(err, ShouldBeNil)
 
-		pivot := pivotSkillsDir(f, "acme", "tool")
+		skills := installSkillsDir(t, f, "acme", "tool")
 
 		Convey("When heal migrates", func() {
 			alphaLink, err := os.Readlink(filepath.Join(dir, "alpha"))
@@ -115,15 +127,19 @@ func TestMigrateVersionedLinks(t *testing.T) {
 			brewLink, err := os.Readlink(filepath.Join(dir, "brew"))
 			So(err, ShouldBeNil)
 
-			resultsAgain, err := f.engine.Heal(t.Context(), false)
+			resultsAgain, err := f.engine.MigrateHostSkills(t.Context(), false)
 
 			So(results, ShouldHaveLength, 1)
 			So(results[0].Key, ShouldEqual, "acme/tool")
-			So(results[0].Migrated, ShouldEqual, 2)
 
-			So(alphaLink, ShouldEqual, filepath.Join(pivot, "alpha"))
+			// Only the link that pointed at a version the plugin no longer has
+			// moved; the other already points at the install the plugin manager
+			// keeps, so it is left exactly as the user had it.
+			So(results[0].Migrated, ShouldEqual, 1)
+
+			So(alphaLink, ShouldEqual, plugin+"/skills/alpha/")
 			So(read(t, filepath.Join(dir, "alpha", "SKILL.md")), ShouldEqual, "# alpha\n")
-			So(betaLink, ShouldEqual, filepath.Join(pivot, "beta"))
+			So(betaLink, ShouldEqual, filepath.Join(skills, "beta"))
 			So(read(t, filepath.Join(dir, "beta", "SKILL.md")), ShouldEqual, "# beta\n")
 
 			Convey("Then foreign links stay and a repeated heal is a noop", func() {
@@ -150,29 +166,41 @@ func TestMigrateOwnerGate(t *testing.T) {
 		second := pluginTree(t, f.home, "bbb", "second", "1.0.0")
 		writeSkill(t, second, "shared", "# second\n")
 
-		dir := claudeSkillsDir(f.home)
-		versionedLink(t, dir, "shared-a", first+"/skills/shared/")
-		versionedLink(t, dir, "shared-b", second+"/skills/shared/")
+		f.sync(t)
+
+		// Two hosts hold the same skill as a fork - a real directory with the
+		// plugin's content. A link straight into the plugin's own install is
+		// already where it belongs and stays untouched, so the owner gate is
+		// seen on forks, one per host.
+		claudeDir := claudeSkillsDir(f.home)
+		write(t, filepath.Join(claudeDir, "shared", "SKILL.md"), read(t, filepath.Join(first, "skills", "shared", "SKILL.md")))
+
+		openDir := openCodeSkillsDir(f.home)
+		write(t, filepath.Join(openDir, "shared", "SKILL.md"), read(t, filepath.Join(second, "skills", "shared", "SKILL.md")))
 
 		f.sync(t)
 
-		results, err := f.engine.Heal(t.Context(), false)
+		results, err := f.engine.MigrateHostSkills(t.Context(), false)
 		So(err, ShouldBeNil)
 
-		Convey("When heal runs", func() {
-			link, err := os.Readlink(filepath.Join(dir, "shared-b"))
+		Convey("When the migration runs", func() {
+			link, err := os.Readlink(filepath.Join(claudeDir, "shared"))
 			So(err, ShouldBeNil)
 
-			linkA, err := os.Readlink(filepath.Join(dir, "shared-a"))
-			So(err, ShouldBeNil)
-
-			Convey("Then only the owner migrates and the loser is left alone", func() {
+			Convey("Then the fork of the owning plugin migrates", func() {
 				So(results, ShouldHaveLength, 1)
 				So(results[0].Key, ShouldEqual, "aaa/first")
 				So(results[0].Migrated, ShouldEqual, 1)
 
-				So(link, ShouldEqual, second+"/skills/shared/")
-				So(linkA, ShouldEqual, filepath.Join(pivotSkillsDir(f, "aaa", "first"), "shared"))
+				// One row per plugin: the second host's copy of the same skill
+				// is the owner's plugin too, so its refusal is named here.
+				So(results[0].Note, ShouldContainSubstring, "drifted copy of aaa/first")
+
+				So(link, ShouldEqual, filepath.Join(installSkillsDir(t, f, "aaa", "first"), "shared"))
+			})
+
+			Convey("And the other host's diverged copy is kept where it is", func() {
+				So(read(t, filepath.Join(openDir, "shared", "SKILL.md")), ShouldEqual, "# second\n")
 			})
 		})
 	})
@@ -194,7 +222,7 @@ func TestMigrateKeepsUnresolvableLink(t *testing.T) {
 
 			f.sync(t)
 
-			results, err := f.engine.Heal(t.Context(), false)
+			results, err := f.engine.MigrateHostSkills(t.Context(), false)
 			So(err, ShouldBeNil)
 
 			link, err := os.Readlink(filepath.Join(dir, "ghost"))
@@ -203,7 +231,9 @@ func TestMigrateKeepsUnresolvableLink(t *testing.T) {
 			issues, err := f.engine.Doctor(t.Context())
 			So(err, ShouldBeNil)
 
-			So(results, ShouldBeEmpty)
+			So(results, ShouldHaveLength, 1)
+			So(results[0].Migrated, ShouldEqual, 0)
+			So(results[0].Note, ShouldContainSubstring, "no longer offers skill ghost")
 			So(link, ShouldEqual, plugin+"/skills/ghost/")
 			So(hasIssue(issues, engine.SeverityWarn, "skill ghost points into the plugin cache"), ShouldBeTrue)
 		})
@@ -225,7 +255,7 @@ func TestMigrateKeepsUnresolvableLink(t *testing.T) {
 			dir := claudeSkillsDir(f.home)
 			versionedLink(t, dir, "ghost", plugin+"/skills/alpha/")
 
-			results, err := f.engine.Heal(t.Context(), false)
+			results, err := f.engine.MigrateHostSkills(t.Context(), false)
 			So(err, ShouldBeNil)
 
 			link, err := os.Readlink(filepath.Join(dir, "ghost"))
@@ -234,10 +264,15 @@ func TestMigrateKeepsUnresolvableLink(t *testing.T) {
 			issues, err := f.engine.Doctor(t.Context())
 			So(err, ShouldBeNil)
 
-			So(results, ShouldBeEmpty)
+			So(results, ShouldHaveLength, 1)
+			So(results[0].Migrated, ShouldEqual, 0)
+			So(results[0].Note, ShouldContainSubstring, "is not parked")
 			So(link, ShouldEqual, plugin+"/skills/alpha/")
 			So(hasIssue(issues, engine.SeverityWarn, "plugin acme/tool is not parked"), ShouldBeTrue)
-			So(hasIssue(issues, engine.SeverityError, "broken symlink: "+filepath.Join(dir, "ghost")), ShouldBeFalse)
+			// The plugin is gone, so the link dangles: with the farm gone there
+			// is no exemption for a link into the cache - a broken link is a
+			// broken link.
+			So(hasIssue(issues, engine.SeverityError, "broken symlink: "+filepath.Join(dir, "ghost")), ShouldBeTrue)
 		})
 	})
 }
@@ -258,7 +293,7 @@ func TestMigrateIdenticalFork(t *testing.T) {
 		So(os.RemoveAll(filepath.Join(dir, "alpha")), ShouldBeNil)
 		write(t, filepath.Join(dir, "alpha", "SKILL.md"), "# alpha\n")
 
-		results, err := f.engine.Heal(t.Context(), false)
+		results, err := f.engine.MigrateHostSkills(t.Context(), false)
 		So(err, ShouldBeNil)
 
 		link, err := os.Readlink(filepath.Join(dir, "alpha"))
@@ -271,13 +306,13 @@ func TestMigrateIdenticalFork(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		Convey("When heal migrates", func() {
-			Convey("Then the fork is replaced by a pivot link with no aside copies", func() {
+			Convey("Then the fork is replaced by a link to the install with no aside copies", func() {
 				So(results, ShouldHaveLength, 1)
 				So(results[0].Key, ShouldEqual, "acme/tool")
 				So(results[0].Migrated, ShouldEqual, 1)
 				So(results[0].Note, ShouldBeEmpty)
 
-				So(link, ShouldEqual, filepath.Join(pivotSkillsDir(f, "acme", "tool"), "alpha"))
+				So(link, ShouldEqual, filepath.Join(installSkillsDir(t, f, "acme", "tool"), "alpha"))
 				So(read(t, filepath.Join(dir, "alpha", "SKILL.md")), ShouldEqual, "# alpha\n")
 				So(entries, ShouldBeEmpty)
 				So(links, ShouldBeEmpty)
@@ -312,7 +347,7 @@ func TestMigrateForkAsideConflict(t *testing.T) {
 		claudeDir := claudeSkillsDir(f.home)
 		versionedLink(t, claudeDir, "beta", plugin+"/skills/beta/")
 
-		results, err := f.engine.Heal(t.Context(), false)
+		results, err := f.engine.MigrateHostSkills(t.Context(), false)
 		So(err, ShouldBeNil)
 
 		fork := filepath.Join(dir, "alpha")
@@ -321,8 +356,7 @@ func TestMigrateForkAsideConflict(t *testing.T) {
 
 		Convey("When heal runs", func() {
 			Convey("Then the aside conflict is noted and the fork stays a directory", func() {
-				So(results, ShouldHaveLength, 1)
-				So(results[0].Migrated, ShouldEqual, 1)
+				So(results[0].Migrated, ShouldEqual, 0)
 				So(results[0].Note, ShouldContainSubstring, "cannot replace "+fork)
 				So(results[0].Note, ShouldNotContainSubstring, "restored")
 
@@ -349,7 +383,7 @@ func TestMigrateIdenticalForkBeforeSync(t *testing.T) {
 
 		f.sync(t)
 
-		results, err := f.engine.Heal(t.Context(), false)
+		results, err := f.engine.MigrateHostSkills(t.Context(), false)
 		So(err, ShouldBeNil)
 
 		link, err := os.Readlink(filepath.Join(dir, "alpha"))
@@ -367,7 +401,7 @@ func TestMigrateIdenticalForkBeforeSync(t *testing.T) {
 				// so it never held a farm link there).
 				So(results[0].Migrated, ShouldEqual, 2)
 
-				So(link, ShouldEqual, filepath.Join(pivotSkillsDir(f, "acme", "tool"), "alpha"))
+				So(link, ShouldEqual, filepath.Join(installSkillsDir(t, f, "acme", "tool"), "alpha"))
 				So(read(t, f.vaultSkill("alpha")), ShouldEqual, "# alpha\n")
 			})
 		})
@@ -389,7 +423,7 @@ func TestMigrateDriftedForkBeforeSyncKeepsAndWarns(t *testing.T) {
 
 		f.sync(t)
 
-		results, err := f.engine.Heal(t.Context(), false)
+		results, err := f.engine.MigrateHostSkills(t.Context(), false)
 		So(err, ShouldBeNil)
 
 		info, err := os.Lstat(filepath.Join(dir, "alpha"))
@@ -400,7 +434,9 @@ func TestMigrateDriftedForkBeforeSyncKeepsAndWarns(t *testing.T) {
 
 		Convey("When heal runs", func() {
 			Convey("Then a drifted fork stays and warns", func() {
-				So(results, ShouldBeEmpty)
+				So(results, ShouldHaveLength, 1)
+				So(results[0].Migrated, ShouldEqual, 0)
+				So(results[0].Note, ShouldContainSubstring, "drifted copy of acme/tool")
 				So(info.Mode()&fs.ModeSymlink, ShouldEqual, fs.FileMode(0))
 				So(read(t, filepath.Join(dir, "alpha", "SKILL.md")), ShouldEqual, "# alphA\n")
 				So(hasIssue(issues, engine.SeverityWarn, "skill alpha looks like a drifted copy of acme/tool"), ShouldBeTrue)
@@ -433,7 +469,7 @@ func TestMigrateIdenticalForkDivergedCanonKeepsBoth(t *testing.T) {
 		claudeDir := claudeSkillsDir(f.home)
 		versionedLink(t, claudeDir, "beta", plugin+"/skills/beta/")
 
-		results, err := f.engine.Heal(t.Context(), false)
+		results, err := f.engine.MigrateHostSkills(t.Context(), false)
 		So(err, ShouldBeNil)
 
 		fork := filepath.Join(dir, "alpha")
@@ -446,7 +482,7 @@ func TestMigrateIdenticalForkDivergedCanonKeepsBoth(t *testing.T) {
 		Convey("When heal runs", func() {
 			Convey("Then both copies are kept and it warns about the divergence", func() {
 				So(results, ShouldHaveLength, 1)
-				So(results[0].Migrated, ShouldEqual, 1)
+				So(results[0].Migrated, ShouldEqual, 0)
 				So(results[0].Note, ShouldContainSubstring, "matches acme/tool but the vault copy differs; keeping both")
 
 				So(info.Mode()&fs.ModeSymlink, ShouldEqual, fs.FileMode(0))
@@ -507,14 +543,16 @@ func TestMigrateForkExtrasKeep(t *testing.T) {
 
 				before := hashTree(t, fork)
 
-				results, err := f.engine.Heal(t.Context(), false)
+				results, err := f.engine.MigrateHostSkills(t.Context(), false)
 				So(err, ShouldBeNil)
 
 				info, err := os.Lstat(fork)
 				So(err, ShouldBeNil)
 
 				Convey("Then the whole fork is kept", func() {
-					So(results, ShouldBeEmpty)
+					So(results, ShouldHaveLength, 1)
+					So(results[0].Migrated, ShouldEqual, 0)
+					So(results[0].Note, ShouldContainSubstring, "drifted copy of acme/tool")
 					So(hashTree(t, fork), ShouldEqual, before)
 					So(info.Mode()&fs.ModeSymlink, ShouldEqual, fs.FileMode(0))
 				})
@@ -543,7 +581,7 @@ func TestMigrateDriftedForkKept(t *testing.T) {
 
 		before := hashTree(t, fork)
 
-		results, err := f.engine.Heal(t.Context(), false)
+		results, err := f.engine.MigrateHostSkills(t.Context(), false)
 		So(err, ShouldBeNil)
 
 		issues, err := f.engine.Doctor(t.Context())
@@ -551,7 +589,9 @@ func TestMigrateDriftedForkKept(t *testing.T) {
 
 		Convey("When heal runs", func() {
 			Convey("Then the fork stays byte-identical and warns", func() {
-				So(results, ShouldBeEmpty)
+				So(results, ShouldHaveLength, 1)
+				So(results[0].Migrated, ShouldEqual, 0)
+				So(results[0].Note, ShouldContainSubstring, "drifted copy of acme/tool")
 				So(hashTree(t, fork), ShouldEqual, before)
 				So(hasIssue(issues, engine.SeverityWarn, "skill alpha looks like a drifted copy of acme/tool"), ShouldBeTrue)
 			})
@@ -576,7 +616,7 @@ func TestMigrateForeignDirUntouched(t *testing.T) {
 
 		before := hashTree(t, foreign)
 
-		results, err := f.engine.Heal(t.Context(), false)
+		results, err := f.engine.MigrateHostSkills(t.Context(), false)
 		So(err, ShouldBeNil)
 
 		Convey("When heal runs", func() {
@@ -606,7 +646,7 @@ func TestMigrateDryRunAndNoDirs(t *testing.T) {
 
 		before := hashTree(t, dir)
 
-		results, err := f.engine.Heal(t.Context(), true)
+		results, err := f.engine.MigrateHostSkills(t.Context(), true)
 		So(err, ShouldBeNil)
 
 		Convey("When a dry run runs", func() {
@@ -620,7 +660,7 @@ func TestMigrateDryRunAndNoDirs(t *testing.T) {
 		Convey("When the host directory is missing and a real heal runs", func() {
 			So(os.RemoveAll(claudeSkillsDir(f.home)), ShouldBeNil)
 
-			resultsReal, err := f.engine.Heal(t.Context(), false)
+			resultsReal, err := f.engine.MigrateHostSkills(t.Context(), false)
 			So(err, ShouldBeNil)
 
 			_, claudeErr := os.Stat(claudeSkillsDir(f.home))
@@ -650,12 +690,12 @@ func TestMigrateNoopAfterHeal(t *testing.T) {
 		So(os.RemoveAll(filepath.Join(dir, "alpha")), ShouldBeNil)
 		write(t, filepath.Join(dir, "alpha", "SKILL.md"), "# alpha\n")
 
-		results, err := f.engine.Heal(t.Context(), false)
+		results, err := f.engine.MigrateHostSkills(t.Context(), false)
 		So(err, ShouldBeNil)
 		So(results, ShouldHaveLength, 1)
 
 		Convey("When heal and sync run again", func() {
-			resultsAgain, err := f.engine.Heal(t.Context(), false)
+			resultsAgain, err := f.engine.MigrateHostSkills(t.Context(), false)
 			So(err, ShouldBeNil)
 
 			report := f.sync(t)
@@ -667,7 +707,6 @@ func TestMigrateNoopAfterHeal(t *testing.T) {
 				So(results[0].Migrated, ShouldEqual, 1)
 				So(resultsAgain, ShouldBeEmpty)
 
-				So(report.Farm, ShouldBeEmpty)
 				So(report.Action(kind.Skills, agent.ClaudeCodeID), ShouldEqual, engine.ActionNoop)
 				So(entries, ShouldBeEmpty)
 			})
@@ -701,14 +740,14 @@ func TestHealReportsMigration(t *testing.T) {
 		So(os.RemoveAll(filepath.Join(openCodeDir, "beta")), ShouldBeNil)
 		write(t, filepath.Join(openCodeDir, "beta", "SKILL.md"), "# betA\n")
 
-		results, err := f.engine.Heal(t.Context(), false)
+		results, err := f.engine.MigrateHostSkills(t.Context(), false)
 		So(err, ShouldBeNil)
 
 		Convey("When heal runs", func() {
 			Convey("Then the migration and the drift note are reported", func() {
 				So(results, ShouldHaveLength, 1)
 				So(results[0].Key, ShouldEqual, "acme/tool")
-				So(results[0].Migrated, ShouldEqual, 2)
+				So(results[0].Migrated, ShouldEqual, 1)
 				So(results[0].Note, ShouldContainSubstring, "drifted copy of acme/tool; keeping the local version")
 			})
 		})
@@ -771,13 +810,14 @@ func TestDoctorPluginMigrationIssues(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		Convey("When doctor runs", func() {
-			So(hasIssue(issues, engine.SeverityWarn, "skill alpha points into the plugin cache"), ShouldBeTrue)
-			So(hasIssue(issues, engine.SeverityWarn, "run beadle heal"), ShouldBeTrue)
+			// A link that resolves into the plugin's own cache is where it
+			// belongs now, so only the fork and the dangling links are named.
+			So(hasIssue(issues, engine.SeverityWarn, "skill alpha points into the plugin cache"), ShouldBeFalse)
 			So(hasIssue(issues, engine.SeverityWarn, "skill alpha looks like a drifted copy of acme/tool"), ShouldBeTrue)
 			So(hasIssue(issues, engine.SeverityError, "broken symlink: "+broken), ShouldBeTrue)
-			So(hasIssue(issues, engine.SeverityError, "broken symlink: "+filepath.Join(dir, "beta")), ShouldBeFalse)
+			So(hasIssue(issues, engine.SeverityError, "broken symlink: "+filepath.Join(dir, "beta")), ShouldBeTrue)
 
-			_, err = f.engine.Heal(t.Context(), false)
+			_, err = f.engine.MigrateHostSkills(t.Context(), false)
 			So(err, ShouldBeNil)
 
 			issues, err = f.engine.Doctor(t.Context())
@@ -816,13 +856,15 @@ func TestMigrationReasonNotParked(t *testing.T) {
 		issues, err := f.engine.Doctor(t.Context())
 		So(err, ShouldBeNil)
 
-		results, err := f.engine.Heal(t.Context(), false)
+		results, err := f.engine.MigrateHostSkills(t.Context(), false)
 		So(err, ShouldBeNil)
 
 		Convey("When heal runs", func() {
-			Convey("Then doctor names the parking problem and heal stays silent", func() {
+			Convey("Then doctor names the parking problem and the migration says why it did nothing", func() {
 				So(hasIssue(issues, engine.SeverityWarn, "skill ghost points into the plugin cache; plugin acme/tool is not parked"), ShouldBeTrue)
-				So(results, ShouldBeEmpty)
+				So(results, ShouldHaveLength, 1)
+				So(results[0].Migrated, ShouldEqual, 0)
+				So(results[0].Note, ShouldContainSubstring, "is not parked")
 			})
 		})
 	})
@@ -852,22 +894,24 @@ func TestMigrationReasonOwnerTaken(t *testing.T) {
 		issues, err := f.engine.Doctor(t.Context())
 		So(err, ShouldBeNil)
 
-		results, err := f.engine.Heal(t.Context(), false)
+		results, err := f.engine.MigrateHostSkills(t.Context(), false)
 		So(err, ShouldBeNil)
 
 		Convey("When heal runs", func() {
-			byKey := map[string]engine.HealResult{}
+			byKey := map[string]engine.MigrateResult{}
 			for _, result := range results {
 				byKey[result.Key] = result
 			}
 
-			Convey("Then the owner migrates and the loser is left in place", func() {
+			Convey("Then the owner's link stays put and the loser is left in place", func() {
 				So(hasIssue(issues, engine.SeverityWarn, "skill shared is provided by aaa/first"), ShouldBeTrue)
 				So(hasIssue(issues, engine.SeverityWarn, "plugin bbb/second is not parked"), ShouldBeFalse)
 
-				So(results, ShouldHaveLength, 2)
-				So(byKey["aaa/first"].Migrated, ShouldEqual, 1)
-				So(byKey["bbb/second"].Migrated, ShouldEqual, 1)
+				// The link the owner wins stays exactly where it is - it
+				// already points at the plugin's own install - and the loser's
+				// link is refused with a reason.
+				So(results, ShouldHaveLength, 1)
+				So(byKey["bbb/second"].Migrated, ShouldEqual, 0)
 				So(byKey["bbb/second"].Note, ShouldContainSubstring, "skill shared is provided by aaa/first; shared-b left in place")
 			})
 		})
@@ -893,7 +937,7 @@ func TestMigrationReasonSkillGone(t *testing.T) {
 		issues, err := f.engine.Doctor(t.Context())
 		So(err, ShouldBeNil)
 
-		results, err := f.engine.Heal(t.Context(), false)
+		results, err := f.engine.MigrateHostSkills(t.Context(), false)
 		So(err, ShouldBeNil)
 
 		Convey("When heal runs", func() {
@@ -902,7 +946,7 @@ func TestMigrationReasonSkillGone(t *testing.T) {
 				So(hasIssue(issues, engine.SeverityWarn, "plugin acme/tool is not parked"), ShouldBeFalse)
 
 				So(results, ShouldHaveLength, 1)
-				So(results[0].Migrated, ShouldEqual, 1)
+				So(results[0].Migrated, ShouldEqual, 0)
 				So(results[0].Note, ShouldContainSubstring, "plugin acme/tool no longer offers skill ghost; ghost left in place")
 			})
 		})

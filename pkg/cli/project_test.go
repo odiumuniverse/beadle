@@ -18,8 +18,8 @@ func newProjectCLIRepo(t *testing.T) string {
 	home := t.TempDir()
 
 	t.Setenv("HOME", home)
-	t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
-	t.Setenv("XDG_CONFIG_HOME", "")
+
+	isolateTestRoots(t)
 
 	writeFile(t, filepath.Join(home, ".claude.json"), `{"mcpServers": {}}`)
 
@@ -103,8 +103,8 @@ func TestProjectCLIStatusPathSlug(t *testing.T) {
 		home := t.TempDir()
 
 		t.Setenv("HOME", home)
-		t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
-		t.Setenv("XDG_CONFIG_HOME", "")
+
+		isolateTestRoots(t)
 
 		dir := t.TempDir()
 		t.Chdir(dir)

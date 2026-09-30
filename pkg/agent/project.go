@@ -4,6 +4,8 @@ import (
 	"context"
 	"path/filepath"
 
+	"github.com/odiumuniverse/verger/pkg/hostpath"
+
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/mcp"
 )
@@ -20,7 +22,7 @@ func ClaudeProjectMCP(ctx context.Context, dir string) (kind.Items, bool, error)
 }
 
 func ClaudeLocalMCP(home, dir string) (kind.Items, bool, error) {
-	data, present, err := readFile(filepath.Join(home, ".claude.json"))
+	data, present, err := readFile(surfaces(hostpath.Claude, home).MCPDoc)
 	if err != nil || !present {
 		return kind.Items{}, false, err
 	}

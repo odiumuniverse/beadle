@@ -81,8 +81,12 @@ func TestPiMCPAdapterGate(t *testing.T) {
 			})
 		})
 
-		Convey("When the adapter sits in the managed npm catalog", func() {
-			write(t, filepath.Join(piDir(f), "npm", "node_modules", "pi-mcp-adapter", "package.json"), `{"name":"pi-mcp-adapter"}`)
+		Convey("When the adapter is installed under the agent dir", func() {
+			// A user-scope `pi install` registers itself in settings.json and
+			// puts the payload in the global npm root (live, pi 0.74.2); a
+			// node_modules tree under the agent dir is the shape the resolver
+			// lists, so that is what the gate honours.
+			write(t, filepath.Join(piDir(f), "node_modules", "pi-mcp-adapter", "package.json"), `{"name":"pi-mcp-adapter"}`)
 
 			Convey("Then the warning is gone", func() {
 				issues, err := f.engine.Doctor(t.Context())

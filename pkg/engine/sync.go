@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -582,12 +583,62 @@ func (e *Engine) pull(spec kind.Spec, v *view, vaultItems kind.Items, owned map[
 			continue
 		}
 
+		if owner, foreign := e.vergerOwns(v, key); foreign {
+			report.Warnings = append(report.Warnings, fmt.Sprintf(
+				"%s: %q is owned by the plugin manager (%s); it stays out of the vault",
+				spec.ID, key, owner))
+
+			continue
+		}
+
 		if e.pullKey(spec, v, proj, vaultItems, key, report) {
 			deleted = append(deleted, key)
 		}
 	}
 
 	e.pullDeletions(spec, v, proj, vaultItems, deleted, report)
+}
+
+// vergerOwns reports whether the plugin manager owns the file an item would be
+// pulled into. The path is the item's real location under its surface, so the
+// predicate sees the path a user would recognise, at user and project scope.
+//
+// The question is asked for the file AND for every directory above it, up to
+// the surface root, because a receipt records the artifact the library delivered
+// — for a skill that is the skill's *directory* — while beadle's key is a file
+// inside it. Asking only for the file asked a question the library cannot
+// answer, and the answer it gave was "not mine": the plugin's own skills became
+// beadle's canon, and the next thing either tool did to them was a fight.
+func (e *Engine) vergerOwns(v *view, key string) (string, bool) {
+	if e.owns == nil || v.surface == nil || v.surface.Path() == "" {
+		return "", false
+	}
+
+	root := v.surface.Path()
+
+	for candidate := filepath.Join(root, key); ; {
+		if owner, foreign := e.owns(candidate); foreign {
+			if owner == "" {
+				owner = "verger"
+			}
+
+			return owner, true
+		}
+
+		if candidate == root {
+			return "", false
+		}
+
+		parent := filepath.Dir(candidate)
+		if parent == candidate || !strings.HasPrefix(candidate, root) {
+			// A key that climbs out of the surface is not a path the manager
+			// could own, and asking above the surface root would hand the
+			// predicate a path the user would not recognise.
+			return "", false
+		}
+
+		candidate = parent
+	}
 }
 
 func (e *Engine) pullKey(spec kind.Spec, v *view, proj projection, vaultItems kind.Items, key string, report *KindReport) bool {
@@ -941,6 +992,16 @@ func (e *Engine) desired(spec kind.Spec, v *view, vaultItems kind.Items) kind.It
 		// hiding an item must never read as "delete the host file".
 		if v.frozen(spec, key) || proj.hiddenTarget(key) {
 			out[key] = data
+
+			continue
+		}
+
+		// A file the plugin manager delivered belongs to that tool. Leaving it
+		// out of the desired set would make this sync DELETE the other tool's
+		// deliverable — the same ownership question as the pull above, asked in
+		// the other direction, and answered the same way.
+		if _, foreign := e.vergerOwns(v, key); foreign {
+			out[key] = data
 		}
 	}
 
@@ -1165,7 +1226,14 @@ func (e *Engine) retainKeptBase(
 	return nil
 }
 
+// loadBase is what beadle delivered to THIS machine for one kind and agent: a
+// file missing from the host that the record lists is a file the user removed,
+// and that is only a question worth asking about a record this machine wrote.
 func (e *Engine) loadBase(st *state.State, k kind.ID, agentID string) (kind.Items, error) {
+	if !e.deliveryRecordIsOurs(st) {
+		return kind.Items{}, nil
+	}
+
 	base, _ := st.Base(k, agentID)
 	items := make(kind.Items, len(base))
 
@@ -1179,6 +1247,15 @@ func (e *Engine) loadBase(st *state.State, k kind.ID, agentID string) (kind.Item
 	}
 
 	return normalize(items), nil
+}
+
+// deliveryRecordIsOurs reports whether the state's delivery record describes
+// this machine. An empty record belongs to whoever syncs next: a state written
+// before the record carried a home, or a vault that has never been synced, has
+// nothing that could belong to another machine, and treating it as foreign
+// would hand every existing user a silent re-delivery.
+func (e *Engine) deliveryRecordIsOurs(st *state.State) bool {
+	return st.Home == "" || filepath.Clean(st.Home) == filepath.Clean(e.home)
 }
 
 type projection struct {

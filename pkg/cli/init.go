@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -17,12 +19,21 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/engine"
 	"github.com/odiumuniverse/beadle/pkg/skills"
 	"github.com/odiumuniverse/beadle/pkg/vault"
+	"github.com/odiumuniverse/beadle/pkg/vergerx"
 )
+
+// initOptions are the two flags that change what init does rather than what it
+// creates: -y skips the one question, --dry-run writes nothing.
+type initOptions struct {
+	assume bool
+	dryRun bool
+}
 
 func (a *app) newInitCmd() *cobra.Command {
 	var (
 		agentIDs         []string
 		daemon, noDaemon bool
+		assume, dryRun   bool
 	)
 
 	cmd := &cobra.Command{
@@ -42,25 +53,197 @@ func (a *app) newInitCmd() *cobra.Command {
 				return errors.New("choose either --daemon or --no-daemon")
 			}
 
-			return a.runInit(cmd, agentIDs, daemon, !noDaemon)
+			// The flags are read here, not where they were registered: registration
+			// runs before parsing, so copying the values there captures the
+			// zero value and -y/--dry-run silently do nothing.
+			return a.runInit(cmd, agentIDs, daemon, !noDaemon, initOptions{assume: assume, dryRun: dryRun})
 		},
 	}
 
 	cmd.Flags().StringSliceVar(&agentIDs, "agents", nil, "enable exactly these agents instead of the detected ones")
 	cmd.Flags().BoolVar(&daemon, "daemon", false, "install the watcher even if a service file already exists")
 	cmd.Flags().BoolVar(&noDaemon, "no-daemon", false, "do not install the background watcher")
+	cmd.Flags().BoolVarP(&assume, "yes", "y", false, "enable the detected agents without asking")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print the plan and write nothing")
 
 	return cmd
 }
 
-func (a *app) runInit(cmd *cobra.Command, agentIDs []string, forceDaemon, installDaemon bool) error {
+func (a *app) runInit(cmd *cobra.Command, agentIDs []string, forceDaemon, installDaemon bool, opts initOptions) error {
 	root, err := vault.ResolveRoot(a.vaultPath, os.Getenv(vault.EnvHome))
 	if err != nil {
 		return err
 	}
 
+	// The plan comes first: the user reads what was found before anything is
+	// written, and a --dry-run run stops here having written nothing at all.
+	agents, err := allAgents()
+	if err != nil {
+		return err
+	}
+
+	home, herr := os.UserHomeDir()
+	if herr != nil {
+		home = ""
+	}
+
+	thePlan := buildPlan(root, home, agents, nil)
+	annotatePlan(&thePlan, enabledAgents(root), agents)
+	thePlan.Already = alreadyInitialised(root, thePlan)
+	// The wording and the question both key off this, not off len(New): a
+	// newly found agent is a change to apply to a vault that is already
+	// there, and announcing a creation for it was the reported bug.
+	thePlan.Exists = existsDir(root)
+
+	out := cmd.OutOrStdout()
+
+	thePlan.render(out)
+
+	if thePlan.Already {
+		return a.reconcileOnReRun(cmd, out, forceDaemon, installDaemon)
+	}
+
+	// Only a vault that does not exist is ever created, so only that run asks.
+	// A re-run that found a new agent has work to do, and asking "create the
+	// vault?" about a vault already on disk was the second half of the same
+	// defect.
+	if !opts.assume && !thePlan.Exists {
+		askCreate(out, thePlan.countFound())
+
+		// An empty or closed stdin is the default, not a failure: a script
+		// running `beadle init` with no terminal is the most likely reader of
+		// this prompt, and it should get the documented [Y/n] default rather
+		// than an error it cannot answer.
+		var answer string
+
+		if _, err := fmt.Fscan(cmd.InOrStdin(), &answer); err != nil {
+			answer = "" // EOF: take the default
+		}
+
+		if !answerIsYes(answer) {
+			fmt.Fprintln(out, "\n  nothing was written")
+			renderHowToStop(out)
+
+			return nil
+		}
+	}
+
+	if opts.dryRun {
+		dryRunNotice(out)
+		renderHowToStop(out)
+
+		return nil
+	}
+
+	return a.applyInit(cmd, out, root, agentIDs, agents, forceDaemon, installDaemon)
+}
+
+// reconcileOnReRun is a second `init`: it is a summary, but it is not inert.
+// The desired state of the watcher is still reconciled, because a unit that is
+// missing or points at another vault is exactly what a re-run should fix.
+// The agent work is skipped, because a re-run that enabled agents would be
+// doing the thing §5.2 says it must not.
+func (a *app) reconcileOnReRun(cmd *cobra.Command, out io.Writer, forceDaemon, installDaemon bool) error {
+	fmt.Fprintln(out, "\n  reconciling the watcher")
+
+	daemonHint, err := a.installDaemonOnInitStep(cmd, out, forceDaemon, installDaemon)
+	if err != nil {
+		return err
+	}
+
+	if daemonHint {
+		fmt.Fprintln(out, "  beadle daemon install   (re)install the watcher")
+	}
+
+	// The same next steps a first run prints. A summary that drops them loses
+	// the guide pointer, and `TestGuidePointerAfterInit` — which pins that an
+	// AI agent is told where the guide is — fails on any second run.
+	printInitNext(out, daemonHint)
+
+	renderHowToStop(out)
+
+	return nil
+}
+
+// enabledAgents reads which agents the existing vault has switched on, so a
+// second run can tell one that is merely present from one that has appeared
+// since. A vault that does not exist yet yields an empty map, which is the
+// honest answer for a first run rather than a special case.
+func enabledAgents(root string) map[string]bool {
+	enabled := map[string]bool{}
+
+	if !existsDir(root) {
+		return enabled
+	}
+
+	cfg, err := config.Load(vault.New(root).ConfigPath())
+	if err != nil {
+		return enabled
+	}
+
+	for id, entry := range cfg.Agents {
+		if entry.Enabled {
+			enabled[id] = true
+		}
+	}
+
+	return enabled
+}
+
+// annotatePlan fills in what the screen shows about agents: the ones that are
+// new since the last run, and the ones that are enabled but no longer on this
+// machine. Names, not ids — the screen is for a person.
+func annotatePlan(thePlan *plan, enabled map[string]bool, agents []*agent.Agent) {
+	for _, h := range thePlan.Hosts {
+		if !h.Found {
+			continue
+		}
+
+		if !enabled[h.ID] {
+			thePlan.New = append(thePlan.New, h.Name)
+		}
+	}
+
+	// An agent the vault has enabled that is no longer found is reported by
+	// name, with the command that stops it. The screen only *asks* about new
+	// ones; this one is information, because sync is already pointing at a
+	// host that is not there.
+	//
+	// The loop runs on a first run too, and there it finds nothing: `enabled`
+	// is an empty map then, so every lookup is false. It used to be wrapped in
+	// `if enabled != nil`, which was always true — a map literal is never nil —
+	// and said nothing about the run it was trying to exclude.
+	for _, h := range thePlan.Hosts {
+		if !h.Found && enabled[h.ID] {
+			thePlan.Gone = append(thePlan.Gone, h.Name)
+		}
+	}
+}
+
+// applyInit is the half of init that writes: the vault, the config, the
+// agents, the bundles and the watcher. Everything before it is the screen and
+// the question, and everything after is nothing. Split here because a function
+// carrying both is a function nobody can read either half of.
+func (a *app) applyInit(
+	cmd *cobra.Command,
+	out io.Writer,
+	root string,
+	agentIDs []string,
+	agents []*agent.Agent,
+	forceDaemon, installDaemon bool,
+) error {
 	v := vault.New(root)
 	if err := v.Init(); err != nil {
+		return err
+	}
+
+	// A standalone `verger watch` run before init created ~/.verger and is
+	// watching plugins there. The move happens here, before anything in this
+	// window has opened - let alone created - the vault's plugin home: verger
+	// renames a home whose target is absent and merges into one that is not,
+	// and the merge would keep a freshly laid out default spec over the user's
+	// standalone one (NIGHT-pR-2, NIGHT-pC-6).
+	if err := a.absorbStandaloneVergerHome(cmd.Context(), v, out); err != nil {
 		return err
 	}
 
@@ -71,17 +254,10 @@ func (a *app) runInit(cmd *cobra.Command, agentIDs []string, forceDaemon, instal
 
 	a.reportConfigMigration(cfg)
 
-	agents, err := allAgents()
-	if err != nil {
-		return err
-	}
-
 	requested, err := resolveAgentIDs(agents, agentIDs)
 	if err != nil {
 		return err
 	}
-
-	out := cmd.OutOrStdout()
 
 	if err := a.enableAgentsOnInit(out, v, cfg, agents, requested); err != nil {
 		return err
@@ -195,7 +371,7 @@ func (a *app) installDaemonOnInitStep(cmd *cobra.Command, out io.Writer, forceDa
 // a host CLI registers the rendered bundle right away, while a host without
 // its CLI gets the instruction instead and keeps file sync on.
 func (a *app) autoEnableBundlesOnInit(cmd *cobra.Command, e *engine.Engine, out io.Writer) error {
-	if !bundleAutoEnable {
+	if !a.bundleAutoEnable {
 		return nil
 	}
 
@@ -217,7 +393,7 @@ func (a *app) autoEnableBundlesOnInit(cmd *cobra.Command, e *engine.Engine, out 
 // checkout, keeping secrets out: the per-file opt-in stays with
 // `beadle project enable <file> --allow-secrets`.
 func (a *app) enableProjectDefaultsOnInit(cmd *cobra.Command, e *engine.Engine, out io.Writer) error {
-	if !projectAutoEnable {
+	if !a.projectAutoEnable {
 		return nil
 	}
 
@@ -243,7 +419,7 @@ func (a *app) installDaemonOnInit(cmd *cobra.Command, out io.Writer, force bool)
 	}
 
 	if !force {
-		status, err := daemonpkg.Check(spec.Home, spec.Label, daemonCheckRunner)
+		status, err := daemonpkg.Check(spec.Home, spec.Label, a.checkRunner())
 		if err != nil {
 			return err
 		}
@@ -255,7 +431,7 @@ func (a *app) installDaemonOnInit(cmd *cobra.Command, out io.Writer, force bool)
 		}
 	}
 
-	path, err := daemonpkg.Install(cmd.Context(), spec, daemonInstallRunner)
+	path, err := daemonpkg.Install(cmd.Context(), spec, a.installRunner())
 	if err != nil {
 		return err
 	}
@@ -351,4 +527,53 @@ func printModes(out io.Writer, cfg *config.Config, agents []*agent.Agent) {
 			fmt.Fprintln(out, line)
 		}
 	}
+}
+
+// absorbStandaloneVergerHome moves a `~/.verger` created before the vault
+// existed into the vault, and says so.
+//
+// It prints nothing when there was no standalone home, because "moved" with
+// nothing to move is worse than silence: init's output is a plan a user reads
+// before approving it. A move that fails is not fatal either - the vault is
+// still a working vault, and refusing to finish init over a leftover
+// directory would be a worse outcome than saying what could not be done.
+func (a *app) absorbStandaloneVergerHome(ctx context.Context, v *vault.Vault, out io.Writer) error {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return nil //nolint:nilerr // no home to look in: nothing to absorb
+	}
+
+	source := filepath.Join(home, ".verger")
+
+	// Deliberately not `a.pluginClient`: opening the vault's plugin client is
+	// what creates the target directory, and once it exists verger merges
+	// instead of renaming - and the merge keeps the default spec it just wrote
+	// over the user's standalone one.
+	merge, err := vergerx.AbsorbStandaloneHome(ctx, v.Root(), source, a.logger)
+	if err != nil {
+		fmt.Fprintf(out, "  standalone %s was left alone: %v\n", source, err)
+
+		return nil
+	}
+
+	if merge == nil {
+		return nil
+	}
+
+	if merge.Report.Renamed {
+		fmt.Fprintf(out, "  moved the standalone plugin home %s into %s\n", merge.Report.HomeFrom, merge.Report.HomeTo)
+	} else {
+		fmt.Fprintf(out, "  merged %d standalone plugin path(s) from %s into %s\n",
+			len(merge.Report.Moved), merge.Report.HomeFrom, merge.Report.HomeTo)
+	}
+
+	if n := len(merge.Report.Skipped); n > 0 {
+		fmt.Fprintf(out, "  %d path(s) were already in the vault and were kept there\n", n)
+	}
+
+	for _, id := range merge.Conflicts {
+		fmt.Fprintf(out, "  kept the vault's %q; the standalone one is in %s\n", id, merge.Backup)
+	}
+
+	return nil
 }

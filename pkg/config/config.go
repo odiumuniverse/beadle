@@ -317,7 +317,7 @@ func Load(path string) (*Config, error) {
 	cfg.Normalize()
 
 	if storedVersion > CurrentVersion {
-		return nil, fmt.Errorf("config %s has version %d, but this beadle supports up to version %d", path, storedVersion, CurrentVersion)
+		return nil, &SchemaNewerError{Path: path, Found: storedVersion, Supported: CurrentVersion}
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -332,6 +332,32 @@ func Load(path string) (*Config, error) {
 	cfg.migrated = changed
 
 	return cfg, nil
+}
+
+// SchemaNewerError reports a config.json written by a newer beadle. It is a
+// type, not a formatted string, because the caller above pkg/config — the
+// exit-code classifier — has to recognise the situation without matching on
+// prose: "this file is from the future" is exit class 7, and a script must be
+// able to tell that from a crash.
+type SchemaNewerError struct {
+	Path      string
+	Found     int
+	Supported int
+}
+
+// Error implements error. The message is the one a user must act on, so it
+// names the document, both versions and the way out: a file written by a
+// newer beadle is never rewritten by an older one, and the only fix is to
+// upgrade.
+func (e *SchemaNewerError) Error() string {
+	return fmt.Sprintf("config %s: written by a newer beadle (version %d > %d) — upgrade beadle to read it",
+		e.Path, e.Found, e.Supported)
+}
+
+// IsSchemaNewer reports whether err is, or wraps, a config written by a newer
+// beadle, and returns it when it is.
+func IsSchemaNewer(err error) (*SchemaNewerError, bool) {
+	return errors.AsType[*SchemaNewerError](err)
 }
 
 // storedConfigVersion reads the version recorded in the file. A missing field

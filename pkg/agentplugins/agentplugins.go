@@ -6,6 +6,8 @@ package agentplugins
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +39,8 @@ const (
 	ManifestFile = "plugin.json"
 	// MCPFile is the package MCP servers file.
 	MCPFile = "mcp.json"
+	// HooksFile is the package hooks document.
+	HooksFile = "hooks/hooks.json"
 	// SkillsDir is the package skills directory.
 	SkillsDir = "skills"
 	// SkillFile is the discovery file of an Agent Plugins skill: the directory
@@ -91,6 +95,19 @@ type Options struct {
 	Description string
 	License     string
 	Keywords    []string
+	// Hooks are the canon hooks the package may carry. Only the approved ones
+	// are rendered: a package is installed by a machine that has not been at
+	// this keyboard, so an unapproved command has no business travelling.
+	Hooks []Hook
+}
+
+// Hook is one canon hook as the package carries it.
+type Hook struct {
+	Event    string
+	Matcher  string
+	Command  string
+	Timeout  int
+	Approved bool
 }
 
 // Counts reports how many items of one kind were rendered or skipped.
@@ -125,6 +142,8 @@ func Render(skills map[string]skill.Tree, servers mcp.Servers, opts Options) (Pa
 	pkg.Files[ManifestFile] = manifest
 
 	renderSkills(&pkg, skills)
+
+	renderHooks(&pkg, opts.Hooks)
 
 	if err := renderServers(&pkg, servers); err != nil {
 		return Package{}, err
@@ -1080,3 +1099,94 @@ func marshalJSON(value any) ([]byte, error) {
 
 	return append(data, '\n'), nil
 }
+
+// renderHooks writes the hooks document. The package carries commands only for
+// the hooks the user has approved, sorted so the document is deterministic.
+func renderHooks(pkg *Package, hooks []Hook) {
+	var approved []Hook
+
+	for _, h := range hooks {
+		if h.Approved && h.Command != "" {
+			approved = append(approved, h)
+		}
+	}
+
+	if len(approved) == 0 {
+		return
+	}
+
+	slices.SortFunc(approved, func(a, b Hook) int {
+		if n := strings.Compare(a.Event, b.Event); n != 0 {
+			return n
+		}
+
+		return strings.Compare(a.Matcher, b.Matcher)
+	})
+
+	doc := map[string]any{}
+
+	for _, h := range approved {
+		entry := map[string]any{keyType: "command", keyCommand: h.Command}
+		if h.Matcher != "" {
+			entry[keyMatcher] = h.Matcher
+		}
+
+		if h.Timeout > 0 {
+			entry[keyTimeout] = h.Timeout
+		}
+
+		key := h.Event
+		if h.Matcher != "" {
+			key = h.Matcher
+		}
+
+		group, _ := doc[key].(map[string]any)
+		if group == nil {
+			group = map[string]any{}
+			doc[key] = group
+		}
+
+		handlers, _ := group[keyHooks].([]any)
+		group[keyHooks] = append(handlers, entry)
+	}
+
+	data, err := marshalJSON(doc)
+	if err != nil {
+		pkg.Warnings = append(pkg.Warnings, "hooks document could not be encoded; skipped")
+
+		return
+	}
+
+	pkg.Files[HooksFile] = data
+}
+
+// ContentVersion is the content-addressed version of a rendered package: the
+// same bytes always produce the same version, and a change to any file produces
+// a different one. It is computed over the package content with a placeholder
+// version in the manifest, so stamping the version cannot change the hash it
+// was derived from.
+func ContentVersion(files Files) string {
+	hash := sha256.New()
+
+	for _, rel := range slices.Sorted(maps.Keys(files)) {
+		fmt.Fprintf(hash, "file\x00%s\x00", rel)
+		hash.Write(files[rel])
+		hash.Write([]byte{'\n'})
+	}
+
+	return versionPrefix + hex.EncodeToString(hash.Sum(nil))[:12]
+}
+
+// versionPrefix keeps a content-addressed version a plain semver, so the
+// library and any registry treat it like any other.
+const versionPrefix = "0.0.0-"
+
+// The keys of one hook entry in the package hooks document. They are named
+// once so a hook shape is written in one place.
+const (
+	keyType    = "type"
+	keyCommand = "command"
+	keyMatcher = "matcher"
+	keyTimeout = "timeout"
+	keyHooks   = "hooks"
+)

@@ -103,7 +103,7 @@ func (e *Engine) deliveredSkills(a *agent.Agent, st *state.State, canon map[stri
 			continue
 		}
 
-		if coveredByChannel(res.matchesOutside(classBundle)) {
+		if coveredByChannel(res.independentProviders()) {
 			continue
 		}
 

@@ -37,11 +37,11 @@ func TestA47HooksApproveFromCodexSource(t *testing.T) {
 			So(hook.Event, ShouldEqual, "pre-tool")
 			So(hook.Matcher, ShouldEqual, "Bash")
 			So(hook.Source, ShouldEqual, "plugin:acme/tool")
-			So(hook.Command, ShouldEqual, "bash \""+filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current", "hook.sh")+"\"")
+			So(hook.Command, ShouldEqual, "bash \""+filepath.Join(dir, "hook.sh")+"\"")
 
 			So(a36HasText(report.Warnings, "skipped 1 hook(s) on unsupported events"), ShouldBeTrue)
 			So(a36HasText(report.Notes, "1 approved, 0 refreshed, 0 removed, 1 skipped"), ShouldBeTrue)
-			So(f.config.HookApproved("tool--pre-tool-1"), ShouldBeTrue)
+			So(f.manager.consents, ShouldContainKey, "plugin:acme/tool")
 		})
 
 		Convey("When a foreign plugin collides with an approved hook", func() {
@@ -65,7 +65,7 @@ func TestA47HooksApproveFromCodexSource(t *testing.T) {
 				So(canon, ShouldHaveLength, 1)
 				So(canon["tool--pre-tool-1"].Source, ShouldEqual, "plugin:acme/tool")
 				So(a36HasText(report.Warnings, "already exists in the canon"), ShouldBeTrue)
-				So(f.config.HookApproved("tool--pre-tool-1"), ShouldBeTrue)
+				So(f.manager.consents, ShouldContainKey, "plugin:acme/tool")
 			})
 		})
 	})

@@ -17,6 +17,16 @@ type Agent struct {
 	OptIn    bool
 	Detect   func() (bool, error)
 	Surfaces []Surface
+
+	// DetectReason answers *why*, for the onboarding screen. It is optional:
+	// an agent that leaves it nil is still detected through Detect, and
+	// DetectReasonOf supplies the fallback reason. An agent that sets both
+	// must agree with itself — Detect is what the rest of beadle calls.
+	DetectReason func() (Detection, error)
+
+	// Binaries are the CLIs that would install this agent, for the
+	// "not on PATH" reason. Optional, like DetectReason.
+	Binaries []string
 }
 
 func (a *Agent) Surface(k kind.ID) Surface {

@@ -18,11 +18,20 @@ import (
 func (a *app) newPluginsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "plugins",
-		Short: "Pin plugin versions for one agent at a time",
+		Short: "List, install and remove plugin packages; pin versions per agent",
 		Args:  cobra.NoArgs,
 	}
 
-	cmd.AddCommand(a.newPluginPinsCmd(), a.newPluginPinCmd(), a.newPluginUnpinCmd())
+	cmd.AddCommand(
+		a.newPluginPinsCmd(),
+		a.newPluginPinCmd(),
+		a.newPluginUnpinCmd(),
+		a.newPluginsListCmd(),
+		a.newPluginsInstallCmd(),
+		a.newPluginsRemoveCmd(),
+		a.newPluginsEjectCmd(),
+		a.newPluginsCanonCmd(),
+	)
 
 	return cmd
 }

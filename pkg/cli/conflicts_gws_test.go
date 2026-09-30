@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -11,11 +12,32 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/odiumuniverse/beadle/pkg/agent"
+
 	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/engine"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 )
+
+// testOptions are the options every command in this suite is built with: the
+// unattended defaults off (a test home must not reach the developer's machine
+// or enable the beadle checkout's own project files) and the two daemon process
+// calls replaced by recorders.
+//
+// This used to be a TestMain that assigned package variables. That made the
+// suite's behaviour depend on which test had run before it — under
+// `go test -count=3` the same test passed on its first pass and failed on its
+// second — so the state is per-app now and a test that wants a default back
+// asks for it in the options of its own run.
+func testOptions() Options {
+	return Options{
+		Version:           "test",
+		DisableAutoEnable: true,
+		DaemonInstall:     func(context.Context, string, ...string) error { return nil },
+		DaemonCheck:       fakeDaemonChecker{},
+	}
+}
 
 func gwsRun(t *testing.T, args ...string) (string, error) {
 	t.Helper()
@@ -23,10 +45,62 @@ func gwsRun(t *testing.T, args ...string) (string, error) {
 	return gwsRunIn(t, nil, args...)
 }
 
+// gwsRunAuto runs a command with the unattended BUNDLE attempt on, for the
+// tests that are about it. It is a runner, not a package variable: the default
+// belongs to this run and to no other.
+//
+// gwsRunProjects is its twin for the init-time project defaults, so a test about
+// one never turns the other on.
+func gwsRunAuto(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+
+	opts := testOptions()
+	opts.EnableBundleAttempt = true
+
+	return gwsRunOpts(t, opts, nil, args...)
+}
+
+// gwsRunProjects runs a command with the init-time project defaults on.
+func gwsRunProjects(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+
+	opts := testOptions()
+	opts.EnableProjectDefaults = true
+
+	return gwsRunOpts(t, opts, nil, args...)
+}
+
+// gwsRunOpts runs a command with options the test chose.
+func gwsRunOpts(t *testing.T, opts Options, stdin io.Reader, args ...string) (string, error) {
+	t.Helper()
+
+	opts.Version = "test"
+
+	root := newRootCmd(opts)
+
+	var out bytes.Buffer
+
+	root.SetOut(&out)
+	root.SetErr(&out)
+	root.SetArgs(args)
+	root.SilenceUsage = true
+
+	if stdin != nil {
+		root.SetIn(stdin)
+	}
+
+	// Run first, read second: a return statement evaluates its operands left to
+	// right, so returning the buffer and the error together would hand back the
+	// output from BEFORE the command ran.
+	err := root.ExecuteContext(t.Context())
+
+	return out.String(), err
+}
+
 func gwsRunIn(t *testing.T, stdin io.Reader, args ...string) (string, error) {
 	t.Helper()
 
-	root := newRootCmd(Options{Version: "test"})
+	root := newRootCmd(testOptions())
 
 	var out bytes.Buffer
 
@@ -49,10 +123,49 @@ func gwsHome(t *testing.T) string {
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", "")
-	t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
+	isolateTestRoots(t)
 
 	return home
+}
+
+// TestGwsHomeIsolatesEveryHostRoot pins the contract the rest of the suite
+// assumes: a per-test home is a hermetic home for *every* host, not just for
+// the ones that read $HOME. DSH_HOME, DSH_AGENTS_HOME and the omp roots are
+// absolute paths of their own, so a test that moves HOME but leaves them at
+// the suite's shared values writes dsh's and omp's surfaces into a directory
+// every other test also writes to. The symptom is not a wrong answer in that
+// test — it is a wrong answer in whichever test runs next, which is why it
+// only showed up under `go test -count=3`, once a second pass found the
+// previous pass's files.
+func TestGwsHomeIsolatesEveryHostRoot(t *testing.T) {
+	Convey("Given the suite's shared home", t, func() {
+		sharedRules, _ := agent.DSHSurfacePaths(isolatedHome)
+		sharedOmp, _ := agent.OmpHome(isolatedHome)
+
+		Convey("When a test takes a per-test home", func() {
+			home := gwsHome(t)
+
+			Convey("Then dsh's surfaces resolve inside that home", func() {
+				rules, skills := agent.DSHSurfacePaths(home)
+				So(rules, ShouldContainSubstring, home)
+				So(skills, ShouldContainSubstring, home)
+				So(rules, ShouldNotEqual, sharedRules)
+				So(agent.DSHAgentsHome(home), ShouldContainSubstring, home)
+			})
+
+			Convey("And omp's root and state resolve inside that home", func() {
+				omp, _ := agent.OmpHome(home)
+				So(omp, ShouldContainSubstring, home)
+				So(omp, ShouldNotEqual, sharedOmp)
+				So(agent.OmpStateRoot(home), ShouldContainSubstring, home)
+			})
+
+			Convey("And the vault and xdg root stay inside it too", func() {
+				So(os.Getenv("BEADLE_HOME"), ShouldContainSubstring, home)
+				So(os.Getenv("XDG_CONFIG_HOME"), ShouldBeEmpty)
+			})
+		})
+	})
 }
 
 func gwsWrite(t *testing.T, path, content string) {
@@ -85,9 +198,21 @@ func gwsInitSync(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := gwsRun(t, "sync"); err != nil {
+	// A sync that opens a conflict now exits non-zero, with the class the
+	// classifier gives it (3 — the user has to settle it). That is the contract,
+	// so a scenario whose first sync is *meant* to block is not a failure here:
+	// the scenarios assert what the run did with the files.
+	if _, err := gwsRun(t, "sync"); err != nil && !gwsBlocked(err) {
 		t.Fatal(err)
 	}
+}
+
+// gwsBlocked reports whether err is the open-conflicts exit every beadle command
+// raises when it refused to reconcile.
+func gwsBlocked(err error) bool {
+	_, blocked := engine.IsOpenConflicts(err)
+
+	return blocked
 }
 
 func gwsRules(t *testing.T, home, claude, opencode string) {
@@ -147,6 +272,10 @@ func TestConflictsJSONGolden(t *testing.T) {
 }
 
 const gwsGolden = `{
+  "schema": {
+    "name": "beadle.conflicts",
+    "version": 1
+  },
   "conflicts": [
     {
       "id": "dd7acc2a",
@@ -183,7 +312,7 @@ func TestConflictsJSONEmpty(t *testing.T) {
 
 			Convey("Then the list is an empty array", func() {
 				So(err, ShouldBeNil)
-				So(strings.TrimSpace(out), ShouldEqual, "{\n  \"conflicts\": []\n}")
+				So(strings.TrimSpace(out), ShouldEqual, "{\n  \"schema\": {\n    \"name\": \"beadle.conflicts\",\n    \"version\": 1\n  },\n  \"conflicts\": []\n}")
 			})
 		})
 	})
@@ -197,7 +326,11 @@ func TestResolveBinding(t *testing.T) {
 
 		gwsRules(t, home, "# claude v2\n", "# opencode v2\n")
 
-		if _, err := gwsRun(t, "sync"); err != nil {
+		// This scenario makes the host and the vault disagree on purpose, so
+		// the sync that follows is meant to block. A blocked run exits with the
+		// conflict class, not success — that is the contract, and the assertions
+		// below are about what it did with the files.
+		if _, err := gwsRun(t, "sync"); err != nil && !gwsBlocked(err) {
 			t.Fatal(err)
 		}
 
@@ -262,7 +395,10 @@ func TestResolveBinding(t *testing.T) {
 		Convey("When the agent value changed after the read", func() {
 			gwsWrite(t, filepath.Join(home, ".config", "opencode", "AGENTS.md"), "# opencode v3\n")
 
-			if _, err := gwsRun(t, "sync"); err != nil {
+			// The conflict this scenario provokes is still open when the sync
+			// runs, so the run exits with the conflict class. That is the
+			// contract: a blocked reconcile is not a successful one.
+			if _, err := gwsRun(t, "sync"); err != nil && !gwsBlocked(err) {
 				t.Fatal(err)
 			}
 
@@ -297,7 +433,11 @@ func TestResolveStdinAndInvalidContent(t *testing.T) {
 		gwsInitSync(t)
 		gwsRules(t, home, "# claude v2\n", "# opencode v2\n")
 
-		if _, err := gwsRun(t, "sync"); err != nil {
+		// This scenario makes the host and the vault disagree on purpose, so
+		// the sync that follows is meant to block. A blocked run exits with the
+		// conflict class, not success — that is the contract, and the assertions
+		// below are about what it did with the files.
+		if _, err := gwsRun(t, "sync"); err != nil && !gwsBlocked(err) {
 			t.Fatal(err)
 		}
 
@@ -340,7 +480,10 @@ func TestResolveStdinAndInvalidContent(t *testing.T) {
 			gwsWrite(t, filepath.Join(home, ".claude.json"), `{"mcpServers": {"alpha": {"type": "stdio", "command": "a"}}}`)
 			gwsWrite(t, filepath.Join(home, ".config", "opencode", "opencode.json"), `{"mcp": {"alpha": {"type": "local", "command": ["b"]}}}`)
 
-			if _, err := gwsRun(t, "sync"); err != nil {
+			// The conflict this scenario provokes is still open when the sync
+			// runs, so the run exits with the conflict class. That is the
+			// contract: a blocked reconcile is not a successful one.
+			if _, err := gwsRun(t, "sync"); err != nil && !gwsBlocked(err) {
 				t.Fatal(err)
 			}
 
@@ -460,7 +603,11 @@ func TestConflictsRefusalRedaction(t *testing.T) {
 			}
 		}
 
-		if _, err := gwsRun(t, "sync"); err != nil {
+		// This scenario makes the host and the vault disagree on purpose, so
+		// the sync that follows is meant to block. A blocked run exits with the
+		// conflict class, not success — that is the contract, and the assertions
+		// below are about what it did with the files.
+		if _, err := gwsRun(t, "sync"); err != nil && !gwsBlocked(err) {
 			t.Fatal(err)
 		}
 
@@ -559,7 +706,11 @@ func TestResolveAllSkipsPermissions(t *testing.T) {
 			}
 		}
 
-		if _, err := gwsRun(t, "sync"); err != nil {
+		// This scenario makes the host and the vault disagree on purpose, so
+		// the sync that follows is meant to block. A blocked run exits with the
+		// conflict class, not success — that is the contract, and the assertions
+		// below are about what it did with the files.
+		if _, err := gwsRun(t, "sync"); err != nil && !gwsBlocked(err) {
 			t.Fatal(err)
 		}
 

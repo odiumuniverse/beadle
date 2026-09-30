@@ -21,8 +21,6 @@ import (
 func ompHomeDir(home string) string   { return filepath.Join(home, ".omp") }
 func ompAgentRoot(home string) string { return filepath.Join(ompHomeDir(home), "agent") }
 
-func ompSkillsDir(home string) string { return filepath.Join(ompAgentRoot(home), "skills") }
-
 // ompFixture enables exactly omp, so a farm assertion cannot be satisfied by
 // another host's surface. PI_CONFIG_DIR is pinned by the caller.
 func ompFixture(t *testing.T) *fixture {
@@ -73,136 +71,6 @@ func ompPluginTree(t *testing.T, home, marketplace, name, version string) string
 	return dir
 }
 
-// walkTree records every path under root with its bytes, so a test can prove a
-// tree was not written to.
-func walkTree(t *testing.T, root string) map[string]string {
-	t.Helper()
-
-	out := map[string]string{}
-
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if entry.IsDir() {
-			out[path] = "<dir>"
-
-			return nil
-		}
-
-		data, err := os.ReadFile(path) //nolint:gosec // G304: the test walks its own temp tree
-		if err != nil {
-			return err
-		}
-
-		out[path] = string(data)
-
-		return nil
-	})
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("walk %s: %v", root, err)
-	}
-
-	return out
-}
-
-// readSymlinkTarget reports the symlink target at path, or false when there is none.
-func readSymlinkTarget(t *testing.T, path string) (string, bool) {
-	t.Helper()
-
-	link, err := os.Readlink(path)
-	if err != nil {
-		return "", false
-	}
-
-	return link, true
-}
-
-func TestOmpPluginSourceParksAndFarms(t *testing.T) {
-	Convey("Given an omp marketplace plugin", t, func() {
-		t.Setenv("PI_CONFIG_DIR", "")
-
-		f := newFixture(t)
-		f.emptyConfigs(t)
-		enableAgents(t, f, agent.OmpID)
-
-		// No host CLI: the unattended bundle attempt stays unregistered and
-		// cannot flip the omp file modes the assertions below rely on.
-		missingCLI(t)
-
-		dir := ompPluginTree(t, f.home, "acme", "tool", "1.0.0")
-		writeSkill(t, dir, "alpha", "# alpha\n")
-		writingAgent(t, dir, "helper", "---\nname: helper\ndescription: helps\n---\n\nHelp.\n")
-		writeCommand(t, dir, "deploy", farmCommandDoc)
-
-		before := walkTree(t, filepath.Join(ompHomeDir(f.home), "plugins"))
-
-		report := f.sync(t)
-
-		Convey("When the sync runs", func() {
-			Convey("Then it is parked, the install tree is untouched, and the artifacts go to every host but omp", func() {
-				result := pluginResult(t, report, "acme/tool")
-				So(result.Action, ShouldEqual, engine.PluginCreated)
-				So(result.Target, ShouldEqual, dir)
-
-				So(pivotLink(t, f, "acme", "tool"), ShouldEqual, dir)
-
-				// omp reads its own plugin cache natively (agent, command and
-				// skill discovery all read ~/.omp/plugins), so presenting the
-				// same artifacts back into ~/.omp/agent would duplicate them;
-				// the other hosts still receive them.
-				want := filepath.Join(f.vault.PluginsDir(), "acme", "tool", "current", "skills", "alpha")
-				So(farmLink(t, claudeSkillsDir(f.home), "alpha"), ShouldEqual, want)
-				So(farmLink(t, filepath.Join(f.home, ".claude", "agents"), "tool--helper.md"),
-					ShouldEqual, pluginFarmLink(f, "acme", "tool", "agents", "helper.md"))
-				So(farmLink(t, filepath.Join(f.home, ".claude", "commands"), "tool--deploy.md"),
-					ShouldEqual, pluginFarmLink(f, "acme", "tool", "commands", "deploy.md"))
-
-				for _, path := range []string{
-					filepath.Join(ompSkillsDir(f.home), "alpha"),
-					filepath.Join(ompAgentRoot(f.home), "agents", "tool--helper.md"),
-					filepath.Join(ompAgentRoot(f.home), "commands", "tool--deploy.md"),
-				} {
-					_, err := os.Lstat(path)
-					So(errors.Is(err, fs.ErrNotExist), ShouldBeTrue)
-				}
-
-				So(walkTree(t, filepath.Join(ompHomeDir(f.home), "plugins")), ShouldResemble, before)
-			})
-		})
-	})
-}
-
-func TestOmpPluginSourceFollowsConfigDir(t *testing.T) {
-	Convey("Given PI_CONFIG_DIR relocates the omp root", t, func() {
-		t.Setenv("PI_CONFIG_DIR", "relocated")
-
-		f := ompFixture(t)
-		f.emptyConfigs(t)
-		missingCLI(t)
-
-		dir := filepath.Join(f.home, "relocated", "plugins", "cache", "plugins", "acme___tool___1.0.0")
-		write(t, filepath.Join(dir, ".claude-plugin", "plugin.json"), `{"name":"tool","version":"1.0.0"}`)
-		writeSkill(t, dir, "alpha", "# alpha\n")
-		write(t, filepath.Join(f.home, "relocated", "plugins", "installed_plugins.json"),
-			fmt.Sprintf(`{"version":2,"plugins":{"tool@acme":[{"scope":"user","installPath":%q,"version":"1.0.0"}]}}`, dir))
-
-		report := f.sync(t)
-
-		Convey("When the sync runs", func() {
-			Convey("Then the relocated root is read and matches the agent's own resolution", func() {
-				root, _ := agent.OmpHome(f.home)
-				So(plugin.OmpRoot(f.home), ShouldEqual, root)
-
-				result := pluginResult(t, report, "acme/tool")
-				So(result.Action, ShouldEqual, engine.PluginCreated)
-				So(result.Target, ShouldEqual, dir)
-			})
-		})
-	})
-}
-
 func TestOmpDefaultRootMatchesAgentHome(t *testing.T) {
 	Convey("Given no PI_CONFIG_DIR", t, func() {
 		t.Setenv("PI_CONFIG_DIR", "")
@@ -212,36 +80,6 @@ func TestOmpDefaultRootMatchesAgentHome(t *testing.T) {
 
 			root, _ := agent.OmpHome(home)
 			So(plugin.OmpRoot(home), ShouldEqual, root)
-		})
-	})
-}
-
-func TestOmpLinkedPluginOutsideTheCacheIsReportedNotFarmed(t *testing.T) {
-	Convey("Given an omp plugin linked from a directory outside the omp tree", t, func() {
-		t.Setenv("PI_CONFIG_DIR", "")
-
-		f := ompFixture(t)
-		f.emptyConfigs(t)
-		missingCLI(t)
-
-		source := filepath.Join(t.TempDir(), "tool")
-		write(t, filepath.Join(source, "package.json"), `{"name":"tool","version":"2.0.0"}`)
-		writeSkill(t, source, "alpha", "# alpha\n")
-
-		nodeModules := filepath.Join(ompHomeDir(f.home), "plugins", "node_modules")
-		So(os.MkdirAll(nodeModules, 0o750), ShouldBeNil)
-		So(os.Symlink(source, filepath.Join(nodeModules, "tool")), ShouldBeNil)
-
-		report := f.sync(t)
-
-		Convey("When the sync runs", func() {
-			Convey("Then the plugin is named but its outside path is refused", func() {
-				So(pluginResult(t, report, "omp/tool").Action, ShouldEqual, engine.PluginCreated)
-				So(containsWarning(report.Warnings, "outside the plugin cache"), ShouldBeTrue)
-
-				_, ok := readSymlinkTarget(t, filepath.Join(ompSkillsDir(f.home), "alpha"))
-				So(ok, ShouldBeFalse)
-			})
 		})
 	})
 }

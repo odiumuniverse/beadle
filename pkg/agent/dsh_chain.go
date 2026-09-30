@@ -4,16 +4,13 @@ import (
 	"bytes"
 	"context"
 	"path/filepath"
-	"strings"
+
+	"github.com/odiumuniverse/verger/pkg/hostpath"
 
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 )
-
-// dshChainCandidates are the instruction file names DSH reads in every
-// directory of the project chain, in the documented candidate order.
-var dshChainCandidates = []string{agentsMarkdown, "CLAUDE.md"}
 
 // dshChainSurface is one instruction file of the DSH project chain: a file
 // between the project root (the nearest .git) and the working directory. The
@@ -85,68 +82,25 @@ func (s *dshChainSurface) Write(_ context.Context, desired kind.Items) error {
 // contents render once: the engine collapses a file whose content an earlier
 // enabled file of the chain already carries. No .git above cwd means no chain.
 func DSHChain(cwd, id string) []Surface {
-	root, ok := projectChainRoot(cwd)
+	root, ok := hostpath.ProjectChainRoot(cwd, fsutil.Exists)
 	if !ok {
 		return nil
 	}
 
 	var surfaces []Surface
 
-	for _, dir := range chainDirs(root, cwd) {
-		for _, name := range dshChainCandidates {
-			path := filepath.Join(dir, name)
-
-			rel, err := filepath.Rel(root, path)
-			if err != nil {
-				continue
-			}
-
-			surfaces = append(surfaces, &dshChainSurface{
-				path: path,
-				rel:  filepath.ToSlash(rel),
-				id:   id,
-			})
-		}
-	}
-
-	return surfaces
-}
-
-// projectChainRoot returns the project root of cwd: the nearest directory at
-// or above cwd that holds a .git entry (a directory, or a worktree file).
-func projectChainRoot(cwd string) (string, bool) {
-	for dir := cwd; ; {
-		if fsutil.Exists(filepath.Join(dir, ".git")) {
-			return dir, true
-		}
-
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", false
-		}
-
-		dir = parent
-	}
-}
-
-// chainDirs lists the directories from root down to cwd, root first.
-func chainDirs(root, cwd string) []string {
-	rel, err := filepath.Rel(root, cwd)
-	if err != nil || rel == "." {
-		return []string{root}
-	}
-
-	dirs := []string{root}
-	dir := root
-
-	for part := range strings.SplitSeq(filepath.ToSlash(rel), "/") {
-		if part == "" || part == "." {
+	for _, path := range hostpath.DSHProjectChain(root, cwd) {
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
 			continue
 		}
 
-		dir = filepath.Join(dir, part)
-		dirs = append(dirs, dir)
+		surfaces = append(surfaces, &dshChainSurface{
+			path: path,
+			rel:  filepath.ToSlash(rel),
+			id:   id,
+		})
 	}
 
-	return dirs
+	return surfaces
 }

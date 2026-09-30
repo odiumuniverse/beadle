@@ -134,12 +134,11 @@ func (e *Engine) maybePersistPluginMCP(spec kind.Spec, plan pluginMCPPlan, ledge
 }
 
 func (e *Engine) loadPluginMCPPlan(vaultItems kind.Items, report *KindReport) (pluginLedger, pluginMCPPlan) {
-	ledger, _, err := loadPluginLedger(e.vault.PluginsLedgerPath())
-	if err != nil {
-		report.Warnings = append(report.Warnings, mcpPluginPrefix+err.Error())
-
-		return emptyPluginLedger(), pluginMCPPlan{AllFailed: true}
-	}
+	// The vault's plugin ledger was the farm's record of what it had parked.
+	// The farm is gone and nothing writes that file any more, so what this
+	// machine has installed is what the host registries say - read once, in
+	// the shape the MCP rules already speak.
+	ledger := e.hostPluginLedger()
 
 	plan, warns := e.buildPluginMCPPlan(ledger, canonKeys(vaultItems))
 
@@ -162,7 +161,7 @@ func (e *Engine) buildPluginMCPPlan(ledger pluginLedger, canon map[string]struct
 
 	var warns []string
 
-	dedup := e.pluginDedup(ledger)
+	dedup := e.pluginDedup()
 
 	for _, a := range e.agents {
 		agentWarns := e.buildPluginMCPAgent(&plan, a.ID, ledger, dedup, canon)
@@ -291,11 +290,10 @@ func appendUniqueWarns(warns, extra []string) []string {
 	return warns
 }
 
+// pluginMCPServers reads one plugin's MCP servers for one host. A version pin
+// in the config used to pick the pivot the servers were read from; pins are
+// inert now (the doctor says so) and the installed version answers instead.
 func (e *Engine) pluginMCPServers(agentID, key string, rec pluginLedgerRec) (kind.Items, []string, bool) {
-	if _, pinned := e.config.PluginPin(agentID, key); pinned {
-		return e.pinnedPluginMCPServers(agentID, key)
-	}
-
 	root, targetWarns, ok := e.pluginTargetRoot(key, rec)
 	if !ok {
 		warns := prefixWarns(mcpPluginPrefix, targetWarns)
@@ -303,23 +301,10 @@ func (e *Engine) pluginMCPServers(agentID, key string, rec pluginLedgerRec) (kin
 		return nil, warns, len(targetWarns) > 0 && !e.pluginCacheReachable(recSource(rec))
 	}
 
-	pivot := e.pluginPivotDir(key)
-
-	return e.readPluginMCPServers(key, recSource(rec), rec.Target, pivot, root)
-}
-
-func (e *Engine) pinnedPluginMCPServers(agentID, key string) (kind.Items, []string, bool) {
-	pivot, ok := e.pluginPivotFor(agentID, key)
-	if !ok {
-		return nil, []string{mcpPluginPrefix + e.pinnedPivotNote(agentID, key)}, false
-	}
-
-	root, err := filepath.EvalSymlinks(filepath.Join(e.home, ".claude", "plugins"))
-	if err != nil {
-		return nil, []string{fmt.Sprintf("%splugin %s cache cannot be resolved: %v", mcpPluginPrefix, key, err)}, true
-	}
-
-	return e.readPluginMCPServers(key, plugin.SourceClaudeCode, pivot, pivot, root)
+	// The plugin root a server may expand to is the directory the plugin
+	// manager installed it in - the same one the host itself would use. The
+	// farm's pivot pointed here; it no longer exists.
+	return e.readPluginMCPServers(key, recSource(rec), rec.Target, rec.Target, root)
 }
 
 // readPluginMCPServers decodes the MCP document of one plugin. A file-backed

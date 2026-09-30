@@ -88,27 +88,45 @@ type pluginDedup struct {
 	Warns []string
 }
 
-// pluginDedup computes the duplicate-plugin presentation from the ledger.
-func (e *Engine) pluginDedup(ledger pluginLedger) pluginDedup {
+// pluginDedup computes the duplicate-plugin presentation from the host
+// registries. The farm's ledger used to answer "which host installed this
+// plugin, and which copy wins"; the registries answer both directly, and the
+// registry is the truth the plugin manager itself reads.
+func (e *Engine) pluginDedup() pluginDedup {
 	dedup := pluginDedup{Suppressed: map[string]string{}, LoserHosts: map[string]map[string]bool{}}
+
+	if e.home == "" {
+		return dedup
+	}
+
+	manifest, err := plugin.ReadAll(e.home)
+	if err != nil {
+		return dedup
+	}
+
+	records := map[string]plugin.Plugin{}
 
 	groups := map[string][]string{}
 
-	for _, key := range slices.Sorted(maps.Keys(ledger.Plugins)) {
-		rec := ledger.Plugins[key]
+	resolved, notes, warns := groupPlugins(manifest.Plugins)
 
-		if !rec.QuarantinedAt.IsZero() || !rec.RetiredAt.IsZero() {
-			continue
-		}
+	dedup.Notes = notes
+	dedup.Warns = warns
 
-		origin, name, ok := strings.Cut(key, "/")
-		if !ok || !validPluginKey(origin, name) {
-			continue
-		}
+	for _, group := range resolved {
+		key := pluginKey(group.Origin, group.Name)
 
-		dedup.markLosers(key, rec.Overridden)
+		chosen := chooseRecord(group.Plugins)
+		records[key] = chosen
 
-		groups[name] = append(groups[name], key)
+		// The host that lists the plugin reads it natively - it loads the
+		// plugin's own skills and hooks - so it must not also receive a canon
+		// copy of the same items. A host whose copy lost the source conflict
+		// reads its native copy for the same reason.
+		dedup.markLosers(key, []string{chosen.Source})
+		dedup.markLosers(key, group.Overridden)
+
+		groups[group.Name] = append(groups[group.Name], key)
 	}
 
 	for _, name := range slices.Sorted(maps.Keys(groups)) {
@@ -117,21 +135,21 @@ func (e *Engine) pluginDedup(ledger pluginLedger) pluginDedup {
 			continue
 		}
 
-		e.dedupDuplicateGroup(&dedup, keys, ledger)
+		e.dedupDuplicateGroup(&dedup, keys, records)
 	}
 
 	return dedup
 }
 
-func (e *Engine) dedupDuplicateGroup(dedup *pluginDedup, keys []string, ledger pluginLedger) {
-	winner := e.duplicateWinner(keys, ledger)
+func (e *Engine) dedupDuplicateGroup(dedup *pluginDedup, keys []string, records map[string]plugin.Plugin) {
+	winner := e.duplicateWinner(keys, records)
 	if winner == "" {
 		return
 	}
 
-	winnerRec := ledger.Plugins[winner]
+	winnerRec := records[winner]
 
-	winnerDigest, err := plugin.ArtifactDigest(recSource(winnerRec), winnerRec.Target)
+	winnerDigest, err := plugin.ArtifactDigest(winnerRec.Source, winnerRec.InstallPath)
 	if err != nil {
 		return
 	}
@@ -141,15 +159,15 @@ func (e *Engine) dedupDuplicateGroup(dedup *pluginDedup, keys []string, ledger p
 			continue
 		}
 
-		rec := ledger.Plugins[key]
+		rec := records[key]
 
-		if recSource(rec) == recSource(winnerRec) {
-			// Same-host namespace collisions are reported by the farm owner
-			// map, not deduplicated.
+		if rec.Source == winnerRec.Source {
+			// Same-host namespace collisions are two keys with one name, and
+			// both stay: they are different plugins to their host.
 			continue
 		}
 
-		digest, err := plugin.ArtifactDigest(recSource(rec), rec.Target)
+		digest, err := plugin.ArtifactDigest(rec.Source, rec.InstallPath)
 		if err != nil {
 			continue
 		}
@@ -162,7 +180,7 @@ func (e *Engine) dedupDuplicateGroup(dedup *pluginDedup, keys []string, ledger p
 
 		dedup.Suppressed[key] = winner
 
-		dedup.markLosers(winner, []string{recSource(rec)})
+		dedup.markLosers(winner, []string{rec.Source})
 
 		dedup.Notes = append(dedup.Notes, duplicateNote(nameOfKey(key), key, winner))
 	}
@@ -180,20 +198,17 @@ func (dedup *pluginDedup) markLosers(key string, sources []string) {
 }
 
 // duplicateWinner picks the key that presents the group: the first source in
-// host order whose install path resolves inside its own roots. A key whose
-// install is unresolvable does not win — presenting an unreadable copy would
-// hide the readable ones.
-func (e *Engine) duplicateWinner(keys []string, ledger pluginLedger) string {
+// host order whose install path is on disk. A key whose install is missing
+// does not win - presenting an unreadable copy would hide the readable ones.
+func (e *Engine) duplicateWinner(keys []string, records map[string]plugin.Plugin) string {
 	ordered := slices.Clone(keys)
 
 	slices.SortFunc(ordered, func(a, b string) int {
-		return cmp.Compare(pluginSourceIndex(recSource(ledger.Plugins[a])), pluginSourceIndex(recSource(ledger.Plugins[b])))
+		return cmp.Compare(pluginSourceIndex(records[a].Source), pluginSourceIndex(records[b].Source))
 	})
 
 	for _, key := range ordered {
-		rec := ledger.Plugins[key]
-
-		if _, _, ok := e.pluginTargetRoot(key, rec); ok {
+		if isDir(records[key].InstallPath) {
 			return key
 		}
 	}

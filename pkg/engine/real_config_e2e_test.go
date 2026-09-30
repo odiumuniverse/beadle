@@ -307,12 +307,6 @@ func TestRealConfigE2E(t *testing.T) {
 					So(entry.Name(), ShouldNotContainSubstring, "plug-")
 				}
 
-				pivot := filepath.Join(f.vault.PluginsDir(), "vmkteam", "vmkteam-developer", "current", "skills", "plug-1")
-
-				// Claude installed the plugin (native): the farm link lands on
-				// the farmed hosts, e.g. Gemini.
-				So(farmLink(t, filepath.Join(f.home, ".gemini", "skills"), "plug-1"), ShouldEqual, pivot)
-
 				_, claudePlugErr := os.Lstat(filepath.Join(claudeSkillsDir(f.home), "plug-1"))
 				So(errors.Is(claudePlugErr, fs.ErrNotExist), ShouldBeTrue)
 

@@ -23,6 +23,8 @@ const gitIgnore = `# Beadle: credentials and machine-local state stay on this ma
 mcp/secrets.json
 state/
 state.json
+verger/state/
+verger/store/
 objects/
 conflicts/
 plugins/
@@ -30,6 +32,23 @@ bundles/
 # project rules stay out of git until the U-12 secret gate lands
 projects/
 `
+
+// vergerStateFiles are the paths under the library's home that record what one
+// machine did, and the files a vault in git must not carry. The directory
+// entries above already cover a fresh vault; these name the files for a vault
+// that was committed before the rules, so the migration can untrack them by
+// name instead of guessing.
+var vergerStateFiles = []string{
+	"verger/state/receipts",
+	"verger/state/journal.jsonl",
+	"verger/state/tombstones.json",
+	"verger/state/consent.json",
+	"verger/state/secrets.json",
+	"verger/state/trust.json",
+	"verger/state/watch.lease",
+	"verger/state/.lock",
+	"verger/store",
+}
 
 const (
 	legacyMemoryIgnoreLine    = "memory/"
@@ -126,6 +145,25 @@ func (v *Vault) MemoryDir() string {
 // SubagentsDir returns the vault directory holding the subagent canon.
 func (v *Vault) SubagentsDir() string {
 	return filepath.Join(v.root, "subagents")
+}
+
+// VergerDir returns the vault directory holding the verger home. The spec and
+// the lock live here and travel with the vault's git; the machine-local state
+// under state/ does not (see the vault .gitignore).
+func (v *Vault) VergerDir() string {
+	return filepath.Join(v.root, "verger")
+}
+
+// CanonPackageDir returns the vault directory holding the canon rendered as one
+// portable package. It is deliberately outside the per-host bundles: this tree
+// is a package verger reads, not a host delivery.
+func (v *Vault) CanonPackageDir() string {
+	return filepath.Join(v.root, "bundle")
+}
+
+// VergerFile returns the path of one verger state file in the vault home.
+func (v *Vault) VergerFile(name string) string {
+	return filepath.Join(v.root, "verger", name)
 }
 
 // CommandsDir returns the vault directory holding the command canon.

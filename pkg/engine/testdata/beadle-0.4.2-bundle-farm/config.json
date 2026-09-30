@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "agents": {
+    "claude-code": {
+      "enabled": true
+    }
+  },
+  "permissions": "off",
+  "history": "git",
+  "secrets": "literal"
+}

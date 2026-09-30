@@ -304,7 +304,7 @@ func (e *Engine) autoEnableBundlesInto(ctx context.Context, active []*agent.Agen
 // register → probe → flip. auto marks an unattended attempt, recorded in the
 // state so it is not retried on every sync.
 func (e *Engine) bundleEnable(ctx context.Context, host bundle.Host, st *state.State, report *Report, auto bool) error {
-	req, cov, notes, reqWarns, err := e.bundleRenderRequest(host)
+	req, cov, notes, reqWarns, err := e.bundleRenderRequest(host, st, true)
 	report.Notes = append(report.Notes, notes...)
 	report.Warnings = append(report.Warnings, reqWarns...)
 	report.Warnings = append(report.Warnings, cov.Warnings...)
@@ -1040,7 +1040,7 @@ func (e *Engine) bundleRequest(host bundle.Host) (bundle.Request, []string, []st
 		Skills:   map[string]map[string][]byte{},
 		Servers:  kind.Items{},
 		Hooks:    map[string]hooks.Hook{},
-		Approved: hooks.Approved(e.config),
+		Approved: e.approvedHooksForRender(loadCanonForRender(e)),
 	}
 
 	var (
@@ -1180,7 +1180,7 @@ func (e *Engine) refreshBundle(st *state.State, report *Report, hostName string)
 		return
 	}
 
-	req, cov, notes, warns, err := e.bundleRenderRequest(host)
+	req, cov, notes, warns, err := e.bundleRenderRequest(host, st, e.bundleDeliversSkills(host))
 	report.Notes = append(report.Notes, notes...)
 	report.Warnings = append(report.Warnings, warns...)
 	report.Warnings = append(report.Warnings, cov.Warnings...)
@@ -1387,6 +1387,24 @@ func (e *Engine) restoreBundleKinds(host bundle.Host, entry *state.BundleState, 
 
 func (e *Engine) agentMode(agentID string, k kind.ID) config.Mode {
 	return e.config.ModeFor(agentID, k, e.surfaceDefaultMode(agentID, k))
+}
+
+// bundleDeliversSkills reports whether this host's skills reach it through its
+// bundle rather than through a skills file beadle writes.
+//
+// The test is the mode, not whether a bundle is enabled. A bundle can be
+// enabled for a host whose skills file is still the delivery path, and then a
+// copy in that file - beadle's own, or a foreign tool's symlink - really does
+// deliver the skill, so the bundle must not duplicate it. Once the kind is off
+// the file is no longer a delivery path and the copy in it is only a leftover.
+func (e *Engine) bundleDeliversSkills(host bundle.Host) bool {
+	if !slices.Contains(host.Kinds(), kind.Skills) {
+		return false
+	}
+
+	mode := e.config.ModeFor(host.AgentID(), kind.Skills, e.surfaceDefaultMode(host.AgentID(), kind.Skills))
+
+	return mode != config.ModeSync
 }
 
 func (e *Engine) surfaceDefaultMode(agentID string, k kind.ID) config.Mode {
@@ -1597,8 +1615,10 @@ func (e *Engine) bundleIssues(ctx context.Context) []Issue {
 	} else {
 		pending := 0
 
+		approved := e.approvedHooksForRender(canon)
+
 		for name := range canon {
-			if !e.config.HookApproved(name) {
+			if !approved[name] {
 				pending++
 			}
 		}
@@ -1641,7 +1661,7 @@ func (e *Engine) bundleHostStateIssues(ctx context.Context, st *state.State, hos
 
 	issues = append(issues, e.bundleRegistrationIssues(hostName, host, entry)...)
 
-	req, cov, notes, _, err := e.bundleRenderRequest(host)
+	req, cov, notes, _, err := e.bundleRenderRequest(host, st, e.bundleDeliversSkills(host))
 	if err != nil {
 		return append(issues, Issue{Severity: SeverityWarn, Message: "bundles: " + err.Error()})
 	}
@@ -1931,16 +1951,4 @@ func (e *Engine) bundleRegistrationIssues(hostName string, host bundle.Host, ent
 
 func bundlePluginKey() string {
 	return bundle.MarketplaceName + "/" + bundle.PluginName
-}
-
-func dropBundleLedgerEntry(ledger pluginLedger) bool {
-	key := bundlePluginKey()
-
-	if _, ok := ledger.Plugins[key]; !ok {
-		return false
-	}
-
-	delete(ledger.Plugins, key)
-
-	return true
 }

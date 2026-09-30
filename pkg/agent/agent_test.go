@@ -832,7 +832,10 @@ func TestReadableSkills(t *testing.T) {
 		cursorOwn := filepath.Join(home, ".cursor", "skills")
 
 		Convey("When opencode reads skills", func() {
-			So(readableDirs(readableRefs(t, agent.OpenCode(home, cwd))), ShouldResemble, []string{ocOwn, claudeOwn, sharedOwn})
+			// The order is the shared resolver's measured one: the own config
+			// directory wins, then ~/.agents/skills, then ~/.claude/skills —
+			// which is the precedence beadle's own marker probe found.
+			So(readableDirs(readableRefs(t, agent.OpenCode(home, cwd))), ShouldResemble, []string{ocOwn, sharedOwn, claudeOwn})
 		})
 
 		Convey("When cursor reads skills", func() {
@@ -857,7 +860,7 @@ func TestReadableSkills(t *testing.T) {
 
 			writeFile(t, filepath.Join(xdg, "opencode", "skills", "xdg-own", "SKILL.md"), "# xdg\n")
 
-			So(readableDirs(readableRefs(t, agent.OpenCode(home, cwd))), ShouldResemble, []string{filepath.Join(xdg, "opencode", "skills"), claudeOwn, sharedOwn})
+			So(readableDirs(readableRefs(t, agent.OpenCode(home, cwd))), ShouldResemble, []string{filepath.Join(xdg, "opencode", "skills"), sharedOwn, claudeOwn})
 		})
 	})
 }
@@ -1053,11 +1056,16 @@ func TestNewAgentSkillsAlsoReads(t *testing.T) {
 			name string
 			a    *agent.Agent
 			own  string
+			// codex is the one host whose own directory is the SECOND read:
+			// its write target is the shared hub (the decision in
+			// docs/tasks/orchestration-2026-09-29.md) and ~/.codex/skills is
+			// the deprecated location, kept as a legacy read.
+			want []string
 		}{
-			{"codex", agent.Codex(home, cwd), codexOwn},
-			{"pi", agent.Pi(home, cwd), piOwn},
-			{"kilo", agent.Kilo(home, cwd), kiloOwn},
-			{"omp", agent.Omp(home, cwd), ompOwn},
+			{"codex", agent.Codex(home, cwd), codexOwn, []string{sharedOwn, codexOwn}},
+			{"pi", agent.Pi(home, cwd), piOwn, []string{piOwn, sharedOwn}},
+			{"kilo", agent.Kilo(home, cwd), kiloOwn, []string{kiloOwn, sharedOwn}},
+			{"omp", agent.Omp(home, cwd), ompOwn, []string{ompOwn, sharedOwn}},
 		}
 
 		for _, tc := range cases {
@@ -1066,11 +1074,23 @@ func TestNewAgentSkillsAlsoReads(t *testing.T) {
 				mode := surfaceOf(t, tc.a, kind.Skills).Traits().DefaultMode
 				snap := snapshot(t, tc.a, kind.Skills)
 
-				Convey("Then its own and the shared dir are readable and the mode is pull", func() {
-					So(readableDirs(refs), ShouldResemble, []string{tc.own, sharedOwn})
+				Convey("Then its readable dirs are the expected pair and the mode is pull", func() {
+					So(readableDirs(refs), ShouldResemble, tc.want)
 					So(mode, ShouldEqual, config.ModePull)
-					So(snap.Items, ShouldNotContainKey, "shared-own/SKILL.md")
 				})
+
+				if tc.name == "codex" {
+					Convey("Then the shared hub is codex's own canon, not a foreign read", func() {
+						// The decision (orchestration-2026-09-29.md): codex
+						// writes the hub, so a skill that lives there belongs to
+						// beadle's canon for codex like any other own file.
+						So(snap.Items, ShouldContainKey, "shared-own/SKILL.md")
+					})
+				} else {
+					Convey("Then the shared dir stays a foreign read", func() {
+						So(snap.Items, ShouldNotContainKey, "shared-own/SKILL.md")
+					})
+				}
 			})
 		}
 	})

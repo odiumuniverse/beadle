@@ -30,21 +30,126 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/state"
 )
 
+// Severity vocabulary (W7-UX §3.2). "warn" and "ok" are gone: a check that
+// passes is not a finding, it is the absence of one, and only findings are
+// reported. "failed" stays distinct from a severity — it is the one word that
+// means "we tried and it broke", and collapsing it into a warning hides a bug.
 const (
-	SeverityError = "error"
-	SeverityWarn  = "warn"
-	SeverityInfo  = "info"
+	SeverityError   = "error"
+	SeverityWarning = "warning"
+	SeverityInfo    = "info"
 )
+
+// SeverityWarn is the old name, kept so the existing call sites keep compiling
+// while they are migrated one check at a time. It is the value "warning".
+const SeverityWarn = SeverityWarning
 
 const maxObjectIssues = 5
 
-var hostFSType = fsutil.FSType
+// beadleName is the product name as the user types it: every printed fix
+// command starts with it.
+const beadleName = "beadle"
 
-type Issue struct {
-	Severity string  `json:"severity"`
-	Kind     kind.ID `json:"kind,omitempty"`
-	Agent    string  `json:"agent,omitempty"`
-	Message  string  `json:"message"`
+// Finding is what every doctor check reports (W7-UX §3.1). A check that passes
+// returns nothing: only findings are reported, so a clean run is one line.
+type Finding struct {
+	// Severity is error, warning or info.
+	Severity string `json:"severity"`
+
+	// Subject is the stable "kind.name" a script matches on. Message is prose
+	// and is not stable; this is.
+	Subject string `json:"subject"`
+
+	// Message is the prose the user reads.
+	Message string `json:"message"`
+
+	// Kind and Agent are what Subject is derived from when a check does not
+	// name its own. They stay in the JSON because existing readers use them.
+	Kind  kind.ID `json:"kind,omitempty"`
+	Agent string  `json:"agent,omitempty"`
+
+	// Fix is a list of ready-to-run argv arrays, one step each and in order,
+	// so a user can paste entry 0 and stop. It is a list rather than a string
+	// because a rendered command cannot be re-split safely. Empty means there
+	// is nothing to suggest, not that the finding is harmless.
+	Fix [][]string `json:"fix,omitempty"`
+
+	// SafeToAutofix is true only when the fix is a repair beadle fully owns —
+	// creating a directory, re-registering a service — and changes nothing the
+	// user wrote. A consent prompt, a conflict, a policy refusal and anything
+	// under a user-edited file stay false, and stay a printed instruction.
+	SafeToAutofix bool `json:"safe_to_autofix"`
+}
+
+// Issue is the historical name of Finding, kept so the ~120 existing call
+// sites keep compiling. Kind and Agent remain the two things a subject is
+// derived from when a check does not name its own.
+type Issue = Finding
+
+// Scope returns the stable subject for a finding: the explicit Subject when a
+// check named one, otherwise derived from Kind and Agent so every finding
+// carries something a script can match.
+func (f Finding) Scope() string {
+	if f.Subject != "" {
+		return f.Subject
+	}
+
+	switch {
+	case f.Agent != "" && f.Kind != "":
+		return f.Agent + "/" + string(f.Kind)
+	case f.Agent != "":
+		return f.Agent
+	case f.Kind != "":
+		return string(f.Kind)
+	default:
+		return "vault"
+	}
+}
+
+// CanAutoFix reports whether `doctor --fix` would apply this finding.
+func (f Finding) CanAutoFix() bool { return f.SafeToAutofix && len(f.Fix) > 0 }
+
+// migrationSkippedIssues names the plugins the farm migration could not
+// resolve. The migration records them in `farm_migration.skipped` — key to
+// reason — and deliberately does not stall on them: the rest of the farm
+// moves and this one waits for the user. That is a decision the user has to
+// be able to see, because a ledger entry that silently never migrates looks
+// exactly like one that was never there.
+//
+// The fix is a printed instruction, never an auto-fix: re-resolving a
+// marketplace needs a decision only the user can make.
+func migrationSkippedIssues(st *state.State) []Issue {
+	if st == nil || st.FarmMigration == nil || len(st.FarmMigration.Skipped) == 0 {
+		return nil
+	}
+
+	keys := make([]string, 0, len(st.FarmMigration.Skipped))
+	for key := range st.FarmMigration.Skipped {
+		keys = append(keys, key)
+	}
+
+	slices.Sort(keys)
+
+	issues := make([]Issue, 0, len(keys))
+
+	for _, key := range keys {
+		reason := st.FarmMigration.Skipped[key]
+		if reason == "" {
+			reason = "the plugin manager could not resolve it"
+		}
+
+		issues = append(issues, Issue{
+			Severity: SeverityWarning,
+			Subject:  "plugin.skipped." + key,
+			Message:  "plugin " + key + " skipped during migration: " + reason,
+			// Installing it by hand is the user's call: the marketplace may be
+			// private, gone, or reachable only from their account.
+			Fix:           [][]string{{beadleName, "plugins", cliInstall, key}},
+			SafeToAutofix: false,
+		})
+	}
+
+	return issues
 }
 
 func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
@@ -59,6 +164,8 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, conflictIssues(st)...)
 	issues = append(issues, refusalIssues(st, e.now())...)
 	issues = append(issues, e.rulingIssues()...)
+	issues = append(issues, migrationSkippedIssues(st)...)
+	issues = append(issues, e.bundleFarmIssues(st)...)
 
 	active, err := e.activeAgents(ctx)
 	if err != nil {
@@ -71,7 +178,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	}
 
 	for _, a := range active {
-		issues = append(issues, e.symlinkIssues(a, ledger)...)
+		issues = append(issues, e.symlinkIssues(a)...)
 	}
 
 	plan, err := e.Sync(ctx, SyncOptions{DryRun: true})
@@ -93,13 +200,9 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.claudeUserRulesIssues(active)...)
 	issues = append(issues, e.claudeProjectRulesIssues(active)...)
 	issues = append(issues, e.pluginRefIssues(active)...)
-	issues = append(issues, e.pluginPivotIssues(ctx)...)
 	issues = append(issues, e.pluginSourceIssues()...)
 	issues = append(issues, e.pluginDuplicateIssues()...)
-	issues = append(issues, e.orphanPivotIssues()...)
-	issues = append(issues, e.pluginPinIssues(active)...)
-	issues = append(issues, e.pluginMigrationIssues(ctx, ledger)...)
-	issues = append(issues, e.farmPresentationIssues(active, ledger)...)
+	issues = append(issues, e.pluginMigrationIssues(ctx)...)
 	issues = append(issues, e.bundleIssues(ctx)...)
 	issues = append(issues, e.digestIssues(active, st)...)
 	issues = append(issues, e.surfaceOffIssues(ctx, st, active)...)
@@ -117,8 +220,6 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.hookModuleIssues()...)
 	issues = append(issues, e.hookSecretIssues()...)
 	issues = append(issues, e.FlatSkillIssues(active)...)
-	issues = append(issues, e.FarmAgentIssues()...)
-	issues = append(issues, e.FarmCommandIssues()...)
 	issues = append(issues, e.DSHIssues()...)
 	issues = append(issues, e.dshMCPIssues(active)...)
 	issues = append(issues, e.OmpIssues()...)
@@ -195,7 +296,17 @@ func (e *Engine) daemonIssues() []Issue {
 
 	switch {
 	case !status.Installed:
-		return []Issue{{Severity: SeverityWarn, Message: "daemon is not installed; run beadle daemon install"}}
+		// Installing the watcher is a repair beadle owns: it writes a unit
+		// under the user's own LaunchAgents / systemd user directory and
+		// changes nothing the user wrote. That is what makes it the one
+		// finding doctor may apply without asking twice.
+		return []Issue{{
+			Severity:      SeverityWarn,
+			Subject:       "daemon.installed",
+			Message:       "daemon is not installed: the background watcher will not run",
+			Fix:           [][]string{{beadleName, "daemon", "install"}},
+			SafeToAutofix: true,
+		}}
 	case !status.Loaded:
 		return []Issue{{Severity: SeverityWarn, Message: fmt.Sprintf(
 			"daemon is installed but not loaded; load %s with launchctl/systemctl or reinstall it with beadle daemon install", status.Path)}}
@@ -327,7 +438,9 @@ func (e *Engine) memorySecretIssues() []Issue {
 	if len(plaintexts) > 0 && !ignored {
 		issues = append(issues, Issue{
 			Severity: SeverityError, Kind: kind.Memory,
-			Message: fmt.Sprintf("memory notes with plaintext secrets are not ignored by git: %s; run beadle sync", strings.Join(plaintexts, ", ")),
+			Message: fmt.Sprintf("memory notes with plaintext secrets are not ignored by git: %s; run beadle sync",
+				strings.Join(plaintexts, ", ")),
+			Fix: [][]string{{beadleName, "sync"}},
 		})
 	}
 
@@ -397,7 +510,9 @@ func (e *Engine) digestTargetIssues(st *state.State, target projectTarget, vault
 
 		return []Issue{{
 			Severity: severity, Kind: kind.Projects, Agent: target.agent.ID,
-			Message: fmt.Sprintf("manual edits inside the generated block in %s; the digest is frozen: restore the bytes, delete the block, or run beadle sync --refresh-digest", path),
+			Message: fmt.Sprintf("manual edits inside the generated block in %s; the digest is frozen: restore the bytes, delete the block, or run beadle sync --refresh-digest",
+				path),
+			Fix: [][]string{{beadleName, "sync", "--refresh-digest"}},
 		}}
 	}
 
@@ -512,12 +627,18 @@ func conflictIssues(st *state.State) []Issue {
 	var issues []Issue
 
 	for _, c := range st.OpenConflicts() {
+		// The spec's template (W7-UX §3.3): the runnable command that used to
+		// be buried in the prose becomes argv, and the conflict id becomes a
+		// stable subject. Never safe to autofix — resolving picks a side, and
+		// the choice is the user's.
 		issues = append(issues, Issue{
 			Severity: SeverityWarn,
 			Kind:     c.Kind,
 			Agent:    c.Agent,
-			Message: fmt.Sprintf("conflict %s: %s differs between the vault and %s (%s); run beadle resolve %s",
-				c.ID(), c.TargetKey(), c.Agent, c.Reason, c.ID()),
+			Subject:  "conflict." + c.ID(),
+			Message: fmt.Sprintf("%s differs between the vault and %s (%s)",
+				c.TargetKey(), c.Agent, c.Reason),
+			Fix: [][]string{{beadleName, "resolve", c.ID()}},
 		})
 	}
 
@@ -559,7 +680,9 @@ func planIssues(plan *Report) []Issue {
 		for _, agentID := range slices.Sorted(maps.Keys(pending)) {
 			issues = append(issues, Issue{
 				Severity: SeverityWarn, Kind: kr.Kind, Agent: agentID,
-				Message: fmt.Sprintf("%d change(s) are not in the vault yet; run beadle sync", pending[agentID]),
+				Message: fmt.Sprintf("%d change(s) are not in the vault yet; run beadle sync",
+					pending[agentID]),
+				Fix: [][]string{{beadleName, "sync"}},
 			})
 		}
 
@@ -593,7 +716,11 @@ func resultIssue(k kind.ID, result AgentResult) (Issue, bool) {
 	return issue, true
 }
 
-func (e *Engine) symlinkIssues(a *agent.Agent, ledger pluginLedger) []Issue {
+// symlinkIssues reports a broken symlink in any agent surface beadle owns.
+// The farm used to link plugin skills into those surfaces, so a link into the
+// plugin cache was expected to dangle until the next sync; the farm is gone,
+// so a broken link is simply broken.
+func (e *Engine) symlinkIssues(a *agent.Agent) []Issue {
 	var issues []Issue
 
 	for _, surface := range a.Surfaces {
@@ -605,7 +732,7 @@ func (e *Engine) symlinkIssues(a *agent.Agent, ledger pluginLedger) []Issue {
 		}
 
 		if info.Mode()&fs.ModeSymlink != 0 && !fsutil.Exists(path) {
-			issues = append(issues, e.brokenSymlinkIssues(a, surface, path, ledger)...)
+			issues = append(issues, e.brokenSymlinkIssues(a, path)...)
 
 			continue
 		}
@@ -622,7 +749,7 @@ func (e *Engine) symlinkIssues(a *agent.Agent, ledger pluginLedger) []Issue {
 		for _, entry := range entries {
 			child := filepath.Join(path, entry.Name())
 			if entry.Type()&fs.ModeSymlink != 0 && !fsutil.Exists(child) {
-				issues = append(issues, e.brokenSymlinkIssues(a, surface, child, ledger)...)
+				issues = append(issues, e.brokenSymlinkIssues(a, child)...)
 			}
 		}
 	}
@@ -630,16 +757,7 @@ func (e *Engine) symlinkIssues(a *agent.Agent, ledger pluginLedger) []Issue {
 	return issues
 }
 
-func (e *Engine) brokenSymlinkIssues(a *agent.Agent, surface agent.Surface, path string, ledger pluginLedger) []Issue {
-	if surface.Kind() == kind.Skills && e.home != "" &&
-		e.config.ModeFor(a.ID, kind.Skills, surface.Traits().DefaultMode) != config.ModeOff {
-		if link, err := os.Readlink(path); err == nil {
-			if _, _, ok := e.cacheLinkKey(link, ledger); ok {
-				return nil
-			}
-		}
-	}
-
+func (e *Engine) brokenSymlinkIssues(a *agent.Agent, path string) []Issue {
 	return []Issue{{Severity: SeverityError, Agent: a.ID, Message: "broken symlink: " + path}}
 }
 
@@ -863,6 +981,7 @@ func (e *Engine) adoptionIssues(st *state.State) []Issue {
 			Severity: SeverityInfo, Kind: kind.Skills, Agent: record.Host,
 			Message: fmt.Sprintf("skill %s was adopted (original at %s); run beadle skills unadopt %s --host %s to restore it",
 				record.Name, displayHomePath(stash, e.home), record.Name, record.Host),
+			Fix: [][]string{{beadleName, "skills", "unadopt", record.Name, "--host", record.Host}},
 		})
 
 		if entryExists(stash) || (record.Target != "" && entryExists(record.Target)) {
@@ -937,14 +1056,20 @@ func (e *Engine) secretIssues() []Issue {
 		if !e.secrets.Has(name) {
 			issues = append(issues, Issue{
 				Severity: SeverityError,
-				Message:  fmt.Sprintf("secret %s has no value in %s; run beadle secrets set %s", name, e.vault.SecretsPath(), name),
+				Message: fmt.Sprintf("secret %s has no value in %s; run beadle secrets set %s",
+					name, e.vault.SecretsPath(), name),
+				Fix: [][]string{{beadleName, "secrets", "set", name}},
 			})
 		}
 	}
 
 	for _, name := range e.secrets.Names() {
 		if !slices.Contains(refs, name) {
-			issues = append(issues, Issue{Severity: SeverityInfo, Message: fmt.Sprintf("secret %s is unused; run beadle secrets prune", name)})
+			issues = append(issues, Issue{
+				Severity: SeverityInfo,
+				Message:  fmt.Sprintf("secret %s is unused; run beadle secrets prune", name),
+				Fix:      [][]string{{beadleName, "secrets", "prune", name}},
+			})
 		}
 	}
 
@@ -1032,52 +1157,6 @@ func projectIssue(severity, message string) Issue {
 	return Issue{Severity: severity, Kind: kind.MCP, Agent: agent.ClaudeCodeID, Message: message}
 }
 
-func (e *Engine) farmPresentationIssues(active []*agent.Agent, ledger pluginLedger) []Issue {
-	if e.home == "" || !e.config.KindEnabled(kind.Skills) {
-		return nil
-	}
-
-	plan, _ := e.buildFarmPlan(ledger)
-
-	var issues []Issue
-
-	for _, a := range active {
-		surface := a.Surface(kind.Skills)
-		if surface == nil || e.config.ModeFor(a.ID, kind.Skills, surface.Traits().DefaultMode) == config.ModeOff {
-			continue
-		}
-
-		dir := surface.Path()
-		if !isDir(dir) {
-			continue
-		}
-
-		fsType, err := hostFSType(dir)
-		if err != nil || !fsutil.UnsupportedSymlinkFS(fsType) {
-			continue
-		}
-
-		issues = append(issues, Issue{
-			Severity: SeverityWarn,
-			Kind:     kind.Skills,
-			Agent:    a.ID,
-			Message:  farmPresentationWarning(dir, e.home, len(plan.Desired)),
-		})
-	}
-
-	return issues
-}
-
-func farmPresentationWarning(dir, home string, skills int) string {
-	display := displayHomePath(dir, home)
-
-	if skills == 0 {
-		return fmt.Sprintf("symlinks are not supported in %s; a copy fallback is intentionally not performed", display)
-	}
-
-	return fmt.Sprintf("symlinks are not supported in %s; %d plugin skill(s) are not presented; a copy fallback is intentionally not performed", display, skills)
-}
-
 func (e *Engine) pluginRefIssues(active []*agent.Agent) []Issue {
 	if e.home == "" {
 		return nil
@@ -1130,339 +1209,6 @@ func displayHomePath(path, home string) string {
 	}
 
 	return path
-}
-
-func (e *Engine) pluginPinIssues(active []*agent.Agent) []Issue {
-	if e.home == "" {
-		return nil
-	}
-
-	ledger, _, err := loadPluginLedger(e.vault.PluginsLedgerPath())
-	if err != nil {
-		return []Issue{{Severity: SeverityWarn, Message: "cannot read the plugin ledger: " + err.Error()}}
-	}
-
-	manifest, manifestErr := plugin.ReadAll(e.home)
-
-	activeIDs := make(map[string]struct{}, len(active))
-
-	for _, a := range active {
-		activeIDs[a.ID] = struct{}{}
-	}
-
-	var issues []Issue
-
-	for _, agentID := range slices.Sorted(maps.Keys(e.config.Agents)) {
-		if _, on := activeIDs[agentID]; !on {
-			continue
-		}
-
-		pins := e.config.Agents[agentID].PluginPins
-
-		for _, key := range slices.Sorted(maps.Keys(pins)) {
-			issues = append(issues, e.pinIssues(agentID, key, pins[key], ledger, manifest, manifestErr)...)
-		}
-	}
-
-	return append(issues, e.strayPinPivotIssues(ledger)...)
-}
-
-// pinSource reports the host that provides the plugin of a pin: the parked
-// ledger record wins, then the installed manifest.
-func pinSource(key string, ledger pluginLedger, manifest plugin.Manifest) string {
-	if rec, parked := ledger.Plugins[key]; parked {
-		return recSource(rec)
-	}
-
-	for _, p := range manifest.Plugins {
-		if pluginKey(p.Origin, p.Name) == key {
-			return p.Source
-		}
-	}
-
-	return ""
-}
-
-func (e *Engine) pinIssues(agentID, key, version string, ledger pluginLedger, manifest plugin.Manifest, manifestErr error) []Issue {
-	marketplace, name, ok := strings.Cut(key, "/")
-	if !ok || !validPluginKey(marketplace, name) {
-		return []Issue{pinIssue(SeverityWarn, agentID, fmt.Sprintf("plugin pin %q has an invalid key", key))}
-	}
-
-	if source := pinSource(key, ledger, manifest); source != "" && source != plugin.SourceClaudeCode {
-		return []Issue{pinIssue(SeverityWarn, agentID, fmt.Sprintf(
-			"plugin %s belongs to %s; version pins cover the Claude Code plugin cache only, so the pin has no effect", key, source))}
-	}
-
-	var issues []Issue
-
-	target := filepath.Join(e.home, pluginCacheDir, marketplace, name, version)
-	if !isDir(target) {
-		issues = append(issues, pinIssue(SeverityError, agentID, fmt.Sprintf(
-			"plugin %s pinned to %s is not in the plugin cache; %s is missing its skills and MCP servers", key, version, agentID)))
-	}
-
-	pivot := filepath.Join(e.vault.PluginsDir(), marketplace, name, pinPivotName(version))
-
-	pivotInfo, pivotErr := os.Lstat(pivot)
-	if pivotErr == nil && isDir(target) && !pivotValid(pivot) {
-		note := "is dangling"
-		if pivotInfo.Mode()&fs.ModeSymlink == 0 {
-			note = "is not a symlink"
-		}
-
-		issues = append(issues, pinIssue(SeverityError, agentID, fmt.Sprintf("plugin %s %s pivot %s; run beadle sync", key, pinPivotName(version), note)))
-	}
-
-	if e.pinUnknownPlugin(key, ledger, manifest, manifestErr) {
-		issues = append(issues, pinIssue(SeverityWarn, agentID, fmt.Sprintf("plugin %s is not installed; the pin has no effect", key)))
-	}
-
-	return issues
-}
-
-func (e *Engine) pinUnknownPlugin(key string, ledger pluginLedger, manifest plugin.Manifest, manifestErr error) bool {
-	if _, parked := ledger.Plugins[key]; parked {
-		return false
-	}
-
-	if manifestErr != nil {
-		return false
-	}
-
-	for _, p := range manifest.Plugins {
-		if pluginKey(p.Origin, p.Name) == key {
-			return false
-		}
-	}
-
-	return true
-}
-
-func (e *Engine) strayPinPivotIssues(ledger pluginLedger) []Issue {
-	pinned := e.pinnedVersions()
-
-	marketplaces, err := os.ReadDir(e.vault.PluginsDir())
-	if err != nil {
-		return nil
-	}
-
-	var issues []Issue
-
-	for _, marketplace := range marketplaces {
-		if !marketplace.IsDir() || reservedPluginDir(marketplace.Name()) {
-			continue
-		}
-
-		names, err := os.ReadDir(filepath.Join(e.vault.PluginsDir(), marketplace.Name()))
-		if err != nil {
-			continue
-		}
-
-		for _, name := range names {
-			if !name.IsDir() {
-				continue
-			}
-
-			key := pluginKey(marketplace.Name(), name.Name())
-			if pinQuarantined(ledger, key) {
-				continue
-			}
-
-			dir := filepath.Join(e.vault.PluginsDir(), marketplace.Name(), name.Name())
-
-			issues = append(issues, strayPinDirIssues(key, pinned[key], dir)...)
-		}
-	}
-
-	return issues
-}
-
-func strayPinDirIssues(key string, versions []string, dir string) []Issue {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-
-	var issues []Issue
-
-	for _, entry := range entries {
-		version, pinned := strings.CutPrefix(entry.Name(), pinPivotPrefix)
-		if !pinned || version == "" || entry.Type()&fs.ModeSymlink == 0 || slices.Contains(versions, version) {
-			continue
-		}
-
-		issues = append(issues, pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s has a stale %s pivot; run beadle sync", key, entry.Name())))
-	}
-
-	return issues
-}
-
-func pinIssue(severity, agentID, message string) Issue {
-	return Issue{Severity: severity, Kind: kind.Skills, Agent: agentID, Message: message}
-}
-
-func (e *Engine) orphanPivotIssues() []Issue {
-	ledger, _, err := loadPluginLedger(e.vault.PluginsLedgerPath())
-	if err != nil {
-		return nil
-	}
-
-	var issues []Issue
-
-	for _, dir := range e.orphanPivotDirs(ledger, e.pinnedVersions()) {
-		key := pluginKey(filepath.Base(filepath.Dir(dir)), filepath.Base(dir))
-
-		if _, safe := orphanPivotSafe(dir); !safe {
-			issues = append(issues, Issue{Severity: SeverityWarn, Message: fmt.Sprintf(
-				"plugin %s has an orphan pivot holding regular files; review and remove it manually", key)})
-
-			continue
-		}
-
-		issues = append(issues, Issue{Severity: SeverityWarn, Message: fmt.Sprintf(
-			"plugin %s has an orphan pivot left in the vault (not in the ledger); run beadle heal", key)})
-	}
-
-	if e.home != "" {
-		links, _ := e.pruneOrphanFarmLinks(ledger, true)
-
-		count := 0
-
-		for _, link := range links {
-			count += link.Count
-		}
-
-		if count > 0 {
-			issues = append(issues, Issue{Severity: SeverityWarn, Kind: kind.Skills, Message: fmt.Sprintf(
-				"%d orphan plugin skill link(s) point into retired pivots; run beadle heal", count)})
-		}
-	}
-
-	return issues
-}
-
-func (e *Engine) pluginPivotIssues(_ context.Context) []Issue {
-	if e.home == "" {
-		return nil
-	}
-
-	manifest, err := plugin.ReadAll(e.home)
-	if err != nil {
-		return []Issue{{Severity: SeverityWarn, Message: "cannot read the plugin registry: " + err.Error()}}
-	}
-
-	ledger, _, err := loadPluginLedger(e.vault.PluginsLedgerPath())
-	if err != nil {
-		return []Issue{{Severity: SeverityWarn, Message: "cannot read the plugin ledger: " + err.Error()}}
-	}
-
-	installed := map[string]plugin.Plugin{}
-
-	groups, _, _ := groupPlugins(manifest.Plugins)
-
-	for _, group := range groups {
-		installed[pluginKey(group.Origin, group.Name)] = chooseRecord(group.Plugins)
-	}
-
-	keys := make(map[string]struct{}, len(installed)+len(ledger.Plugins))
-
-	for key := range installed {
-		keys[key] = struct{}{}
-	}
-
-	for key := range ledger.Plugins {
-		keys[key] = struct{}{}
-	}
-
-	var issues []Issue
-
-	for _, key := range slices.Sorted(maps.Keys(keys)) {
-		if key == bundlePluginKey() {
-			continue
-		}
-
-		record, isInstalled := installed[key]
-		rec, isParked := ledger.Plugins[key]
-
-		issues = append(issues, e.pivotDriftIssues(key, record, isInstalled, rec, isParked)...)
-	}
-
-	return issues
-}
-
-func (e *Engine) pivotDriftIssues(key string, record plugin.Plugin, installed bool, rec pluginLedgerRec, parked bool) []Issue {
-	if issues, final := pivotLifecycleIssues(key, rec, installed); final {
-		return issues
-	}
-
-	switch {
-	case parked && !installed:
-		return []Issue{pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s is no longer installed; run beadle sync to retire the pivot and farm artifacts", key))}
-	case installed && !parked:
-		return []Issue{pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s is not parked yet; run beadle sync", key))}
-	}
-
-	var issues []Issue
-
-	issues = append(issues, pivotTargetIssues(key, record, rec)...)
-
-	pivot := filepath.Join(e.vault.PluginsDir(), record.Origin, record.Name, "current")
-
-	link, err := os.Readlink(pivot)
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		issues = append(issues, pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s pivot is missing; run beadle sync", key)))
-	case err != nil:
-		issues = append(issues, pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s pivot cannot be read: %v", key, err)))
-	case link != rec.Target:
-		issues = append(issues, pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s pivot is stale: %s", key, link)))
-	}
-
-	return issues
-}
-
-func pivotTargetIssues(key string, record plugin.Plugin, rec pluginLedgerRec) []Issue {
-	var issues []Issue
-
-	if !fsutil.Exists(rec.Target) {
-		issues = append(issues, pivotIssue(SeverityError, fmt.Sprintf("plugin %s pivot target is missing: %s", key, rec.Target)))
-	}
-
-	if record.InstallPath != rec.Target && !fsutil.Exists(record.InstallPath) {
-		issues = append(issues, pivotIssue(SeverityError, fmt.Sprintf("plugin %s install path is missing: %s", key, record.InstallPath)))
-	}
-
-	if rec.Version != record.Version || rec.Sha != record.GitCommitSha || rec.Target != record.InstallPath {
-		issues = append(issues, pivotIssue(SeverityWarn, fmt.Sprintf("plugin %s changed %s → %s; run beadle sync", key, rec.Version, record.Version)))
-	}
-
-	return issues
-}
-
-// pivotLifecycleIssues reports the lifecycle state of one ledger record: a
-// quarantine is an Error with the heal hint, a retire is an Info only when the
-// plugin disappeared from every registry — a record healed while its host
-// registry still lists the plugin stays silent (there is nothing to change).
-func pivotLifecycleIssues(key string, rec pluginLedgerRec, installed bool) ([]Issue, bool) {
-	switch {
-	case !rec.RetiredAt.IsZero():
-		if installed {
-			return nil, true
-		}
-
-		return []Issue{pivotIssue(SeverityInfo, fmt.Sprintf(
-			"plugin %s was removed from its host registry; the pivot and farm artifacts are retired (no heal needed)", key))}, true
-	case !rec.QuarantinedAt.IsZero():
-		return []Issue{pivotIssue(SeverityError, fmt.Sprintf("plugin %s@%s is quarantined since %s; run beadle heal",
-			key, rec.Version, rec.QuarantinedAt.Format(time.RFC3339)))}, true
-	default:
-		return nil, false
-	}
-}
-
-func pivotIssue(severity, message string) Issue {
-	return Issue{Severity: severity, Message: message}
 }
 
 func isDir(path string) bool {

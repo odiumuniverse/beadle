@@ -18,6 +18,13 @@ import (
 // cursorWithClaude builds a fixture with Claude and Cursor both enabled, the
 // combination the verifier found broken: Claude's surface always writes
 // ~/.claude/commands, which Cursor's own loader also reads.
+//
+// The fixture it returns is three-host: newFixture enables Claude and
+// OpenCode and cursorHost adds Cursor. The tests here pin what Cursor and
+// Claude each get, and none of them reads OpenCode's files — dropping
+// OpenCode from the fixture leaves them green, so they say nothing about it.
+// The Cursor behaviour that does depend on a second host is the shared skills
+// delivery, pinned in cursor_skills_shared_delivery_gws_test.go.
 func cursorWithClaude(t *testing.T) *fixture {
 	t.Helper()
 
@@ -50,16 +57,29 @@ func TestCursorCommandsBothHostsOn(t *testing.T) {
 		first := f.sync(t)
 
 		Convey("When it is synced", func() {
-			Convey("Then Cursor's own directory holds the plain-markdown copy", func() {
+			Convey("Then Cursor's own directory holds the canon body and nothing else", func() {
+				// Byte for byte, not a substring: the file cursor-agent reads is
+				// the whole text it sends, so a stray frontmatter key or a
+				// rewritten placeholder is a different command, not a cosmetical
+				// difference. The dialect is "the body, verbatim".
 				content := read(t, filepath.Join(f.home, ".cursor", "commands", "greet.md"))
-				So(strings.HasPrefix(content, "---"), ShouldBeFalse)
-				So(content, ShouldContainSubstring, "Say $1 and $ARGUMENTS.")
+				So(content, ShouldEqual, "Say $1 and $ARGUMENTS.\n")
 			})
 
-			Convey("Then Claude's directory holds its own copy, and neither run reports a loss", func() {
+			Convey("Then Claude's copy is its own render, byte for byte", func() {
+				// Claude's dialect is 0-based positional (`commandArgsClaude`,
+				// `pkg/agent/commands_args.go:65`), so the canon's `$1` reaches
+				// the file as `$0`; the frontmatter is the canonical render's
+				// own. Asserted through `command.Render` — the renderer that
+				// wrote the vault's file — so the expectation moves with the
+				// renderer instead of drifting from a hardcoded string.
 				claude := read(t, filepath.Join(f.home, ".claude", "commands", "greet.md"))
-				So(claude, ShouldContainSubstring, "description: d")
+				So(claude, ShouldEqual, string(command.Render(command.Document{
+					Name: "greet", Description: "d", Body: "Say $0 and $ARGUMENTS.\n",
+				})))
+			})
 
+			Convey("Then neither host's report claims a loss", func() {
 				for _, k := range first.Kinds {
 					for _, a := range k.Agents {
 						So(a.Note, ShouldNotContainSubstring, "did not keep")

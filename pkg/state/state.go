@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -243,6 +244,10 @@ type State struct {
 	// another machine. The record is written on the first sync and only
 	// compared afterwards.
 	Home string `json:"home,omitempty"`
+	// FarmMigration records the one-time move of the plugin farm to the plugin
+	// manager: the stage it reached, the backup it took, the keys it adopted
+	// and the exact paths it removed. It is the resume point, not a log.
+	FarmMigration *FarmMigration `json:"farm_migration,omitempty"`
 	// migration carries the one-time renames Load applied, so the caller can
 	// report them; it is never serialized.
 	migration []string
@@ -250,6 +255,11 @@ type State struct {
 	// clears it, so a mutating command can persist the migrated state even
 	// after the notes have already been rendered.
 	migrated bool
+	// loaded is the version the file on disk carried, before any in-memory
+	// migration. A migration that recognises a layout an older build wrote
+	// cannot ask the migrated Version: by the time anything reads it, every
+	// state says CurrentVersion.
+	loaded int
 }
 
 // MigrationNotes lists the one-time renames Load applied. It is empty for a
@@ -257,6 +267,12 @@ type State struct {
 func (s *State) MigrationNotes() []string {
 	return slices.Clone(s.migration)
 }
+
+// LoadedVersion is the version the state file carried when it was read, before
+// any in-memory migration. It is 0 for a state this process created, and for a
+// file that was already current it equals CurrentVersion. A migration that has
+// to recognise a layout only an older build wrote asks this, never Version.
+func (s *State) LoadedVersion() int { return s.loaded }
 
 // Migrated reports that the state was migrated in memory and not yet
 // persisted; the next Save writes the renamed state to the vault.
@@ -325,7 +341,7 @@ func Load(path string) (*State, error) {
 	}
 
 	if st.Version > CurrentVersion {
-		return nil, fmt.Errorf("unsupported state version %d in %s (expected %d)", st.Version, path, CurrentVersion)
+		return nil, &SchemaNewerError{Path: path, Found: st.Version, Supported: CurrentVersion}
 	}
 
 	if st.Bases == nil {
@@ -348,6 +364,10 @@ func Load(path string) (*State, error) {
 		st.Drift = map[string]Drift{}
 	}
 
+	// The version the file carried, kept before the in-memory migration so a
+	// caller can still tell a state an older build wrote from a current one.
+	st.loaded = st.Version
+
 	// The migration stays in memory: a read-only command must not write the
 	// vault. The first command that saves the state persists it and reports
 	// every rename.
@@ -355,7 +375,42 @@ func Load(path string) (*State, error) {
 	st.migration = notes
 	st.migrated = changed
 
+	// The skill-tree cache is rekeyed on every read, not only on an older
+	// schema: a state at the current version can still carry the absolute keys
+	// an earlier build of this same version wrote, and those keys are what make
+	// a synced vault machine-specific.
+	if rekeyed := st.rekeySkillTrees(); len(rekeyed) > 0 {
+		st.migration = append(st.migration, rekeyed...)
+		st.migrated = true
+	}
+
 	return st, nil
+}
+
+// SchemaNewerError reports a state.json written by a newer beadle. It is a
+// type, not a formatted string, because the caller above pkg/state — the
+// exit-code classifier — has to recognise the situation without matching on
+// prose: "this file is from the future" is exit class 7, and a script must be
+// able to tell that from a crash.
+type SchemaNewerError struct {
+	Path      string
+	Found     int
+	Supported int
+}
+
+// Error implements error. The message is the one a user must act on, so it
+// names the document, both versions and the way out: a file written by a
+// newer beadle is never rewritten by an older one, and the only fix is to
+// upgrade.
+func (e *SchemaNewerError) Error() string {
+	return fmt.Sprintf("state %s: written by a newer beadle (version %d > %d) — upgrade beadle to read it",
+		e.Path, e.Found, e.Supported)
+}
+
+// IsSchemaNewer reports whether err is, or wraps, a state written by a newer
+// beadle, and returns it when it is.
+func IsSchemaNewer(err error) (*SchemaNewerError, bool) {
+	return errors.AsType[*SchemaNewerError](err)
 }
 
 // migrate applies the one-time flips of every older state schema and reports
@@ -410,6 +465,80 @@ func (s *State) renameAgentIDs() []string {
 	}
 
 	return renameNotes(renamed)
+}
+
+// HomePrefix opens a cache key that stands for a path inside the home
+// directory. It is spelled the way a shell spells it, and it is the only
+// portable spelling: "/Users/a/.claude/skills" and "/home/a/.claude/skills"
+// are one tree on two machines and two different strings.
+const HomePrefix = "~/"
+
+// SkillTreeKey is the machine-independent key for one skill tree root: the
+// path relative to the home directory, spelled with a leading "~/", for
+// anything under home. A root outside home keeps its absolute path, because
+// there is nothing portable to say about it and a key that pretended otherwise
+// would collide.
+func SkillTreeKey(root, home string) string {
+	if home == "" {
+		return root
+	}
+
+	rel, err := filepath.Rel(filepath.Clean(home), filepath.Clean(root))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return root
+	}
+
+	return HomePrefix + filepath.ToSlash(rel)
+}
+
+// SkillTreePath is the inverse of SkillTreeKey: it turns a stored key back
+// into a path on this machine. A key that is already absolute comes back
+// unchanged, which is what lets a pre-migration state stay usable.
+func SkillTreePath(key, home string) string {
+	if !strings.HasPrefix(key, HomePrefix) {
+		return key
+	}
+
+	return filepath.Join(home, filepath.FromSlash(strings.TrimPrefix(key, HomePrefix)))
+}
+
+// rekeySkillTrees rewrites cache keys a machine wrote into the portable form,
+// and reports one note when it moved any.
+//
+// It runs against s.Home - the home the vault was last synced from - because
+// that is the only way to read an absolute key written elsewhere: on the second
+// machine the current home is different, and "/Users/a/..." is not under it. A
+// key under no recorded home is left alone rather than guessed at; it keeps
+// working, it is just not portable yet.
+func (s *State) rekeySkillTrees() []string {
+	if len(s.SkillTrees) == 0 || s.Home == "" {
+		return nil
+	}
+
+	moved := 0
+
+	for key, entry := range s.SkillTrees {
+		canonical := SkillTreeKey(key, s.Home)
+		if canonical == key {
+			continue
+		}
+
+		// A canonical key already present wins: it is what the current machine
+		// would read, and two entries for one tree cannot both be right.
+		if _, taken := s.SkillTrees[canonical]; !taken {
+			s.SkillTrees[canonical] = entry
+		}
+
+		delete(s.SkillTrees, key)
+
+		moved++
+	}
+
+	if moved == 0 {
+		return nil
+	}
+
+	return []string{fmt.Sprintf("skill tree cache: %d key(s) made machine-independent", moved)}
 }
 
 // recordRename rewrites one agent-id field in place and records the historical
@@ -670,4 +799,28 @@ func (s *State) LastRefusal() (Refusal, bool) {
 	}
 
 	return s.Refusals[len(s.Refusals)-1], true
+}
+
+// PackageResult is one package the vault's spec named, and what happened to it
+// on this machine. The words are the user's (§1): `delivered` is what the
+// library wrote, `skipped` is what it left alone, and the note says why.
+type PackageResult struct {
+	Package string `json:"package"`
+	Host    string `json:"host"`
+	State   string `json:"state"`
+	Note    string `json:"note,omitempty"`
+}
+
+// PackagesReport is the section `beadle sync` prints for the vault's package
+// spec. It is always printed, so a consumer can tell "applied nothing" from
+// "never looked".
+type PackagesReport struct {
+	// Spec is true when the vault carries a spec at all.
+	Spec    bool            `json:"spec"`
+	Results []PackageResult `json:"results"`
+	Error   string          `json:"error,omitempty"`
+	// LookedAt names the spec file this run read. A "no spec" answer without
+	// it is the one message a user cannot act on: the spec may be there, in a
+	// vault the reader did not look at.
+	LookedAt string `json:"looked_at,omitempty"`
 }

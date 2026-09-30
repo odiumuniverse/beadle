@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/odiumuniverse/verger/pkg/hostpath"
 )
 
 // OpenCodeInlineAgents lists the agent names declared inline in the OpenCode
@@ -17,16 +19,14 @@ import (
 // beadle does not manage (A-28 §5.5), and both config files are read: a
 // jsonc without the key does not hide a json that has one.
 func OpenCodeInlineAgents(home string) ([]string, error) {
-	dir := filepath.Join(home, ".config", "opencode")
-	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
-		dir = filepath.Join(xdg, "opencode")
-	}
+	// The candidate list and the root are the shared resolver's, so the inline
+	// agents cannot land in a tree OpenCode does not read.
+	resolved := surfaces(hostpath.OpenCode, home)
+	dir := roots(hostpath.OpenCode, home).ConfigRoot
 
 	names := map[string]bool{}
 
-	for _, name := range []string{"opencode.jsonc", "opencode.json"} {
-		path := filepath.Join(dir, name)
-
+	for _, path := range append(resolved.MCPDocCandidates, resolved.MCPDoc) {
 		data, err := os.ReadFile(path) //nolint:gosec // host directories are resolved by the adapter
 		if errors.Is(err, fs.ErrNotExist) {
 			continue

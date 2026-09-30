@@ -18,7 +18,7 @@ import (
 )
 
 func (a *app) newStatusCmd() *cobra.Command {
-	var check bool
+	var check, asJSON bool
 
 	cmd := &cobra.Command{
 		Use:   "status",
@@ -33,7 +33,12 @@ func (a *app) newStatusCmd() *cobra.Command {
 
 			v := vault.New(root)
 
-			fmt.Fprintf(out, "vault: %s\n", v.Root())
+			// In --json mode stdout carries the document and nothing else: a
+			// header line in front of it would break every consumer that pipes
+			// it, which is the whole promise of the flag.
+			if !asJSON {
+				fmt.Fprintf(out, "vault: %s\n", v.Root())
+			}
 
 			if !vaultDirExists(v.Root()) {
 				fmt.Fprintln(out, "state: not initialized (run beadle init)")
@@ -62,6 +67,10 @@ func (a *app) newStatusCmd() *cobra.Command {
 				return err
 			}
 
+			if asJSON {
+				return writeJSON(out, buildStatusDocument(root, cfg, agents, st))
+			}
+
 			if err := printAgents(out, cfg, agents); err != nil {
 				return err
 			}
@@ -75,35 +84,94 @@ func (a *app) newStatusCmd() *cobra.Command {
 			}
 
 			if !check {
-				fmt.Fprintln(out, "pending changes: beadle status --check (or beadle diff)")
+				fmt.Fprintln(out, "pending changes: beadle status --outdated-only (or beadle diff)")
 
 				return nil
 			}
 
-			e, err := a.engineWith(v, cfg, agents)
-			if err != nil {
-				return err
-			}
-
-			report, err := e.Sync(cmd.Context(), engine.SyncOptions{DryRun: true})
-			if err != nil {
-				return err
-			}
-
-			fmt.Fprintln(out)
-			printReport(out, report)
-
-			return nil
+			return a.printOutdated(cmd, v, cfg, agents)
 		},
 	}
 
-	cmd.Flags().BoolVar(&check, "check", false, "also compute pending changes (dry run)")
+	// --outdated-only is the name the user reads. --check was the old one and
+	// stays accepted so a script written against it keeps working, hidden so
+	// the surface carries one name rather than two.
+	cmd.Flags().BoolVar(&check, "outdated-only", false, "compute pending changes (dry run)")
+	cmd.Flags().BoolVar(&check, "check", false, "compute pending changes (dry run)")
+	_ = cmd.Flags().MarkHidden("check")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print the document as JSON")
 
 	return cmd
 }
 
+// printOutdated is the `--outdated-only` path: what a sync would do, without
+// doing any of it. It is its own function so the command body carries one
+// decision — compute, or not — instead of the whole compute.
+func (a *app) printOutdated(cmd *cobra.Command, v *vault.Vault, cfg *config.Config, agents []*agent.Agent) error {
+	e, err := a.engineWith(v, cfg, agents)
+	if err != nil {
+		return err
+	}
+
+	report, err := e.Sync(cmd.Context(), engine.SyncOptions{DryRun: true})
+	if err != nil {
+		return err
+	}
+
+	out := cmd.OutOrStdout()
+
+	fmt.Fprintln(out)
+	printReport(out, report)
+
+	return nil
+}
+
+// statusDocument is what `beadle status --json` prints. The words are the
+// user's: an agent is on or off, and it is on this machine or it is not. What
+// beadle calls a kind or a surface stays out of it - a consumer can ask
+// `beadle explain` for that.
+type statusDocument struct {
+	withSchema
+
+	Root      string            `json:"root"`
+	Agents    []agentRow        `json:"agents"`
+	Conflicts []statusConflict  `json:"conflicts"`
+	KindsOff  map[string]string `json:"kinds_off,omitempty"`
+}
+
+type statusConflict struct {
+	Kind   string `json:"kind"`
+	Agent  string `json:"agent"`
+	Key    string `json:"key"`
+	Reason string `json:"reason"`
+}
+
+func buildStatusDocument(root string, cfg *config.Config, agents []*agent.Agent, st *state.State) statusDocument {
+	doc := statusDocument{
+		withSchema: newEnvelope("beadle.status"),
+		Root:       root,
+		Agents:     []agentRow{},
+		Conflicts:  []statusConflict{},
+	}
+
+	doc.Agents = agentRows(cfg, agents)
+
+	for _, conflict := range st.OpenConflicts() {
+		doc.Conflicts = append(doc.Conflicts, statusConflict{
+			Kind:   string(conflict.Kind),
+			Agent:  conflict.Agent,
+			Key:    conflict.Key,
+			Reason: conflict.Reason,
+		})
+	}
+
+	return doc
+}
+
 func printAgents(out interface{ Write([]byte) (int, error) }, cfg *config.Config, agents []*agent.Agent) error {
 	fmt.Fprintln(out, "agents:")
+
+	rs := newReasons()
 
 	for _, ag := range agents {
 		detected, err := ag.Detect()
@@ -111,13 +179,26 @@ func printAgents(out interface{ Write([]byte) (int, error) }, cfg *config.Config
 			return err
 		}
 
-		fmt.Fprintf(out, "  %-12s %-9s %-14s %s\n", ag.ID,
-			onOff(cfg.Agents[ag.ID].Enabled, "enabled", "disabled"),
-			onOff(detected, "installed", "not installed"),
-			modesOf(cfg, ag))
+		fmt.Fprintf(out, "  %-12s %-14s %s\n", ag.ID, agentWord(rs, cfg, ag, detected), modesOf(cfg, ag))
 	}
 
+	rs.print(out)
+
 	return nil
+}
+
+// agentWord is one agent's state in the reader's words. What beadle calls
+// "disabled" and "not installed" are two reasons a user can do something about,
+// so they are reasons with a command, not states of their own.
+func agentWord(rs *reasons, cfg *config.Config, ag *agent.Agent, detected bool) string {
+	switch {
+	case !cfg.Agents[ag.ID].Enabled:
+		return rs.word(wordSkipped, fmt.Sprintf("turned off for this vault — run `beadle agents enable %s`", ag.ID))
+	case !detected:
+		return rs.word(wordSkipped, fmt.Sprintf("this agent's program is not installed on this machine (%s is not on PATH)", ag.ID))
+	default:
+		return wordDelivered
+	}
 }
 
 // effectiveMode resolves the mode the config asks for, with a globally
@@ -132,7 +213,7 @@ func effectiveMode(cfg *config.Config, ag *agent.Agent, k kind.ID, fallback conf
 	return mode
 }
 
-// printBundleDelivery names the kinds whose file surface reads "off" while a
+// printBundleDelivery names the resources that read "off" while a
 // verified bundle still delivers them, so a bare "off" is not read as "nothing
 // is written". A bundle-managed MCP surface keeps writing the canon's
 // secret-bearing servers through the host file, because a bundle cannot carry
@@ -156,12 +237,12 @@ func printBundleDelivery(out interface{ Write([]byte) (int, error) }, cfg *confi
 
 			names := entry.Complement[k]
 			if len(names) == 0 {
-				fmt.Fprintf(out, "bundles: %s %s=off is delivered by the bundle, not the file surface\n", host.AgentID(), k)
+				fmt.Fprintf(out, "bundles: %s %s=off is written by the bundle, not as a file\n", host.AgentID(), k)
 
 				continue
 			}
 
-			fmt.Fprintf(out, "bundles: %s %s=off is delivered by the bundle; the servers it cannot carry go to the host file: %s\n",
+			fmt.Fprintf(out, "bundles: %s %s=off is written by the bundle; the servers it cannot carry go to the host file: %s\n",
 				host.AgentID(), k, strings.Join(sortedNames(names), ", "))
 		}
 	}

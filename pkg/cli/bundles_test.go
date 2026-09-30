@@ -14,8 +14,7 @@ func TestBundlesCLIStubEndToEnd(t *testing.T) {
 		home := t.TempDir()
 
 		t.Setenv("HOME", home)
-		t.Setenv("XDG_CONFIG_HOME", "")
-		t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
+		isolateTestRoots(t)
 
 		binDir := filepath.Join(t.TempDir(), "bin")
 		So(os.MkdirAll(binDir, 0o750), ShouldBeNil)
@@ -52,7 +51,7 @@ exit 0
 			So(err, ShouldBeNil)
 
 			Convey("Then it registers through the CLI and disables kinds", func() {
-				So(out, ShouldContainSubstring, "enabled")
+				So(out, ShouldContainSubstring, "delivered")
 				So(out, ShouldContainSubstring, "(registered)")
 
 				So(string(calls), ShouldContainSubstring, "plugin marketplace add "+filepath.Join(home, ".beadle", "bundles", "claude"))
@@ -64,7 +63,7 @@ exit 0
 					out, err := runCLI(t, "bundles", "disable", "--host", "claude")
 					So(err, ShouldBeNil)
 
-					So(out, ShouldContainSubstring, "disabled")
+					So(out, ShouldContainSubstring, "skipped")
 
 					calls, err := os.ReadFile(logPath) //nolint:gosec // G304: test reads its own temp file
 					So(err, ShouldBeNil)
@@ -86,8 +85,7 @@ func TestBundlesCommands(t *testing.T) {
 		home := t.TempDir()
 
 		t.Setenv("HOME", home)
-		t.Setenv("XDG_CONFIG_HOME", "")
-		t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
+		isolateTestRoots(t)
 
 		_, err := runCLI(t, "init")
 		So(err, ShouldBeNil)
@@ -104,7 +102,7 @@ func TestBundlesCommands(t *testing.T) {
 
 			out, err = runCLI(t, "bundles", "enable", "--host", "antigravity")
 			So(err, ShouldBeNil)
-			So(out, ShouldContainSubstring, "generated")
+			So(out, ShouldContainSubstring, "delivered")
 			So(out, ShouldContainSubstring, "ln -s")
 
 			out, err = runCLI(t, "bundles", "status")
@@ -128,7 +126,7 @@ func TestBundlesCommands(t *testing.T) {
 				So(err, ShouldBeNil)
 
 				Convey("Then it disables and keeps the generated plugin", func() {
-					So(out, ShouldContainSubstring, "disabled")
+					So(out, ShouldContainSubstring, "skipped")
 
 					_, statErr := os.Stat(filepath.Join(home, ".beadle", "bundles", "antigravity", "plugin.json"))
 					So(statErr, ShouldBeNil)

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/hooks"
 	"github.com/odiumuniverse/beadle/pkg/plugin"
 	"github.com/odiumuniverse/beadle/pkg/secret"
+	"github.com/odiumuniverse/verger/pkg/digest"
 )
 
 const (
@@ -75,8 +77,9 @@ type pluginHookCounters struct {
 
 // projectPluginHooks renders one plugin's command hooks into canon entries.
 // The command keeps the plugin's matcher; the host's plugin-root placeholder
-// expands to the plugin pivot, and everything the canon cannot express is
-// skipped and counted.
+// expands to the plugin's install directory - the same directory the plugin
+// manager gives the host - and everything the canon cannot express is skipped
+// and counted.
 func (e *Engine) projectPluginHooks(key, source, installPath string) (pluginHookPlan, error) {
 	var plan pluginHookPlan
 
@@ -92,7 +95,7 @@ func (e *Engine) projectPluginHooks(key, source, installPath string) (pluginHook
 		return plan, fmt.Errorf("invalid plugin key %q", key)
 	}
 
-	pivot := e.pluginPivotDir(key)
+	root := installPath
 
 	plan.Source = hooks.SourcePluginPrefix + key
 
@@ -110,7 +113,7 @@ func (e *Engine) projectPluginHooks(key, source, installPath string) (pluginHook
 			continue
 		}
 
-		e.projectPluginEvent(key, source, event, canonEvent, doc[event], name, pivot, plan.Source, &plan, &counters)
+		e.projectPluginEvent(key, source, event, canonEvent, doc[event], name, root, plan.Source, &plan, &counters)
 	}
 
 	if skipped := counters.total(); skipped > 0 {
@@ -386,12 +389,10 @@ func (e *Engine) ApprovePluginHooks(key string) (Report, error) {
 		return report, fmt.Errorf("plugin %s install path %s is missing; reinstall the plugin", key, installed.InstallPath)
 	}
 
-	pivot := e.pluginPivotDir(key)
-
-	if !pivotValid(pivot) {
-		return report, fmt.Errorf("plugin %s pivot %s is missing; run `beadle sync` first", key, pivot)
-	}
-
+	// The farm's pivot used to sit between the plugin and beadle: a symlink to
+	// this very install path. The projection takes the install path, so the
+	// pivot is not consulted any more - and a vault that still has one is not
+	// a vault that needs one.
 	plan, err := e.projectPluginHooks(key, installed.Source, installed.InstallPath)
 	report.Warnings = append(report.Warnings, plan.Warnings...)
 
@@ -413,7 +414,12 @@ func (e *Engine) ApprovePluginHooks(key string) (Report, error) {
 		return report, err
 	}
 
-	approvePlanEntries(e.config, canon, plan)
+	// The consent itself is the library's: beadle records what the user
+	// approved against the hash of the hooks they were shown, so an edited
+	// hook asks again. Nothing plugin-owned stays in config.json.
+	if err := e.recordPluginHookConsent(key, canon); err != nil {
+		return report, err
+	}
 
 	moduleApproved, moduleDropped, moduleWarns := approveHookModules(e.config, key, installed.Source, installed.InstallPath)
 	report.Warnings = append(report.Warnings, moduleWarns...)
@@ -522,15 +528,219 @@ func removeStalePluginHooks(canon map[string]hooks.Hook, plan pluginHookPlan) in
 	return removed
 }
 
-// approvePlanEntries approves the plan entries beadle actually wrote: a name
-// taken by another source (collision) stays unapproved, so approving one
-// plugin never blesses a user's or another plugin's hook.
-func approvePlanEntries(cfg *config.Config, canon map[string]hooks.Hook, plan pluginHookPlan) {
-	for _, entry := range plan.Entries {
-		if existing, ok := canon[entry.name]; ok && existing.Source == plan.Source {
-			cfg.ApproveHook(entry.name)
+// pluginConsentID is the package id a plugin's hook consent is recorded under.
+// It is the plugin's package id, so the record is the one the library itself
+// would find when it gates the package.
+func pluginConsentID(key string) string { return hooks.SourcePluginPrefix + key }
+
+// pluginHookSetHash is the content hash of every canon hook one plugin
+// contributed, by name. The library holds one approval per package, so the
+// consent covers the set: an edited, added or dropped hook changes the hash
+// and asks for consent again instead of riding on the old one.
+func pluginHookSetHash(canon map[string]hooks.Hook, key string) (digest.Hash, bool) {
+	type entry struct {
+		Name    string `json:"name"`
+		Event   string `json:"event"`
+		Matcher string `json:"matcher,omitempty"`
+		Command string `json:"command"`
+		Timeout int    `json:"timeout,omitempty"`
+	}
+
+	entries := []entry{}
+
+	for _, name := range slices.Sorted(maps.Keys(canon)) {
+		hook := canon[name]
+
+		owner, fromPlugin := hook.PluginKey()
+		if !fromPlugin || owner != key {
+			continue
+		}
+
+		entries = append(entries, entry{
+			Name:    name,
+			Event:   hook.Event,
+			Matcher: hook.Matcher,
+			Command: hook.Command,
+			Timeout: hook.Timeout,
+		})
+	}
+
+	if len(entries) == 0 {
+		return "", false
+	}
+
+	data, err := json.Marshal(entries)
+	if err != nil {
+		return "", false
+	}
+
+	return digest.Hash(cas.HashOf(data)), true
+}
+
+// recordPluginHookConsent asks the library to remember that the user approved
+// one plugin's hooks as they are now. Without a library there is nowhere to
+// keep the consent, so the approval is refused rather than silently dropped.
+func (e *Engine) recordPluginHookConsent(key string, canon map[string]hooks.Hook) error {
+	if e.manager == nil {
+		return fmt.Errorf("plugin %s: the plugin library is not available, so its hook approval cannot be recorded", key)
+	}
+
+	hash, ok := pluginHookSetHash(canon, key)
+	if !ok {
+		return nil
+	}
+
+	if _, err := e.manager.ApproveHooksFor(pluginConsentID(key), "", hash); err != nil {
+		return fmt.Errorf("plugin %s: cannot record hook consent: %w", key, err)
+	}
+
+	return nil
+}
+
+// ApprovePluginHookSet records the user's consent for the hooks one plugin
+// already has in the canon. Approving a single canon entry is the same act as
+// approving the package, because the library holds one consent per package -
+// and unlike `beadle hooks approve --plugin` it needs no installed plugin:
+// there is nothing to project, the hooks are already in the canon.
+func (e *Engine) ApprovePluginHookSet(key string) error {
+	canon, err := hooks.Load(e.vault.HooksPath())
+	if err != nil {
+		return err
+	}
+
+	return e.recordPluginHookConsent(key, canon)
+}
+
+// RevokePluginHookConsent takes back the consent the user gave one plugin's
+// hooks. The canon entries stay where they are; only the approval goes, so the
+// doctor asks again.
+func (e *Engine) RevokePluginHookConsent(key string) error {
+	if e.manager == nil {
+		return fmt.Errorf("plugin %s: the plugin library is not available, so its hook approval cannot be revoked", key)
+	}
+
+	if err := e.manager.RevokeHooksFor(pluginConsentID(key), ""); err != nil {
+		return fmt.Errorf("plugin %s: cannot revoke hook consent: %w", key, err)
+	}
+
+	return nil
+}
+
+// PluginHookApprovedFor reports whether the library holds consent for the
+// hooks one plugin contributed to the canon as it stands. An edited or dropped
+// hook changes the hash, so the old consent stops covering it.
+func (e *Engine) PluginHookApprovedFor(canon map[string]hooks.Hook, key string) bool {
+	if e.manager == nil {
+		return false
+	}
+
+	hash, ok := pluginHookSetHash(canon, key)
+	if !ok {
+		return false
+	}
+
+	approved, err := e.manager.HooksApprovedFor(pluginConsentID(key), "", hash)
+	if err != nil {
+		return false
+	}
+
+	return approved
+}
+
+// approvedHooksForRender is the set the renderers gate on: beadle's own
+// name-keyed approvals, plus every plugin hook the library holds consent for.
+// A plugin hook reaches a host only through the library's answer, so a hook
+// whose consent lapsed stops travelling without touching config.json.
+func (e *Engine) approvedHooksForRender(canon map[string]hooks.Hook) map[string]bool {
+	approved := hooks.Approved(e.config)
+
+	if e.manager == nil {
+		return approved
+	}
+
+	owners := pluginHookOwners(canon)
+	live := map[string]bool{}
+
+	for _, key := range slices.Sorted(maps.Values(owners)) {
+		if !live[key] {
+			live[key] = e.PluginHookApprovedFor(canon, key)
 		}
 	}
+
+	for name, key := range owners {
+		if live[key] {
+			approved[name] = true
+		}
+	}
+
+	return approved
+}
+
+// pluginHookOwners maps every canon hook name to the plugin that contributed
+// it. Hooks beadle owns itself do not appear.
+func pluginHookOwners(canon map[string]hooks.Hook) map[string]string {
+	owners := map[string]string{}
+
+	for name, hook := range canon {
+		if key, fromPlugin := hook.PluginKey(); fromPlugin {
+			owners[name] = key
+		}
+	}
+
+	return owners
+}
+
+// migratePluginHookConsent moves the name-keyed plugin hook approvals of an
+// older vault into the library's consent store, once, and says so: hook
+// approval is never taken silently. Approvals beadle still owns — a user's own
+// hooks, a hook module keyed by its digest — are left exactly where they are.
+func (e *Engine) migratePluginHookConsent(canon map[string]hooks.Hook, report *Report) error {
+	if e.manager == nil || len(e.config.ApprovedHooks) == 0 {
+		return nil
+	}
+
+	byPlugin := map[string][]string{}
+
+	for _, name := range slices.Clone(e.config.ApprovedHooks) {
+		key, fromPlugin := canon[name].PluginKey()
+		if !fromPlugin {
+			continue
+		}
+
+		hash, ok := pluginHookSetHash(canon, key)
+		if !ok {
+			continue
+		}
+
+		approved, err := e.manager.HooksApprovedFor(pluginConsentID(key), "", hash)
+		if err != nil {
+			return fmt.Errorf("plugin %s: cannot read hook consent: %w", key, err)
+		}
+
+		if !approved {
+			if _, err := e.manager.ApproveHooksFor(pluginConsentID(key), "", hash); err != nil {
+				return fmt.Errorf("plugin %s: cannot move hook consent into the library: %w", key, err)
+			}
+
+			byPlugin[key] = append(byPlugin[key], name)
+		}
+	}
+
+	if len(byPlugin) == 0 {
+		return nil
+	}
+
+	for _, key := range slices.Sorted(maps.Keys(byPlugin)) {
+		for _, name := range byPlugin[key] {
+			e.config.RevokeHook(name)
+		}
+
+		report.Notes = append(report.Notes, fmt.Sprintf(
+			"%s moved %d hook approval(s) of %s into the plugin library's consent store, keyed by content hash",
+			pluginHookPrefix, len(byPlugin[key]), key))
+	}
+
+	return e.config.Save(e.vault.ConfigPath())
 }
 
 // installedPlugin finds one plugin by its <origin>/<name> key.
@@ -571,11 +781,7 @@ func (e *Engine) pluginHookIssues() []Issue {
 		}
 	}
 
-	suppressed := map[string]string{}
-
-	if ledger, _, err := loadPluginLedger(e.vault.PluginsLedgerPath()); err == nil {
-		suppressed = e.pluginDedup(ledger).Suppressed
-	}
+	suppressed := e.pluginDedup().Suppressed
 
 	var issues []Issue
 
@@ -602,15 +808,6 @@ func (e *Engine) pluginHookIssueFor(key, source, installPath string, canon map[s
 		return []Issue{{Severity: SeverityWarn, Message: pluginHookPrefix + key + ": " + err.Error()}}
 	}
 
-	if len(plan.Entries) > 0 {
-		pivot := e.pluginPivotDir(key)
-
-		if !pivotValid(pivot) {
-			return []Issue{{Severity: SeverityWarn, Message: fmt.Sprintf(
-				"%splugin %s pivot %s is missing; run `beadle sync` to create it", pluginHookPrefix, key, pivot)}}
-		}
-	}
-
 	drift, collisions := plan.Analyze(canon)
 
 	collided := map[string]bool{}
@@ -619,16 +816,19 @@ func (e *Engine) pluginHookIssueFor(key, source, installPath string, canon map[s
 		collided[name] = true
 	}
 
+	// The consent is the library's and it covers one package, so the hooks are
+	// pending as a set: either the canon as it stands is approved, or every
+	// expressible hook asks again.
 	pending := 0
 
-	for _, entry := range plan.Entries {
-		// A collided name is never written by approve, so it must not keep
-		// the pending Info alive after the user ran the command.
-		if collided[entry.name] {
-			continue
-		}
+	if !e.PluginHookApprovedFor(canon, key) {
+		for _, entry := range plan.Entries {
+			// A collided name is never written by approve, so it must not keep
+			// the pending Info alive after the user ran the command.
+			if collided[entry.name] {
+				continue
+			}
 
-		if !e.config.HookApproved(entry.name) {
 			pending++
 		}
 	}
@@ -795,31 +995,22 @@ func hostRunsHookNatively(agentID string, hook hooks.Hook, sources map[string]ma
 	return (known && hosts[agentID]) || (!known && agentID == agent.ClaudeCodeID)
 }
 
-// pluginHookSources maps every ledger plugin key to the source hosts that
-// installed it — the winner plus the sources whose own copy lost the source
-// conflict (`overridden`), because each of those hosts runs its own plugin's
-// hooks natively. Retired keys are reported separately: a retired plugin
-// renders its hooks nowhere.
+// pluginHookSources reports, per plugin key, the hosts that read that plugin
+// natively - the host that installed it, and any host whose own copy lost the
+// same-key source conflict. A plugin hook never travels to those hosts: they
+// already run it from the plugin manager. The host registries answer this;
+// the farm's ledger no longer exists to be asked.
 func (e *Engine) pluginHookSources() (sources map[string]map[string]bool, retired map[string]bool) {
-	ledger, _, _ := loadPluginLedger(e.vault.PluginsLedgerPath())
+	return e.pluginDedup().LoserHosts, map[string]bool{}
+}
 
-	sources = make(map[string]map[string]bool, len(ledger.Plugins))
-	retired = map[string]bool{}
-
-	for key, rec := range ledger.Plugins {
-		if !rec.RetiredAt.IsZero() {
-			retired[key] = true
-
-			continue
-		}
-
-		set := map[string]bool{recSource(rec): true}
-		for _, source := range rec.Overridden {
-			set[source] = true
-		}
-
-		sources[key] = set
+// loadCanonForRender reads the canon for a renderer that does not have it. A
+// malformed document simply means no plugin hook travels.
+func loadCanonForRender(e *Engine) map[string]hooks.Hook {
+	canon, err := hooks.Load(e.vault.HooksPath())
+	if err != nil {
+		return nil
 	}
 
-	return sources, retired
+	return canon
 }

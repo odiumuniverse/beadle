@@ -10,7 +10,9 @@ import (
 )
 
 func (a *app) newHistoryCmd() *cobra.Command {
-	return &cobra.Command{
+	var asJSON bool
+
+	cmd := &cobra.Command{
 		Use:   "history <kind>",
 		Short: "List the vault snapshots of a kind",
 		Args:  cobra.ExactArgs(1),
@@ -32,6 +34,10 @@ func (a *app) newHistoryCmd() *cobra.Command {
 
 			out := cmd.OutOrStdout()
 
+			if asJSON {
+				return writeJSON(out, newHistoryDocument(k, history))
+			}
+
 			if len(history) == 0 {
 				fmt.Fprintf(out, "%s has no snapshots yet\n", k)
 
@@ -52,6 +58,10 @@ func (a *app) newHistoryCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print the document as JSON")
+
+	return cmd
 }
 
 func (a *app) newRestoreCmd() *cobra.Command {

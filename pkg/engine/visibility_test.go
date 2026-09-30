@@ -29,6 +29,62 @@ func alphaProvider(class providerClass, dir string, digest cas.Hash) provider {
 	return provider{class: class, name: "alpha", dir: dir, path: filepath.Join(dir, "alpha"), digest: digest}
 }
 
+// ownershipCases are the cases about beadle's own copy, kept apart from the
+// table above because they are the ones that carry an ownership: the question
+// is not what a copy looks like but whether beadle put it there.
+//
+// A provider built without a root would answer the wrong question, so each one
+// is rooted where the ownership says beadle delivered.
+func ownershipCases(alpha, drifted cas.Hash) []visibilityCase {
+	return []visibilityCase{
+		{
+			// The rule, in the direction that makes a bundle a patch for the
+			// deficit instead of a mirror of the canon: a copy beadle itself
+			// delivered is a consequence of the canon holding the skill, so it
+			// is not somebody else delivering it. Counting it is what made the
+			// farm drop the skills it had just pushed to the host.
+			name:      "a beadle-delivered copy beadle still owns is not a provider",
+			providers: []provider{rooted(alphaProvider(classOwn, "/own", alpha), "/own/alpha")},
+			own:       ownership{"/own/alpha": alpha},
+			covered:   false,
+			chosen:    classBundle,
+			ch:        channels{bundle: true},
+		},
+		{
+			// `your edits are yours`, and the way the code says it: a copy whose
+			// bytes no longer match the canon is a fork, whatever the ownership
+			// says. It is reported as a fork the canon cannot follow, and it
+			// does not count as covering the canon — the independence predicate
+			// only ever ranks copies that match, so an edit is decided by the
+			// fork path before it is decided by ownership.
+			name:      "a beadle-delivered copy the user has edited is a fork, not coverage",
+			providers: []provider{rooted(alphaProvider(classOwn, "/own", drifted), "/own/alpha")},
+			own:       ownership{"/own/alpha": alpha},
+			covered:   false,
+			forks:     1,
+		},
+		{
+			// A root beadle never wrote is nobody's claim to withdraw: the
+			// copy is independent whatever its bytes, and an independent copy
+			// is what a withdrawal is allowed to release the bundle for.
+			name:      "a copy in a root beadle never wrote stays independent",
+			providers: []provider{rooted(alphaProvider(classForeign, "/somewhere", alpha), "/somewhere/alpha")},
+			own:       ownership{"/other/alpha": alpha},
+			covered:   true,
+			released:  true,
+		},
+	}
+}
+
+// rooted is alphaProvider with the skill tree it is, which is the key
+// ownership is indexed by. A case that supplies ownership without it would
+// silently assert about a provider that no delivery was ever recorded for.
+func rooted(p provider, root string) provider {
+	p.root = root
+
+	return p
+}
+
 func forkWarnings(vis visibility) []string {
 	var warnings []string
 
@@ -46,16 +102,21 @@ type visibilityCase struct {
 	providers []provider
 	caps      agent.SkillCaps
 	ch        channels
-	covered   bool
-	released  bool
-	forks     int
-	chosen    providerClass
+	// own is what beadle says it delivered. Left empty the case is the
+	// question "a copy with no recorded ownership", which is the outside
+	// provider it must be; filled in, it is the question that decides whether
+	// beadle's own copy counts against its own bundle.
+	own      ownership
+	covered  bool
+	released bool
+	forks    int
+	chosen   providerClass
 }
 
 // visibilityCases is the resolver truth table: classes, digests, caps and
 // channels.
 func visibilityCases(alpha, drifted cas.Hash) []visibilityCase {
-	return []visibilityCase{
+	return append([]visibilityCase{
 		{
 			name:      "a foreign symlink holds the same bytes",
 			providers: []provider{alphaProvider(classForeign, "/foreign", alpha)},
@@ -164,7 +225,7 @@ func visibilityCases(alpha, drifted cas.Hash) []visibilityCase {
 			providers: nil,
 			ch:        channels{},
 		},
-	}
+	}, ownershipCases(alpha, drifted)...)
 }
 
 func TestResolveVisibility(t *testing.T) {
@@ -175,7 +236,7 @@ func TestResolveVisibility(t *testing.T) {
 
 	for _, tc := range visibilityCases(alpha, drifted) {
 		Convey("Given "+tc.name, t, func() {
-			vis := resolveVisibility(canon, tc.providers, tc.caps, tc.ch)
+			vis := resolveVisibility(canon, tc.providers, tc.caps, tc.ch, tc.own)
 
 			Convey("Then the visibility decision matches", func() {
 				_, covered := vis.bundleCoverage().Skills["alpha"]
@@ -199,7 +260,7 @@ func TestVisibleBundleFallback(t *testing.T) {
 	caps := agent.SkillCaps{Shadowing: true, NamespacedBundle: false}
 
 	Convey("Given a shadowing host with only an un-namespaced bundle copy", t, func() {
-		vis := resolveVisibility(canon, []provider{alphaProvider(classBundle, "/bundle", digest)}, caps, channels{bundle: true})
+		vis := resolveVisibility(canon, []provider{alphaProvider(classBundle, "/bundle", digest)}, caps, channels{bundle: true}, nil)
 
 		Convey("When the visible set is computed", func() {
 			visible := vis.Skills["alpha"].visible(caps, vis.order())
@@ -215,7 +276,7 @@ func TestVisibleBundleFallback(t *testing.T) {
 		vis := resolveVisibility(canon, []provider{
 			alphaProvider(classOwn, "/own", digest),
 			alphaProvider(classBundle, "/bundle", digest),
-		}, caps, channels{bundle: true})
+		}, caps, channels{bundle: true}, nil)
 
 		Convey("When the visible set is computed", func() {
 			visible := vis.Skills["alpha"].visible(caps, vis.order())
@@ -242,7 +303,7 @@ func TestResolveVisibilityChannels(t *testing.T) {
 
 	for _, tc := range cases {
 		Convey("Given "+tc.name, t, func() {
-			vis := resolveVisibility(canonTrees(), nil, agent.SkillCaps{}, tc.ch)
+			vis := resolveVisibility(canonTrees(), nil, agent.SkillCaps{}, tc.ch, nil)
 
 			Convey("Then the delivery channel matches", func() {
 				So(vis.Skills["alpha"].Chosen, ShouldEqual, tc.chosen)
@@ -256,7 +317,7 @@ func TestResolveVisibilityForkWarningListsProviders(t *testing.T) {
 		vis := resolveVisibility(canonTrees(), []provider{
 			alphaProvider(classForeign, "/a", skill.TreeDigest(driftedTree())),
 			alphaProvider(classForeign, "/b", skill.TreeDigest(driftedTree())),
-		}, agent.SkillCaps{}, channels{})
+		}, agent.SkillCaps{}, channels{}, nil)
 
 		Convey("When the warnings are rendered", func() {
 			So(forkWarnings(vis), ShouldHaveLength, 1)

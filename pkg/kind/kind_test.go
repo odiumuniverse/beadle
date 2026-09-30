@@ -232,10 +232,23 @@ func TestParse(t *testing.T) {
 		})
 
 		Convey("When an unknown kind is parsed", func() {
-			_, err := kind.Parse("plugins")
+			_, err := kind.Parse("nonesuch")
 
 			Convey("Then parsing fails", func() {
 				So(err, ShouldBeError)
+			})
+		})
+
+		Convey("When the plugins kind is parsed", func() {
+			id, err := kind.Parse("plugins")
+
+			Convey("Then it is a real kind that merges per file", func() {
+				So(err, ShouldBeNil)
+				So(id, ShouldEqual, kind.Plugins)
+
+				spec, ok := kind.Lookup(kind.Plugins)
+				So(ok, ShouldBeTrue)
+				So(spec.Merge, ShouldNotBeNil)
 			})
 		})
 	})

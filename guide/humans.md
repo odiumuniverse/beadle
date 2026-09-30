@@ -53,6 +53,28 @@ checkout — secrets in project files need an explicit opt-in
 
 ## Plugins
 
+
+### Two plugin surfaces
+
+`beadle plugins …` is **verger, embedded**: the same spec, the same lock, the
+same exit codes. It installs, removes and pins packages.
+
+```sh
+beadle plugins list                       # packages, versions, and the cells they fill
+beadle plugins install <ref>...           # --json, --dry-run, --force
+beadle plugins remove <id>
+beadle plugins canon enable               # beadle's own rules, skills and commands
+beadle plugins eject                      # move the plugin home to ~/.verger
+```
+
+`install` and `remove` never overwrite a file you edited after it was
+delivered — they refuse and tell you so. `--force` proceeds and keeps what you
+wrote first, under `<vault>/state/backups/<timestamp>/`, printing the path. `-y`
+does not imply `--force`.
+
+Everything below describes the other surface: the **farm**, beadle's own
+scanning and presenting of plugins a host already has.
+
 Plugins are read from **every host with file-based plugins** — Claude Code, Codex, Gemini CLI
 extensions, Antigravity, Cursor and oh-my-pi (`~/.omp/plugins`, adopted read-only) — scanned
 and **parked** in the vault, then
@@ -130,6 +152,13 @@ Common answers:
 
 - **A file is not synced.** `beadle diff` shows it; if the agent's kind is
   `pull`, only the agent writes there. `beadle kinds` lists the modes.
+- **Every kind says `skipped — no agent is on for this vault`.** No agent is
+  enabled and installed here, so there was nobody to write to. The command to
+  change that is printed once, under the table, not once per kind.
+- **Everything says `in sync`.** Nothing changed since the last run. That is the
+  word for a run that wrote nothing on purpose; `delivered` is only ever printed
+  when a file really was written. A kind with files to report lists them under
+  its name instead of a single word.
 - **The agent did not keep what beadle wrote.** The host cannot express it (a
   field, a placeholder, a tool); the doctor note names the reason.
 - **A skill is missing.** Check `beadle explain <skill>` for the copies the
@@ -143,6 +172,13 @@ Common answers:
 it). It is a directory: put it in git or your own sync and every machine shares
 the canon — credential values stay out.
 
+**Can I copy the vault to a second machine?** Yes — with `git clone`, or by
+copying the directory. The second machine delivers everything for itself,
+because what "beadle wrote this file here" means is a fact about one machine: a
+delivery record that travelled with the vault is not read as yours, so a host
+that has never had a file is not reported as one you deleted. Enable an agent on
+the new machine (`beadle agents enable <agent>`) and sync.
+
 **Why do I see both `AGENTS.md` and `CLAUDE.md`?** Agents have different
 instruction files; beadle writes each host its own file from the same canon.
 A host that reads another agent's file natively (for example OpenCode reading
@@ -150,11 +186,26 @@ A host that reads another agent's file natively (for example OpenCode reading
 
 **How do I disable something?** `beadle kinds disable <kind>`,
 `beadle agents disable <agent>`, `beadle project disable <file>`,
-`beadle bundles disable <host>`.
+`beadle bundles disable <host>`. To change a kind for one agent only, add
+`--agent <id>` — `beadle kinds disable skills --agent cursor` — and give the
+flag more than once to reach several in one run. Without it the kind's default
+changes for every agent; with it the default is left as it was.
 
-**How do I update?** Install the new binary and run `beadle sync`; the vault
-and `state.json` are forward-compatible. `beadle daemon install` refreshes the
-watcher.
+**Which output should I pipe?** `--json` works before or after the verb and
+prints one document beginning with `{"schema":{"name":…,"version":1}}`; a
+plain run prints a table meant to be read. `beadle status --outdated-only`
+shows what is pending without writing it (`--check` is the old name and still
+works). `beadle version` and `beadle --version` print the same thing.
+
+**How do I update?** Install the new binary and run `beadle sync`. A vault
+written by an older beadle is migrated in place: what that build kept on disk
+and this build keeps somewhere else is moved, the copy of what was removed is
+left in `<vault>/state/backups/<timestamp>/`, and the run prints one line per
+move. Run it twice and the second run has nothing to say. If the old build left
+something this one takes over, `beadle doctor` names it *before* you sync, with
+the command that moves it. Nothing is removed before the copy is taken, and a
+file that is not what this build would write is copied and named rather than
+deleted. `beadle daemon install` refreshes the watcher.
 
 **Something looks wrong.** Run `beadle doctor` first; it names the file and the
 reason. Nothing is deleted silently, and every change is in the vault's object

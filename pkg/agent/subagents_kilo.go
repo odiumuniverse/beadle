@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"path/filepath"
+	"github.com/odiumuniverse/verger/pkg/hostpath"
 
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/kind"
@@ -12,19 +12,14 @@ import (
 // relative to the agents directory, and the legacy {mode,modes} directories
 // hold primary agents.
 func kiloSubagentSurface(home string) *subagentSurface {
-	configDir := KiloConfigDir(home)
-
-	readDirs := append(KiloAgentDirs(home),
-		filepath.Join(configDir, "modes"),
-		filepath.Join(configDir, "mode"),
-	)
+	resolved := surfaces(hostpath.Kilo, home)
 
 	return &subagentSurface{
 		kind:       kind.Subagents,
 		label:      subagentLabel,
 		model:      subagentModel{},
-		readDirs:   readDirs,
-		writeDir:   filepath.Join(configDir, kiloAgentsDirName),
+		readDirs:   resolved.AgentsReads,
+		writeDir:   resolved.Agents,
 		nestedNote: "nested subagent id",
 		codec:      &openCodeSubagentCodec{host: "kilo", primaryDirs: []string{modeKey, "modes"}},
 		traits: Traits{

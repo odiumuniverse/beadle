@@ -33,9 +33,12 @@ type fixture struct {
 	vault  *vault.Vault
 	config *config.Config
 	engine *engine.Engine
+	// manager is the fixture's plugin library: the place a plugin hook's
+	// consent lives, and the only place it may live.
+	manager *recordingManager
 }
 
-func newFixture(t *testing.T) *fixture {
+func newFixture(t *testing.T, opts ...engine.Option) *fixture {
 	t.Helper()
 
 	t.Setenv("XDG_CONFIG_HOME", "")
@@ -59,12 +62,22 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatalf("save config: %v", err)
 	}
 
-	e, err := engine.New(v, cfg, agent.All(home, t.TempDir()), engine.WithHome(home))
+	// Hook consent lives in the plugin library, so a fixture has one: the
+	// tests that care about the farm build their own engine with their own
+	// manager. A test that passes its own manager still wins, because options
+	// are applied in order. The default manager claims nothing, so a seeded
+	// farm stays exactly where it is and only the tests that migrate it say
+	// otherwise.
+	manager := &recordingManager{home: filepath.Join(home, ".verger")}
+
+	opts = append([]engine.Option{engine.WithHome(home), engine.WithPluginManager(manager)}, opts...)
+
+	e, err := engine.New(v, cfg, agent.All(home, t.TempDir()), opts...)
 	if err != nil {
 		t.Fatalf("new engine: %v", err)
 	}
 
-	return &fixture{home: home, vault: v, config: cfg, engine: e}
+	return &fixture{home: home, vault: v, config: cfg, engine: e, manager: manager}
 }
 
 func (f *fixture) run(t *testing.T, opts engine.SyncOptions) *engine.Report {

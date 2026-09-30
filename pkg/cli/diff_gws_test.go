@@ -13,8 +13,7 @@ func TestDiffMarksUncreatableSurface(t *testing.T) {
 		home := t.TempDir()
 
 		t.Setenv("HOME", home)
-		t.Setenv("XDG_CONFIG_HOME", "")
-		t.Setenv("BEADLE_HOME", filepath.Join(home, ".beadle"))
+		isolateTestRoots(t)
 
 		So(os.MkdirAll(filepath.Join(home, ".codex"), 0o750), ShouldBeNil)
 

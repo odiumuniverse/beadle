@@ -25,14 +25,13 @@ import (
 )
 
 func (e *Engine) loadVault(k kind.ID) (kind.Items, bool, error) {
+	if k == kind.Plugins {
+		return e.loadPluginState()
+	}
+
 	switch k {
 	case kind.Rules:
-		data, present, err := readOptional(e.vault.RulesPath())
-		if err != nil || !present {
-			return kind.Items{}, false, err
-		}
-
-		return normalize(kind.Items{kind.RulesKey: data}), false, nil
+		return e.loadRules()
 	case kind.MCP:
 		return e.loadServers()
 	case kind.Skills:
@@ -138,14 +137,13 @@ func (e *Engine) loadPermissions() (kind.Items, error) {
 }
 
 func (e *Engine) saveVault(k kind.ID, items kind.Items) error {
+	if k == kind.Plugins {
+		return e.savePluginState(items)
+	}
+
 	switch k {
 	case kind.Rules:
-		content, ok := items[kind.RulesKey]
-		if !ok {
-			return nil
-		}
-
-		return writeVaultFile(e.vault.RulesPath(), content)
+		return e.saveRules(items)
 	case kind.MCP:
 		doc := make(map[string]json.RawMessage, len(items))
 
@@ -181,6 +179,70 @@ func (e *Engine) saveVault(k kind.ID, items kind.Items) error {
 	default:
 		return fmt.Errorf("unknown kind %q", k)
 	}
+}
+
+func (e *Engine) loadRules() (kind.Items, bool, error) {
+	data, present, err := readOptional(e.vault.RulesPath())
+	if err != nil || !present {
+		return kind.Items{}, false, err
+	}
+
+	return normalize(kind.Items{kind.RulesKey: data}), false, nil
+}
+
+func (e *Engine) saveRules(items kind.Items) error {
+	content, ok := items[kind.RulesKey]
+	if !ok {
+		return nil
+	}
+
+	return writeVaultFile(e.vault.RulesPath(), content)
+}
+
+// pluginStateFiles are the two verger files beadle keeps in its canon: the spec
+// the user edits and the lock verger resolves it into.
+var pluginStateFiles = []string{"verger.toml", "verger.lock"}
+
+func (e *Engine) loadPluginState() (kind.Items, bool, error) {
+	items := kind.Items{}
+
+	for _, name := range pluginStateFiles {
+		data, present, err := readOptional(e.vault.VergerFile(name))
+		if err != nil {
+			return nil, false, err
+		}
+
+		if present {
+			items[name] = data
+		}
+	}
+
+	return items, false, nil
+}
+
+func (e *Engine) savePluginState(items kind.Items) error {
+	dir := e.vault.VergerDir()
+
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+
+	for _, name := range pluginStateFiles {
+		data, keep := items[name]
+		if !keep {
+			if err := os.Remove(e.vault.VergerFile(name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("remove %s: %w", name, err)
+			}
+
+			continue
+		}
+
+		if err := fsutil.WriteFileAtomic(e.vault.VergerFile(name), data, 0o600); err != nil {
+			return fmt.Errorf("write %s: %w", name, err)
+		}
+	}
+
+	return nil
 }
 
 func (e *Engine) saveSkills(items kind.Items) error {
