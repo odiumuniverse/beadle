@@ -111,7 +111,7 @@ func TestSkillCacheHitSkipsReread(t *testing.T) {
 
 		st := loadState(t, f)
 
-		entry, ok := st.SkillTreeFor(root)
+		entry, ok := st.SkillTreeFor(state.HomeKey(root, f.home))
 		So(ok, ShouldBeTrue)
 		So(entry.Digest, ShouldNotBeEmpty)
 		So(entry.Fingerprint, ShouldNotBeEmpty)
@@ -166,7 +166,7 @@ func TestSkillCacheInvalidation(t *testing.T) {
 			f.sync(t)
 
 			Convey("Then the entry is refreshed with the new listing", func() {
-				entry, ok := loadState(t, f).SkillTreeFor(root)
+				entry, ok := loadState(t, f).SkillTreeFor(state.HomeKey(root, f.home))
 				So(ok, ShouldBeTrue)
 				So(entry.Latest, ShouldEqual, later)
 			})
@@ -198,7 +198,7 @@ func TestSkillCachePrunesVanishedRoots(t *testing.T) {
 
 		f.sync(t)
 
-		_, ok := loadState(t, f).SkillTreeFor(foreign)
+		_, ok := loadState(t, f).SkillTreeFor(state.HomeKey(foreign, f.home))
 		So(ok, ShouldBeTrue)
 
 		Convey("When the copy is renamed", func() {
@@ -210,10 +210,10 @@ func TestSkillCachePrunesVanishedRoots(t *testing.T) {
 			Convey("Then the old entry is gone and the new root is cached", func() {
 				st := loadState(t, f)
 
-				_, ok := st.SkillTreeFor(foreign)
+				_, ok := st.SkillTreeFor(state.HomeKey(foreign, f.home))
 				So(ok, ShouldBeFalse)
 
-				entry, ok := st.SkillTreeFor(renamed)
+				entry, ok := st.SkillTreeFor(state.HomeKey(renamed, f.home))
 				So(ok, ShouldBeTrue)
 				So(entry.Digest, ShouldNotBeEmpty)
 			})
@@ -225,7 +225,7 @@ func TestSkillCachePrunesVanishedRoots(t *testing.T) {
 			f.sync(t)
 
 			Convey("Then its entry is gone from the state", func() {
-				_, ok := loadState(t, f).SkillTreeFor(foreign)
+				_, ok := loadState(t, f).SkillTreeFor(state.HomeKey(foreign, f.home))
 				So(ok, ShouldBeFalse)
 			})
 		})
@@ -247,7 +247,7 @@ func TestSkillCacheRacyWindow(t *testing.T) {
 
 		st := loadState(t, f)
 
-		entry, ok := st.SkillTreeFor(root)
+		entry, ok := st.SkillTreeFor(state.HomeKey(root, f.home))
 		So(ok, ShouldBeTrue)
 
 		// Re-stamp the entry as if it were computed right now: the listing
@@ -316,7 +316,7 @@ func TestSkillCacheEmptyDigestIsNotTrusted(t *testing.T) {
 
 		st := loadState(t, f)
 
-		entry, ok := st.SkillTreeFor(root)
+		entry, ok := st.SkillTreeFor(state.HomeKey(root, f.home))
 		So(ok, ShouldBeTrue)
 
 		stat, err := skill.StatTree(root)

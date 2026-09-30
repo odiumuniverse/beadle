@@ -384,6 +384,11 @@ func Load(path string) (*State, error) {
 		st.migrated = true
 	}
 
+	if rekeyed := st.rekeyHookModules(); len(rekeyed) > 0 {
+		st.migration = append(st.migration, rekeyed...)
+		st.migrated = true
+	}
+
 	return st, nil
 }
 
@@ -467,34 +472,38 @@ func (s *State) renameAgentIDs() []string {
 	return renameNotes(renamed)
 }
 
-// HomePrefix opens a cache key that stands for a path inside the home
-// directory. It is spelled the way a shell spells it, and it is the only
-// portable spelling: "/Users/a/.claude/skills" and "/home/a/.claude/skills"
-// are one tree on two machines and two different strings.
+// HomePrefix opens a key that stands for a path inside the home directory. It
+// is spelled the way a shell spells it, and it is the only portable spelling:
+// "/Users/a/.claude/skills" and "/home/a/.claude/skills" are one file on two
+// machines and two different strings.
 const HomePrefix = "~/"
 
-// SkillTreeKey is the machine-independent key for one skill tree root: the
-// path relative to the home directory, spelled with a leading "~/", for
-// anything under home. A root outside home keeps its absolute path, because
-// there is nothing portable to say about it and a key that pretended otherwise
-// would collide.
-func SkillTreeKey(root, home string) string {
+// HomeKey is the machine-independent key for one path under the home
+// directory: the path relative to home, spelled with a leading "~/". A path
+// outside home keeps its absolute form, because there is nothing portable to
+// say about it and a key that pretended otherwise would collide.
+//
+// The state travels between machines, and a key is what beadle looks a thing
+// up by. An absolute key is a name only the machine that wrote it can read: the
+// record is not lost, it is inert, and the next sync writes a second one beside
+// it. Every map in the state whose key is a path under home goes through here.
+func HomeKey(path, home string) string {
 	if home == "" {
-		return root
+		return path
 	}
 
-	rel, err := filepath.Rel(filepath.Clean(home), filepath.Clean(root))
+	rel, err := filepath.Rel(filepath.Clean(home), filepath.Clean(path))
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return root
+		return path
 	}
 
 	return HomePrefix + filepath.ToSlash(rel)
 }
 
-// SkillTreePath is the inverse of SkillTreeKey: it turns a stored key back
-// into a path on this machine. A key that is already absolute comes back
-// unchanged, which is what lets a pre-migration state stay usable.
-func SkillTreePath(key, home string) string {
+// HomePath is the inverse of HomeKey: it turns a stored key back into a path
+// on this machine. A key that is already absolute comes back unchanged, which
+// is what lets a pre-migration state stay usable.
+func HomePath(key, home string) string {
 	if !strings.HasPrefix(key, HomePrefix) {
 		return key
 	}
@@ -511,34 +520,55 @@ func SkillTreePath(key, home string) string {
 // key under no recorded home is left alone rather than guessed at; it keeps
 // working, it is just not portable yet.
 func (s *State) rekeySkillTrees() []string {
-	if len(s.SkillTrees) == 0 || s.Home == "" {
-		return nil
-	}
-
-	moved := 0
-
-	for key, entry := range s.SkillTrees {
-		canonical := SkillTreeKey(key, s.Home)
-		if canonical == key {
-			continue
-		}
-
-		// A canonical key already present wins: it is what the current machine
-		// would read, and two entries for one tree cannot both be right.
-		if _, taken := s.SkillTrees[canonical]; !taken {
-			s.SkillTrees[canonical] = entry
-		}
-
-		delete(s.SkillTrees, key)
-
-		moved++
-	}
-
+	moved := rekeyHomeKeys(s.SkillTrees, s.Home, HomeKey)
 	if moved == 0 {
 		return nil
 	}
 
 	return []string{fmt.Sprintf("skill tree cache: %d key(s) made machine-independent", moved)}
+}
+
+// rekeyHookModules rewrites the recorded hook module keys the same way, and for
+// a worse reason than the cache: a module record is the only proof beadle has
+// that a file it is about to overwrite is its own. A key the machine cannot
+// read turns beadle's own file into a stranger's, and a stranger's file is left
+// alone forever.
+func (s *State) rekeyHookModules() []string {
+	moved := rekeyHomeKeys(s.HookModules, s.Home, HomeKey)
+	if moved == 0 {
+		return nil
+	}
+
+	return []string{fmt.Sprintf("hook module records: %d key(s) made machine-independent", moved)}
+}
+
+// rekeyHomeKeys rewrites every key of one path-keyed map into its portable
+// form and reports how many moved. A canonical key already present wins: it is
+// what the current machine would read, and two entries for one file cannot both
+// be right.
+func rekeyHomeKeys[V any](entries map[string]V, home string, key func(string, string) string) int {
+	if len(entries) == 0 || home == "" {
+		return 0
+	}
+
+	moved := 0
+
+	for stored, value := range entries {
+		canonical := key(stored, home)
+		if canonical == stored {
+			continue
+		}
+
+		if _, taken := entries[canonical]; !taken {
+			entries[canonical] = value
+		}
+
+		delete(entries, stored)
+
+		moved++
+	}
+
+	return moved
 }
 
 // recordRename rewrites one agent-id field in place and records the historical

@@ -88,8 +88,7 @@ func readTree(t *testing.T, root string) map[string]string {
 	return out
 }
 
-// TestFirstSyncDoesNotReRenderTheFarmItWasGiven is the regression test for the
-// farm losing what init had already settled.
+// TestFirstSyncDoesNotReRenderTheFarmItWasGiven is a sentinel, not the guard.
 //
 // It needs a fixture that actually has a native bundle, which is a different
 // fixture from the idempotency one: with `testhost.Stubs` every host reports
@@ -98,10 +97,23 @@ func readTree(t *testing.T, root string) map[string]string {
 // the host is present the way a machine that has run Claude Code once looks,
 // which is what makes init render the farm in the first place.
 //
-// The bug: the first sync re-rendered the farm from a view that did not know
-// what beadle had just delivered, so the canon skills came out of it and its
-// manifests were re-stamped. The second sync put them back. A vault that
-// changes shape on every other run is a vault no script can hash.
+// It was written as the regression test for the farm losing what init had
+// already settled, and it is green with the fix reverted — VERIFY-CP-beadle-pS-5
+// §3 measured that, and this pass confirmed why. The bug lived inside ONE run:
+// syncKinds pushed the canon skills to the host's file surface and the farm
+// refresh later in the same run credited that copy as a provider. Across two
+// processes the first run's delivery is already on disk, the coverage question
+// answers itself, and the render agrees with itself — so this shape cannot fail
+// for the reason the bug had, whichever way the code is built.
+//
+// What it is worth is narrower and still real: that a vault handed to beadle
+// and then synced, with a native bundle rendered at init, keeps the farm init
+// rendered. The guard that fails without the fix is
+// TestTheFirstSyncKeepsTheFarmSkillsItJustDelivered in pkg/engine, which runs
+// the delivery and the farm refresh in one process — the shape the bug needs.
+// This one stays because the cross-process property is worth stating once, and
+// its doc comment now says which of the two is load-bearing instead of implying
+// it is this one.
 func TestFirstSyncDoesNotReRenderTheFarmItWasGiven(t *testing.T) {
 	Convey("Given a vault whose native bundle init rendered", t, func() {
 		home := gwsHome(t)

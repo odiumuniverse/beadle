@@ -38,13 +38,27 @@ type fixture struct {
 	manager *recordingManager
 }
 
+// newFixture builds a machine in a throwaway home, with a vault beside it.
 func newFixture(t *testing.T, opts ...engine.Option) *fixture {
+	t.Helper()
+
+	return newFixtureAt(t, t.TempDir(), t.TempDir(), opts...)
+}
+
+// newFixtureAt is newFixture with the two directories the caller chooses. A
+// test about a vault that travels between machines has to name the homes it
+// travels between, and re-implementing the fixture here would mean a second
+// arrangement to keep in step with the first.
+func newFixtureAt(t *testing.T, home, vaultDir string, opts ...engine.Option) *fixture {
 	t.Helper()
 
 	t.Setenv("XDG_CONFIG_HOME", "")
 
-	home := t.TempDir()
-	v := vault.New(filepath.Join(t.TempDir(), "vault"))
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatalf("home %s: %v", home, err)
+	}
+
+	v := vault.New(vaultDir)
 
 	if err := v.Init(); err != nil {
 		t.Fatalf("init vault: %v", err)

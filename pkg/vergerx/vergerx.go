@@ -439,6 +439,21 @@ func (c *Client) PublishCanonPackage(ctx context.Context, dir string, hosts []st
 
 // consentConfirmer answers for a scope the caller proved, and declines
 // everything outside it.
+//
+// The scope is publish consent: a package the user approved publishing, for a
+// host they approved. It is worth being exact about what that means, because
+// every question the library asks arrives as the same apply.Question and this
+// is the only thing that answers it. A question that is not publish consent
+// is declined here — and that is the right answer, not an accident of the
+// lookup missing.
+//
+// The one that already exists is a channel resolving to a version older than
+// the one installed: the library asks rather than downgrading silently, because
+// a downgrade is a move the user has to ask for. beadle declines it, and that
+// stays right until beadle offers a way to ask for one — a flag the user sets
+// deliberately is a different consent from the one recorded at publish time,
+// and a confirmer that answered both would be answering for a decision its
+// caller never made.
 type consentConfirmer struct{ consent state.PublishConsent }
 
 func (c *consentConfirmer) Confirm(_ context.Context, q apply.Question) (bool, error) {
@@ -753,6 +768,16 @@ func (c *Client) SyncPackages(ctx context.Context, dryRun bool) error {
 // plugin pass, so the daemon delivers after a pull changed the spec — without
 // that call a vault can carry a spec no machine ever applies, and the other
 // tool's own `status` truthfully reports no cells.
+//
+// A channel that resolves to a version older than the installed one is NOT
+// applied, and that is a decision rather than an omission. From verger v0.1.2 a
+// channel can resolve backwards, and the library answers that in two ways: a
+// confirmation question, and an option to allow the downgrade. beadle takes
+// neither — the option stays at its zero value, and no beadle command offers a
+// flag for it. A downgrade is a move the user has to ask for, and beadle has no
+// way to ask, so the run ends in a question the user can answer, classified as
+// consent by the exit table, instead of quietly moving a machine backwards.
+// When a flag arrives it belongs in this function and nowhere else.
 func (c *Client) Sync(ctx context.Context, project, dryRun bool, filter verger.HostFilter) (*apply.Report, error) {
 	paths, err := c.pathsFor(project)
 	if err != nil {

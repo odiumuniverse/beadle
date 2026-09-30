@@ -11,6 +11,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/lock"
 	"github.com/odiumuniverse/beadle/pkg/secret"
 	"github.com/odiumuniverse/beadle/pkg/state"
+	"github.com/odiumuniverse/verger/pkg/apply"
 	"github.com/odiumuniverse/verger/pkg/consent"
 	"github.com/odiumuniverse/verger/pkg/exitcode"
 	vergerlock "github.com/odiumuniverse/verger/pkg/lock"
@@ -58,11 +59,17 @@ func classify(err error) int {
 	case isSchemaNewer(err):
 		return exitcode.SchemaNewer
 
-	// 5 — consent. A secret cannot be stored without a keyring, and only the
-	// user can provide one. Matches verger's mapping of the same sentinel
-	// types, which is the point of sharing the table.
+	// 5 — consent. Two kinds of it, and the second one arrived with verger's
+	// channel work: a secret cannot be stored without a keyring, and only the
+	// user can provide one; and a question the tool could not put to the user
+	// is consent nobody gave. verger classifies both the same way, on the
+	// grounds that the user's next move in either case is to answer something
+	// or pass -y, and calling it a conflict told a script the run had failed
+	// for a reason it cannot act on. Matching that mapping is the point of
+	// sharing the table, so the sentinel beadle had no name for is named here.
 	case errors.Is(err, secret.ErrKeyringUnavailable),
-		errors.Is(err, secret.ErrKeyringUnsupported):
+		errors.Is(err, secret.ErrKeyringUnsupported),
+		errors.Is(err, apply.ErrConfirmationRequired):
 		return exitcode.Consent
 
 	// 3 — conflict. Another beadle process holds the vault. That is ordinary,

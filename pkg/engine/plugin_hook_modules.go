@@ -54,6 +54,11 @@ const (
 
 // hookModuleWanted is one module a run wants on disk.
 type hookModuleWanted struct {
+	// key is what the state records this module under, and target is where the
+	// file lives. They are two things: the record travels between machines and
+	// the file does not, so a key that named the file's path would name nothing
+	// on the next machine and beadle's own file would look foreign there.
+	key    string
 	target string
 	data   []byte
 	digest cas.Hash
@@ -149,8 +154,10 @@ func (e *Engine) wantedHookModules(manifest plugin.Manifest, report *Report) (ma
 			}
 
 			target := filepath.Join(dir, module.Phase, module.Name)
-			desired[target] = hookModuleWanted{
-				target: target, data: data, digest: digest, source: key, phase: module.Phase, name: module.Name,
+			record := state.HomeKey(target, e.home)
+			desired[record] = hookModuleWanted{
+				key: record, target: target,
+				data: data, digest: digest, source: key, phase: module.Phase, name: module.Name,
 			}
 		}
 	}
@@ -172,21 +179,22 @@ func (e *Engine) wantedHookModules(manifest plugin.Manifest, report *Report) (ma
 func (e *Engine) withdrawHookModules(st *state.State, report *Report, desired map[string]hookModuleWanted, opts SyncOptions) {
 	removed := 0
 
-	for _, target := range slices.Sorted(maps.Keys(st.HookModules)) {
-		if _, wanted := desired[target]; wanted {
+	for _, key := range slices.Sorted(maps.Keys(st.HookModules)) {
+		if _, wanted := desired[key]; wanted {
 			continue
 		}
 
-		record := st.HookModules[target]
+		record := st.HookModules[key]
 
 		if !opts.DryRun {
+			target := state.HomePath(key, e.home)
 			if err := removeOwnedHookModule(target, record.Digest); err != nil {
 				report.Warnings = append(report.Warnings, hookModuleNote(fmt.Sprintf("%s: %v", displayHomePath(target, e.home), err)))
 
 				continue
 			}
 
-			delete(st.HookModules, target)
+			delete(st.HookModules, key)
 		}
 
 		removed++
@@ -242,32 +250,32 @@ func decideHookModule(current []byte, present bool, record state.HookModule, our
 func (e *Engine) writeHookModules(st *state.State, report *Report, desired map[string]hookModuleWanted, opts SyncOptions) []hookModuleWanted {
 	var written []hookModuleWanted
 
-	for _, target := range slices.Sorted(maps.Keys(desired)) {
-		want := desired[target]
+	for _, key := range slices.Sorted(maps.Keys(desired)) {
+		want := desired[key]
 
-		current, present, err := readOptional(target)
+		current, present, err := readOptional(want.target)
 		if err != nil {
-			report.Warnings = append(report.Warnings, hookModuleNote(fmt.Sprintf("%s: %v", displayHomePath(target, e.home), err)))
+			report.Warnings = append(report.Warnings, hookModuleNote(fmt.Sprintf("%s: %v", displayHomePath(want.target, e.home), err)))
 
 			continue
 		}
 
-		record, ours := st.HookModules[target]
+		record, ours := st.HookModules[key]
 		decision, note := decideHookModule(current, present, record, ours, want)
 
 		switch decision {
 		case hookModuleForeign:
-			report.Notes = append(report.Notes, hookModuleNote(displayHomePath(target, e.home)+" "+note))
+			report.Notes = append(report.Notes, hookModuleNote(displayHomePath(want.target, e.home)+" "+note))
 
 			continue
 		case hookModuleReplaced:
 			// Someone replaced our file: it is foreign now, drop the record
 			// and never overwrite it.
 			if !opts.DryRun {
-				delete(st.HookModules, target)
+				delete(st.HookModules, key)
 			}
 
-			report.Notes = append(report.Notes, hookModuleNote(displayHomePath(target, e.home)+" "+note))
+			report.Notes = append(report.Notes, hookModuleNote(displayHomePath(want.target, e.home)+" "+note))
 
 			continue
 		case hookModuleKeep:
@@ -277,13 +285,13 @@ func (e *Engine) writeHookModules(st *state.State, report *Report, desired map[s
 		}
 
 		if opts.DryRun {
-			report.Notes = append(report.Notes, hookModuleNote("would write "+displayHomePath(target, e.home)))
+			report.Notes = append(report.Notes, hookModuleNote("would write "+displayHomePath(want.target, e.home)))
 
 			continue
 		}
 
-		if err := writeHookModule(target, want.data); err != nil {
-			report.Warnings = append(report.Warnings, hookModuleNote(fmt.Sprintf("%s: %v", displayHomePath(target, e.home), err)))
+		if err := writeHookModule(want.target, want.data); err != nil {
+			report.Warnings = append(report.Warnings, hookModuleNote(fmt.Sprintf("%s: %v", displayHomePath(want.target, e.home), err)))
 
 			continue
 		}
@@ -292,7 +300,7 @@ func (e *Engine) writeHookModules(st *state.State, report *Report, desired map[s
 			st.HookModules = map[string]state.HookModule{}
 		}
 
-		st.HookModules[target] = state.HookModule{Digest: want.digest, Source: want.source, Phase: want.phase, Name: want.name}
+		st.HookModules[key] = state.HookModule{Digest: want.digest, Source: want.source, Phase: want.phase, Name: want.name}
 
 		written = append(written, want)
 	}
@@ -349,7 +357,7 @@ func (e *Engine) probeHookModules(ctx context.Context, st *state.State, report *
 			// omp abbreviates HOME to "~", so the module is matched by its
 			// hooks/<phase>/<name> suffix, never by an absolute prefix.
 			if strings.Contains(line, filepath.Join(hookModuleDirName, want.phase, want.name)) {
-				failed[want.target] = strings.TrimSpace(line)
+				failed[want.key] = strings.TrimSpace(line)
 			}
 		}
 	}
@@ -361,17 +369,18 @@ func (e *Engine) probeHookModules(ctx context.Context, st *state.State, report *
 		return
 	}
 
-	for _, target := range slices.Sorted(maps.Keys(failed)) {
-		record := st.HookModules[target]
+	for _, key := range slices.Sorted(maps.Keys(failed)) {
+		record := st.HookModules[key]
+		target := state.HomePath(key, e.home)
 
 		if err := removeOwnedHookModule(target, record.Digest); err != nil {
 			report.Warnings = append(report.Warnings, hookModuleNote(fmt.Sprintf("%s: %v", displayHomePath(target, e.home), err)))
 		}
 
-		delete(st.HookModules, target)
+		delete(st.HookModules, key)
 
 		report.Warnings = append(report.Warnings, hookModuleNote(fmt.Sprintf(
-			"delivery failed: %s did not load: %s", displayHomePath(target, e.home), failed[target])))
+			"delivery failed: %s did not load: %s", displayHomePath(target, e.home), failed[key])))
 	}
 }
 
@@ -442,8 +451,9 @@ func (e *Engine) hookModuleDriftIssues(installed map[string]bool) []Issue {
 
 	var issues []Issue
 
-	for _, target := range slices.Sorted(maps.Keys(st.HookModules)) {
-		record := st.HookModules[target]
+	for _, key := range slices.Sorted(maps.Keys(st.HookModules)) {
+		record := st.HookModules[key]
+		target := state.HomePath(key, e.home)
 
 		if !installed[record.Source] {
 			issues = append(issues, Issue{Severity: SeverityInfo, Agent: agent.OmpID, Message: fmt.Sprintf(

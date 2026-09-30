@@ -18,6 +18,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/lock"
 	"github.com/odiumuniverse/beadle/pkg/secret"
 	"github.com/odiumuniverse/beadle/pkg/state"
+	"github.com/odiumuniverse/verger/pkg/apply"
 	"github.com/odiumuniverse/verger/pkg/exitcode"
 	vergerlock "github.com/odiumuniverse/verger/pkg/lock"
 	"github.com/odiumuniverse/verger/pkg/verger"
@@ -55,6 +56,14 @@ func TestEveryNamedSituationHasItsOwnClass(t *testing.T) {
 			// keyring: a secret cannot be stored on this machine. The user
 			// sees "no keyring available" and provides one, or opts out.
 			{name: "keyring unavailable", err: secret.ErrKeyringUnavailable, want: exitcode.Consent},
+
+			// a question the tool could not ask. verger moved this sentinel from
+			// the conflict class to the consent class in v0.1.2, on the grounds that
+			// the user's next move is to answer it or pass -y, and telling a script
+			// "conflict" told it the run failed for a reason it cannot act on. Left
+			// out, a confirmation required inside the library surfaced through a
+			// beadle command fell to the default branch and exited 1.
+			{name: "verger asked and was not answered", err: apply.ErrConfirmationRequired, want: exitcode.Consent},
 
 			// host CLI missing: the host cannot be reached. The user sees
 			// "host not found" and installs it, or runs without that host.

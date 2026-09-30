@@ -81,7 +81,7 @@ const v2State = `{
     "/home/u/.claude/skills": {"digest": "hst", "fingerprint": "hsfp", "latest": "2026-01-09T00:00:00Z", "stamp": "2026-01-09T00:01:00Z"}
   },
   "hook_renders": {
-    "/home/u/.claude/settings.json": ["SessionStart"]
+    "claude": ["SessionStart"]
   },
   "hook_modules": {
     "/home/u/.claude/plugins/hooks/start.js": {"digest": "hhm", "source": "acme/tool", "phase": "start", "name": "start.js"}
@@ -227,17 +227,29 @@ func assertMigratedStateIsIntact(onDisk map[string]any, raw string) {
 				"count": float64(2), "first": "2026-01-01T00:00:00Z", "last": "2026-01-04T00:00:00Z",
 			},
 		})
+		// The cache key is the tree spelled relative to the recorded home, not
+		// the machine's path: a vault that travels to a machine with another home
+		// would otherwise carry a key naming nothing there. The digest, the
+		// fingerprint and both timestamps travel with it untouched - only the name
+		// is rewritten.
 		So(onDisk["skill_trees"], ShouldResemble, map[string]any{
-			"/home/u/.claude/skills": map[string]any{
+			state.HomePrefix + ".claude/skills": map[string]any{
 				"digest": "hst", "fingerprint": "hsfp",
 				"latest": "2026-01-09T00:00:00Z", "stamp": "2026-01-09T00:01:00Z",
 			},
 		})
+		// Hook renders are keyed by the host they went into, never by the path of
+		// the file: the host is the identity that travels, and a path is not. The
+		// fixture says so, and the migration leaves the shape alone.
 		So(onDisk["hook_renders"], ShouldResemble, map[string]any{
-			"/home/u/.claude/settings.json": []any{"SessionStart"},
+			"claude": []any{"SessionStart"},
 		})
+		// A hook module is keyed by the machine-independent name of the file it
+		// wrote, for the reason the cache is: the record is the only proof beadle
+		// has that the file is its own, and a proof naming another machine's home
+		// cannot survive there. The record's claim travels whole.
 		So(onDisk["hook_modules"], ShouldResemble, map[string]any{
-			"/home/u/.claude/plugins/hooks/start.js": map[string]any{
+			state.HomePrefix + ".claude/plugins/hooks/start.js": map[string]any{
 				"digest": "hhm", "source": "acme/tool", "phase": "start", "name": "start.js",
 			},
 		})

@@ -92,6 +92,11 @@ func fakeProbe(t *testing.T, output string, notFound bool) *[]string {
 	return calls
 }
 
+// hookModuleRecord looks a module up by the path the test cares about. The
+// state keys the record by the machine-independent name of the file, so the
+// lookup goes through the same mapping the engine writes with: a caller that
+// passed a path straight into the map would be asserting against a key nothing
+// ever stores, and the assertion would pass or fail for the wrong reason.
 func hookModuleRecord(t *testing.T, f *fixture, target string) (state.HookModule, bool) {
 	t.Helper()
 
@@ -100,7 +105,7 @@ func hookModuleRecord(t *testing.T, f *fixture, target string) (state.HookModule
 		t.Fatalf("load state: %v", err)
 	}
 
-	record, ok := st.HookModules[target]
+	record, ok := st.HookModules[state.HomeKey(target, f.home)]
 
 	return record, ok
 }

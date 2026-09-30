@@ -53,8 +53,12 @@ func (e *Engine) skillTreeDigest(st *state.State, root string) (cas.Hash, error)
 	// stamp moved, and a second sync produced a different state file. A script
 	// that hashes the vault to decide whether anything happened cannot tell
 	// that from work, and `migrate.idempotent` fails on it.
+	// The key the state stores this under is the tree's name, not its path: the
+	// state travels between machines and a path from one of them means nothing
+	// on the other. The in-process cache below still keys on the real path.
+	key := state.HomeKey(root, e.home)
+
 	stamp := e.now()
-	key := state.SkillTreeKey(root, e.home)
 	if previous, ok := st.SkillTreeFor(key); ok && previous.Digest == digest {
 		stamp = previous.Stamp
 	}
@@ -78,7 +82,7 @@ func (e *Engine) cachedSkillTree(st *state.State, root string, stat skill.TreeSt
 
 	// The in-process cache is keyed by the real path, because it never leaves
 	// this machine. The state is keyed by the portable one, because it does.
-	if entry, ok := st.SkillTreeFor(state.SkillTreeKey(root, e.home)); ok && skillTreeFresh(entry, stat) {
+	if entry, ok := st.SkillTreeFor(state.HomeKey(root, e.home)); ok && skillTreeFresh(entry, stat) {
 		e.setSkillCache(root, entry)
 
 		return entry.Digest, true
@@ -124,16 +128,21 @@ func readSkillTreeDigest(root string) (cas.Hash, error) {
 	return skill.TreeDigest(tree), nil
 }
 
-// pruneSkillTrees drops cache entries whose root no longer exists, so a
+// pruneSkillTrees drops cache entries whose tree no longer exists, so a
 // vanished skill tree does not linger in the state. It runs on the sync pass
 // that saves the state; read-only commands never persist the result.
+//
+// The state's keys are the portable ones, so they are resolved back to a path
+// on this machine before being asked about. Lstat on the key itself would
+// always report "not there" and quietly empty the whole cache on every saving
+// sync, which is the sort of bug that costs a full rescan and shows up nowhere.
 func (e *Engine) pruneSkillTrees(st *state.State) {
-	drop := func(root string) bool {
-		_, err := os.Lstat(root)
+	gone := func(key string) bool {
+		_, err := os.Lstat(state.HomePath(key, e.home))
 
 		return errors.Is(err, fs.ErrNotExist)
 	}
 
-	st.DropSkillTrees(drop)
-	maps.DeleteFunc(e.skillCache, func(root string, _ state.SkillTree) bool { return drop(root) })
+	st.DropSkillTrees(gone)
+	maps.DeleteFunc(e.skillCache, func(root string, _ state.SkillTree) bool { return gone(root) })
 }
