@@ -13,6 +13,7 @@ import (
 	"github.com/vmkteam/embedlog"
 
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
+	"github.com/odiumuniverse/beadle/pkg/testhost"
 	"github.com/odiumuniverse/beadle/pkg/vergerx"
 )
 
@@ -82,27 +83,6 @@ func TestPluginsUnpinRequiresArgs(t *testing.T) {
 			Convey("Then it returns an error", func() {
 				err := pluginsUnpin(nil, nil, nil)
 				So(err, ShouldNotBeNil)
-			})
-		})
-	})
-}
-
-func TestPluginsEject(t *testing.T) {
-	Convey("Given a vault with a verger home", t, func() {
-		vault := t.TempDir()
-
-		Convey("When plugins eject runs", func() {
-			ctx := context.Background()
-			c, err := vergerx.Open(ctx, vergerx.Config{
-				VaultRoot: vault,
-				Logger:    embedlog.NewDevLogger(),
-			})
-			So(err, ShouldBeNil)
-
-			defer func() { _ = c.Close() }()
-
-			Convey("Then it succeeds", func() {
-				So(c, ShouldNotBeNil)
 			})
 		})
 	})
@@ -225,24 +205,90 @@ func TestPluginsUnpinWithArgs(t *testing.T) {
 	})
 }
 
-func TestPluginsEjectMovesHome(t *testing.T) {
-	Convey("Given a vault with a verger home", t, func() {
+// TestPluginsEjectMovesThePackagesOutOfTheVault is the eject test the other two
+// were named as and were not: it installs a package, ejects, and checks the
+// package — not the directory — came with the move.
+//
+// The directory is the easy half and it was the only half covered. What a user
+// loses when an eject goes wrong is a package: a receipt per host is what makes
+// a package installed, and an eject that moved an empty tree would have passed
+// every test that existed.
+func TestPluginsEjectMovesThePackagesOutOfTheVault(t *testing.T) {
+	Convey("Given a vault with a package installed in its plugin home", t, func() {
 		vault := t.TempDir()
+		home := t.TempDir()
+
+		// The ejected home is os.UserHomeDir()/.verger, so the machine's own
+		// home is never the one this test moves packages into.
+		t.Setenv("HOME", home)
+
+		// A host has to exist before a package can be installed into one, and
+		// they are found with exec.LookPath: under `env -i` there are none.
+		testhost.Stubs(t)
+
+		ctx := context.Background()
+
+		c, err := vergerx.Open(ctx, vergerx.Config{
+			VaultRoot: vault,
+			Logger:    embedlog.NewDevLogger(),
+		})
+		So(err, ShouldBeNil)
+
+		defer func() { _ = c.Close() }()
+
+		c.SetConfirmer(vergerx.YesConfirmer())
+
+		pkg := filepath.Join(t.TempDir(), "vw-pkg")
+		So(os.MkdirAll(filepath.Join(pkg, ".claude-plugin"), 0o750), ShouldBeNil)
+		So(os.MkdirAll(filepath.Join(pkg, "skills", "alpha"), 0o750), ShouldBeNil)
+		So(os.WriteFile(filepath.Join(pkg, ".claude-plugin", "plugin.json"),
+			[]byte(`{"name":"vw-pkg","version":"1.0.0"}`), 0o600), ShouldBeNil)
+		So(os.WriteFile(filepath.Join(pkg, "skills", "alpha", "SKILL.md"),
+			[]byte("---\nname: alpha\ndescription: alpha probe\n---\n\nb\n"), 0o600), ShouldBeNil)
+
+		out := &bytes.Buffer{}
+		So(pluginsInstall(c, out, []string{pkg}), ShouldBeNil)
+
+		vaultHome, target := filepath.Join(vault, "verger"), filepath.Join(home, ".verger")
+		receipts := filepath.Join("state", "receipts", "local:vw-pkg")
 
 		Convey("When plugins eject runs", func() {
-			ctx := context.Background()
-			c, err := vergerx.Open(ctx, vergerx.Config{
-				VaultRoot: vault,
-				Logger:    embedlog.NewDevLogger(),
+			So(pluginsEjectFrom(c, out, io.Discard), ShouldBeNil)
+
+			Convey("Then the package is at the standalone home, receipts and all", func() {
+				entries, readErr := os.ReadDir(filepath.Join(target, receipts))
+				So(readErr, ShouldBeNil)
+				So(entries, ShouldNotBeEmpty)
 			})
-			So(err, ShouldBeNil)
 
-			defer func() { _ = c.Close() }()
+			Convey("And the standalone home is the one verger will open next", func() {
+				_, statErr := os.Stat(filepath.Join(target, "verger.toml"))
+				So(statErr, ShouldBeNil)
+			})
 
-			vergerHome := filepath.Join(vault, "verger")
+			Convey("And the vault keeps no plugin home", func() {
+				_, statErr := os.Stat(vaultHome)
+				So(os.IsNotExist(statErr), ShouldBeTrue)
 
-			Convey("Then the verger home exists", func() {
-				So(c.Home(), ShouldEqual, vergerHome)
+				left, readErr := os.ReadDir(vault)
+				So(readErr, ShouldBeNil)
+				So(left, ShouldBeEmpty)
+			})
+
+			Convey("And ejecting again refuses instead of merging", func() {
+				again := &bytes.Buffer{}
+				repeatErr := pluginsEjectFrom(c, again, io.Discard)
+
+				So(repeatErr, ShouldNotBeNil)
+				So(repeatErr.Error(), ShouldContainSubstring, "already holds state")
+				So(repeatErr.Error(), ShouldContainSubstring, "refusing to merge")
+				So(repeatErr.Error(), ShouldContainSubstring, target)
+
+				Convey("And leaves the packages where they were", func() {
+					entries, readErr := os.ReadDir(filepath.Join(target, receipts))
+					So(readErr, ShouldBeNil)
+					So(entries, ShouldNotBeEmpty)
+				})
 			})
 		})
 	})
