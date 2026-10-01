@@ -73,7 +73,9 @@ across machines? You are in the right place. Only need plugins, without the rest
 - **Merges, not overwrites.** Three-way merges against each agent's last known state; disagreement
   becomes an explicit conflict, not a silent loss.
 - **Multiple machines.** The vault is a directory: put it in git (or your own sync) and every
-  machine shares the same canon. Credential values stay out.
+  machine shares the same canon. Credential values stay out. On the second machine, run
+  `beadle init` once after the clone — it adopts the vault rather than starting over — enable the
+  agents that machine has (`beadle agents enable claude`), then `beadle sync`.
 - **Your repository is respected.** Project scope is leak-aware: `init` enables the files already
   present in a git checkout, secret values only land in gitignored files (a tracked file needs an
   explicit per-file opt-in), generated blocks skip tracked files, and unmanaged entries are never
@@ -311,6 +313,9 @@ See [Project scope](#project-scope).
 | `guide [--humans]` | print the guide for AI agents, or the human guide |
 
 Global flags: `--vault` (default `~/.beadle`, or `$BEADLE_HOME`), `--verbose`, `--log-json`.
+`--json` prints one `beadle.<name>` document on every command that has a machine-readable form;
+the others refuse it with exit 2. The list of documents is in the
+[guide for AI agents](guide/ai-agents.md).
 
 ## Project scope
 
@@ -332,6 +337,21 @@ The gate extracts credential values out of the canon into `mcp/secrets.json` (06
 committed) or the OS keyring (`beadle secrets migrate keyring`); files carry `{secret:NAME}`
 references, and shareable files render `${NAME}` instead of a value. The keyring backend is
 fail-closed: an unavailable keyring yields skips and warnings, never a plaintext fallback.
+
+`init` writes a `.gitignore` at the vault root that keeps the credential values and the
+machine-local state out of git: `mcp/secrets.json`, `state/`, `state.json`, `objects/`,
+`conflicts/`, `plugins/`, `bundles/`, `projects/`, `verger/state/`, `verger/store/`. If a secret was
+committed anyway, `doctor` says so and says what it will not do for you:
+
+```
+warning  vault.secrets-in-git-history
+         mcp/secrets.json was tracked by git: its values may be in the history, and untracking
+         the file does not remove them from there. Rotate the credentials, and rewrite the
+         history if the repository is shared — beadle does not rewrite history
+         fix: git filter-repo --path mcp/secrets.json --invert-paths
+```
+
+Untracking is the easy half; the value that was already pushed is the half only you can undo.
 
 ## Principles
 
@@ -378,7 +398,9 @@ They are the same program underneath, which is what makes the two arrangements s
 - **Eject.** `beadle plugins eject` moves the plugin home out of the vault to `~/.verger`, keeping
   every installed package. From then on `verger status`, `verger sync` and the rest work on it
   directly, with everything else in `~/.beadle` untouched — and the two can still be run on the
-  same home, because after the eject there is one plugin home, not two.
+  same home, because after the eject there is one plugin home, not two. beadle follows it:
+  `beadle plugins list` and `beadle plugins install` read and write `~/.verger` from then on, and
+  no empty `~/.beadle/verger` appears behind them.
 - **Absorb.** The other direction needs no command: `beadle init` moves a standalone `~/.verger`
   into the vault, file for file, and the old directory is gone afterwards. After that there is one
   plugin home again — inside the vault — and `beadle plugins eject` sends it back out.
