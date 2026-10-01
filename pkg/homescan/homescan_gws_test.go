@@ -31,30 +31,45 @@ func write(t *testing.T, path, body string) {
 // not watch the rest of an agent's home. The second half is not a nicety — a
 // guard over logs/ and backups/ fails for anyone running the suite with a live
 // agent on the same machine, and is then switched off.
+//
+// Every expectation is built from the same root the call is given, and the
+// .config entries are built from that root's XDG location rather than from a
+// second literal. A hardcoded one-machine home path made this test runnable only
+// on the machine that wrote it: on an ubuntu runner XDG_CONFIG_HOME is
+// exported, the product follows it honestly, and the roots moved out from under
+// the strings.
 func TestRootsAreTheSurfacesAndNotTheHomesAroundThem(t *testing.T) {
 	Convey("Given a home", t, func() {
-		roots := homescan.Roots("/home/u")
+		home := t.TempDir()
+
+		// Pinned rather than read: Roots resolves the .config surfaces from the
+		// environment, so a test that only set HOME would be asserting about
+		// whatever XDG root the machine happened to export.
+		xdg := filepath.Join(home, ".config")
+		t.Setenv("XDG_CONFIG_HOME", xdg)
+
+		roots := homescan.Roots(home)
 
 		Convey("Then the tools' own homes are watched whole", func() {
-			So(roots, ShouldContain, "/home/u/.beadle")
-			So(roots, ShouldContain, "/home/u/.verger")
+			So(roots, ShouldContain, filepath.Join(home, ".beadle"))
+			So(roots, ShouldContain, filepath.Join(home, ".verger"))
 		})
 
 		Convey("And inside a host's home, the surfaces beadle writes", func() {
 			for _, want := range []string{
-				"/home/u/.claude/skills",
-				"/home/u/.claude/agents",
-				"/home/u/.claude/commands",
-				"/home/u/.claude/plugins",
-				"/home/u/.claude/settings.json",
-				"/home/u/.claude/CLAUDE.md",
-				"/home/u/.claude.json",
-				"/home/u/.codex/config.toml",
-				"/home/u/.gemini/GEMINI.md",
-				"/home/u/.config/opencode/opencode.json",
-				"/home/u/.config/kilo/kilo.json",
-				"/home/u/.agents/skills",
-				"/home/u/.omp/plugins",
+				filepath.Join(home, ".claude", "skills"),
+				filepath.Join(home, ".claude", "agents"),
+				filepath.Join(home, ".claude", "commands"),
+				filepath.Join(home, ".claude", "plugins"),
+				filepath.Join(home, ".claude", "settings.json"),
+				filepath.Join(home, ".claude", "CLAUDE.md"),
+				filepath.Join(home, ".claude.json"),
+				filepath.Join(home, ".codex", "config.toml"),
+				filepath.Join(home, ".gemini", "GEMINI.md"),
+				filepath.Join(xdg, "opencode", "opencode.json"),
+				filepath.Join(xdg, "kilo", "kilo.json"),
+				filepath.Join(home, ".agents", "skills"),
+				filepath.Join(home, ".omp", "plugins"),
 			} {
 				So(roots, ShouldContain, want)
 			}
@@ -65,14 +80,14 @@ func TestRootsAreTheSurfacesAndNotTheHomesAroundThem(t *testing.T) {
 			// the suite runs. A guard that reported them would be reporting the
 			// neighbour, not the leak.
 			for _, unwanted := range []string{
-				"/home/u/.claude",
-				"/home/u/.claude/logs",
-				"/home/u/.claude/backups",
-				"/home/u/.claude/sessions",
-				"/home/u/.claude/projects",
-				"/home/u/.config",
-				"/home/u/.omp",
-				"/home/u/.omp/agent",
+				filepath.Join(home, ".claude"),
+				filepath.Join(home, ".claude", "logs"),
+				filepath.Join(home, ".claude", "backups"),
+				filepath.Join(home, ".claude", "sessions"),
+				filepath.Join(home, ".claude", "projects"),
+				xdg,
+				filepath.Join(home, ".omp"),
+				filepath.Join(home, ".omp", "agent"),
 			} {
 				So(roots, ShouldNotContain, unwanted)
 			}
@@ -83,7 +98,10 @@ func TestRootsAreTheSurfacesAndNotTheHomesAroundThem(t *testing.T) {
 			// not paths, and a containment check written as rel != ".." lets
 			// them out.
 			for _, root := range roots {
-				So(strings.HasPrefix(root, "/home/u/"), ShouldBeTrue)
+				// Cleaned on both sides: TMPDIR arrives from macOS with a trailing
+				// separator, so the root passed in can spell the same directory
+				// with a doubled slash that Join collapses.
+				So(strings.HasPrefix(root, filepath.Clean(home)+string(filepath.Separator)), ShouldBeTrue)
 			}
 		})
 	})
@@ -131,10 +149,14 @@ func TestGuardHomeWatchesTheMachineHomeByDefault(t *testing.T) {
 		// turn "the default is the real home" into a test that only passes on
 		// someone else's machine.
 		t.Setenv(homescan.OverrideEnv, "")
-		t.Setenv("HOME", "/home/u")
+		// Never a literal host path: HOME is only read here, so a value that
+		// does not exist keeps the assertion about the default and stops the
+		// test from naming a machine that is not this one.
+		machine := filepath.Join(t.TempDir(), "home")
+		t.Setenv("HOME", machine)
 
 		Convey("Then the guard watches the home the process was given", func() {
-			So(homescan.GuardHome(), ShouldEqual, "/home/u")
+			So(homescan.GuardHome(), ShouldEqual, machine)
 		})
 	})
 }
@@ -142,10 +164,11 @@ func TestGuardHomeWatchesTheMachineHomeByDefault(t *testing.T) {
 func TestGuardHomeTakesTheRootItIsGiven(t *testing.T) {
 	Convey("Given an override", t, func() {
 		Convey("Then the guard watches that tree instead", func() {
-			t.Setenv("HOME", "/home/u")
+			machine := filepath.Join(t.TempDir(), "home")
+			t.Setenv("HOME", machine)
 			t.Setenv(homescan.OverrideEnv, t.TempDir())
 
-			So(homescan.GuardHome(), ShouldNotEqual, "/home/u")
+			So(homescan.GuardHome(), ShouldNotEqual, machine)
 		})
 	})
 }
@@ -398,15 +421,20 @@ func TestAVerdictSaysItsNameWhenAnAssertionFails(t *testing.T) {
 // none of the three is a warning nobody can act on.
 func TestTheWarningNamesTheChangesAndHowToHoldTheRunToAccount(t *testing.T) {
 	Convey("Given two changes and a lenient run", t, func() {
+		// The changes are reported text, not paths anything writes, but they are
+		// still built from a root rather than typed as one host's home.
+		home := filepath.Join(t.TempDir(), "home")
+		doc := filepath.Join(home, ".claude.json")
+		manifest := filepath.Join(home, ".claude", "skills", "synced", "abc", "manifest.json")
+
 		lines := homescan.WarnLines([]string{
-			"created  /home/u/.claude.json",
-			"changed  /home/u/.claude/skills/synced/abc/manifest.json",
+			"created  " + doc,
+			"changed  " + manifest,
 		})
 
 		Convey("Then it names every change in full", func() {
-			So(lines, ShouldContain, "WARNING real home: created  /home/u/.claude.json")
-			So(lines, ShouldContain,
-				"WARNING real home: changed  /home/u/.claude/skills/synced/abc/manifest.json")
+			So(lines, ShouldContain, "WARNING real home: created  "+doc)
+			So(lines, ShouldContain, "WARNING real home: changed  "+manifest)
 		})
 
 		Convey("And it says the run is not to blame, and why that is not a clean bill", func() {
