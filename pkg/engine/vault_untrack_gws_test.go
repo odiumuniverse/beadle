@@ -54,6 +54,55 @@ func TestSyncStopsTrackingMachineLocalVergerFiles(t *testing.T) {
 	})
 }
 
+// A vault that is not in git at all is a legitimate choice, and the sync
+// migration has to be invisible there. Found by VERIFY-CP-beadle-pC-6: the
+// migration was covered where it is called directly and the doctor was covered,
+// but nothing said what a plain `sync` does in a directory that was never a
+// repository — which is the only shape a user who keeps no version control ever
+// runs.
+func TestSyncOnAVaultThatIsNotInGitDoesNothingAndSaysNothing(t *testing.T) {
+	Convey("Given a vault that is not a git work tree at all", t, func() {
+		f := newFixture(t)
+
+		secret := filepath.Join(f.vault.Root(), "mcp", "secrets.json")
+		So(os.MkdirAll(filepath.Dir(secret), 0o700), ShouldBeNil)
+		So(os.WriteFile(secret, []byte(`{"token":"never-in-git"}`), 0o600), ShouldBeNil)
+
+		Convey("When doctor runs, it says nothing about a repository", func() {
+			// A vault that was never a repository has no history to warn
+			// about, and inventing a finding for it would train a user to
+			// ignore the ones that matter.
+			issues, err := f.engine.Doctor(t.Context())
+			So(err, ShouldBeNil)
+			So(findingWithSubject(issues, "vault.secrets-in-git-history"), ShouldBeNil)
+			So(findingWithSubject(issues, "vault.secrets-staged"), ShouldBeNil)
+		})
+
+		Convey("When sync runs, the migration has nothing to do and says nothing", func() {
+			report, err := f.engine.Sync(t.Context(), engine.SyncOptions{})
+			So(err, ShouldBeNil)
+
+			// Zero warnings, not "no warning about git": a migration that
+			// reached for git in a directory that is not a repository and
+			// passed git's own error on would put a warning in the report of
+			// every sync of every user who keeps their vault out of version
+			// control, which is a legitimate thing to do.
+			So(report.Warnings, ShouldBeEmpty)
+
+			// And the sync really ran, so the row above is not satisfied by
+			// a sync that reported nothing at all because it did nothing.
+			So(report.Notes, ShouldNotBeEmpty)
+			So(strings.Join(report.Notes, "\n"), ShouldNotContainSubstring, "stopped tracking")
+
+			// The sharp one: a migration with nothing to do must not help by
+			// initialising a repository. beadle does not get to decide that a
+			// user's vault belongs in git.
+			_, statErr := os.Stat(filepath.Join(f.vault.Root(), ".git"))
+			So(os.IsNotExist(statErr), ShouldBeTrue)
+		})
+	})
+}
+
 // The credential case is the one the migration exists for, and it is the only
 // one where dropping the path from the index is not enough: a vault committed
 // with its secrets file carries those values in the history, and a file the
@@ -137,23 +186,6 @@ func TestSyncDropsTrackedSecretsAndDoctorSaysWhatToDoAboutThem(t *testing.T) {
 		})
 	})
 
-	Convey("Given a vault that is not a git work tree at all", t, func() {
-		f := newFixture(t)
-
-		secret := filepath.Join(f.vault.Root(), "mcp", "secrets.json")
-		So(os.MkdirAll(filepath.Dir(secret), 0o700), ShouldBeNil)
-		So(os.WriteFile(secret, []byte(`{"token":"never-in-git"}`), 0o600), ShouldBeNil)
-
-		Convey("When doctor runs, it says nothing about a repository", func() {
-			// A vault that was never a repository has no history to warn
-			// about, and inventing a finding for it would train a user to
-			// ignore the ones that matter.
-			issues, err := f.engine.Doctor(t.Context())
-			So(err, ShouldBeNil)
-			So(findingWithSubject(issues, "vault.secrets-in-git-history"), ShouldBeNil)
-			So(findingWithSubject(issues, "vault.secrets-staged"), ShouldBeNil)
-		})
-	})
 	Convey("Given a vault a user has just run git init and git add -A in", t, func() {
 		f := newFixture(t)
 
