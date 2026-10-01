@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"syscall"
 )
 
@@ -22,11 +21,58 @@ func WriteFileAtomic(path string, data []byte, perm fs.FileMode) error {
 	return WriteFileAtomicChecked(path, data, perm, nil)
 }
 
-var Writes atomic.Int64
-
+// WriteFileAtomicChecked writes data and returns only after the bytes and the
+// rename are durable. It is the discipline for files beadle cannot reconstruct
+// — state, config, a secret. Content-addressed objects go through
+// WriteFileAtomicCAS instead; see there for why the cost differs so much.
 func WriteFileAtomicChecked(path string, data []byte, perm fs.FileMode, check func() error) error {
-	Writes.Add(1)
+	return writeTempRename(path, data, perm, check, true)
+}
 
+// WriteFileAtomicCAS is WriteFileAtomic for content-addressed data: the same
+// write-temp-rename sequence and the same atomicity, without the two durability
+// barriers.
+//
+// It exists because those barriers are the single most expensive thing beadle
+// does on darwin. A File.Sync there is F_FULLFSYNC — a request to the drive to
+// flush its own write cache — and it costs about 20 ms; on linux the same call
+// is a cheap journal barrier, around 28 µs. Measured on this repository
+// (pkg/fsutil, 4 KiB objects, three runs each):
+//
+//	darwin  WriteFileAtomic 18.8–21.5 ms   write+rename only 0.37–0.47 ms
+//	linux   WriteFileAtomic 27–30 µs      write+rename only 20–25 µs
+//
+// For a vault object that is immutable, named by the hash of its contents and
+// verified against that hash on every read, a barrier per write buys durability
+// of a file nobody needs: a torn object is detected by its hash and rewritten
+// by the next sync, while a barrier on the directory once per batch makes the
+// rename itself durable. For a file beadle cannot reconstruct — state.json, the
+// config, a secret — the barriers stay, and those go through
+// WriteFileAtomic.
+//
+// Callers must batch: pass every directory they wrote in to SyncDirs once at
+// the end, or the rename that put the object in place is not itself durable.
+func WriteFileAtomicCAS(path string, data []byte, perm fs.FileMode) error {
+	return writeTempRename(path, data, perm, nil, false)
+}
+
+// SyncDirs flushes the directories a batch of CAS writes landed in. It is the
+// single barrier that replaces the per-file ones, so it wants every directory
+// the batch touched, not just the last.
+func SyncDirs(dirs ...string) error {
+	for _, dir := range dirs {
+		if err := syncDir(dir); err != nil {
+			return fmt.Errorf("sync directory %s: %w", dir, err)
+		}
+	}
+
+	return nil
+}
+
+// writeTempRename is the sequence both writers share: a temp file beside the
+// target, the bytes, the mode, an optional guard, and a rename. The rename is
+// what makes the write atomic, so it is in both; only the barriers differ.
+func writeTempRename(path string, data []byte, perm fs.FileMode, check func() error, durable bool) error {
 	dir := filepath.Dir(path)
 
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
@@ -48,12 +94,17 @@ func WriteFileAtomicChecked(path string, data []byte, perm fs.FileMode, check fu
 		return fmt.Errorf("write temp file: %w", err)
 	}
 
-	if err = tmp.Sync(); err != nil {
-		_ = tmp.Close()
+	// Only the durable writer pays this. Skipping it is the whole point of the
+	// CAS path: the object is immutable and hash-verified, so a lost write is a
+	// missing object, never a wrong one.
+	if durable {
+		if err = tmp.Sync(); err != nil {
+			_ = tmp.Close()
 
-		cleanup()
+			cleanup()
 
-		return fmt.Errorf("sync temp file: %w", err)
+			return fmt.Errorf("sync temp file: %w", err)
+		}
 	}
 
 	if err = tmp.Close(); err != nil {
@@ -80,6 +131,10 @@ func WriteFileAtomicChecked(path string, data []byte, perm fs.FileMode, check fu
 		cleanup()
 
 		return fmt.Errorf("rename temp file: %w", err)
+	}
+
+	if !durable {
+		return nil
 	}
 
 	if err = syncDir(dir); err != nil {

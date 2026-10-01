@@ -211,7 +211,20 @@ func (e *Engine) Sync(ctx context.Context, opts SyncOptions) (*Report, error) {
 
 	defer release()
 
-	return e.sync(ctx, opts)
+	report, err := e.sync(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	// The objects written during the run were put in place without a barrier
+	// each; this is the one that makes the renames durable. It belongs at the
+	// end of the batch, which is here — after the lock is still held, so the
+	// flush cannot interleave with another writer's.
+	if err := e.store.Sync(); err != nil {
+		return nil, fmt.Errorf("sync object store: %w", err)
+	}
+
+	return report, nil
 }
 
 func (e *Engine) sync(ctx context.Context, opts SyncOptions) (*Report, error) {
