@@ -46,7 +46,13 @@ test-short:
 	$(GO) test -short -timeout $(TEST_TIMEOUT) ./...
 
 lint:
-	golangci-lint run ./...
+	@# Two golangci-lint runs against one checkout collide on its lock: the
+	@# second aborts with "parallel golangci-lint is running" and exit 3 while
+	@# the first reports zero issues — a red lint step with nothing in it. One
+	@# bounded retry turns that transient failure into the answer the first run
+	@# already produced. A lock that is genuinely stuck fails again and still
+	@# says so, so nothing is hidden by the retry.
+	golangci-lint run ./... || { sleep 5; golangci-lint run ./...; }
 
 lint-fix:
 	golangci-lint run --fix ./...
