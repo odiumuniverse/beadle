@@ -91,8 +91,8 @@ jobs:
       # so a flag cannot exist in one and not the other. Generated here rather
       # than committed, because a checked-in page rots the moment a flag moves.
       # Generated BEFORE the binaries, because every platform tarball carries
-      # the pages: brew installs the platform tarball, so a page that lives only
-      # in the separate beadle-man archive is a page no brew user ever gets.
+      # the pages — that tarball is the only place they are packed, so a page
+      # that existed only outside it would be a page no brew user ever gets.
       - name: Generate the man pages
         run: |
           version="$VERSION"
@@ -120,11 +120,6 @@ jobs:
           mandoc -T lint -W warning dist/man/*.1
           mandoc -T ascii dist/man/beadle.1 > /dev/null
           echo "mandoc: $(find dist/man -name '*.1' | wc -l | tr -d ' ') pages lint clean and beadle.1 renders"
-
-      - name: Pack the man pages
-        run: |
-          version="$VERSION"
-          tar -czf "dist/beadle-man-${version}.tar.gz" -C dist/man .
 
       - name: Build every artifact
         run: |
@@ -157,38 +152,56 @@ jobs:
 
           ls -l dist
 
-      # sha256 of every published artifact, so a user can verify a download
-      # without trusting the release page.
-      - name: Checksum the artifacts
+      # One list of what this release publishes, and the only one. The upload
+      # steps take their path from these outputs and the checksum step sums
+      # the same outputs, so "checksummed" and "published" are computed from
+      # one declaration rather than from two lists that can drift. A tarball
+      # that is built but absent from this list is a file `shasum -c
+      # checksums.txt` would fail on, and cmd/beadle/
+      # release_workflow_gws_test.go is what refuses to let one appear.
+      - name: List the release artifacts
+        id: artifacts
         run: |
-          cd dist
+          echo "darwin_universal=dist/beadle-${VERSION}-darwin-universal.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "linux_amd64=dist/beadle-${VERSION}-linux-amd64.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "linux_arm64=dist/beadle-${VERSION}-linux-arm64.tar.gz" >> "$GITHUB_OUTPUT"
+
+      # sha256 of every published artifact, so a user can verify a download
+      # without trusting the release page. The paths are the ones the upload
+      # steps below use, not a second list of them.
+      - name: Checksum the artifacts
+        env:
+          DARWIN_UNIVERSAL: ${{ steps.artifacts.outputs.darwin_universal }}
+          LINUX_AMD64: ${{ steps.artifacts.outputs.linux_amd64 }}
+          LINUX_ARM64: ${{ steps.artifacts.outputs.linux_arm64 }}
+        run: |
           # shasum, not sha256sum: this step runs on the macOS runner, and a
           # stock macOS ships perl's shasum in /usr/bin and no coreutils
           # sha256sum at all. The publish job on ubuntu keeps using sha256sum -
           # the two agree byte for byte, which is why the formula's digests and
           # the checksums file cannot drift apart.
-          shasum -a 256 ./*.tar.gz > checksums.txt
-          cat checksums.txt
+          shasum -a 256 "$DARWIN_UNIVERSAL" "$LINUX_AMD64" "$LINUX_ARM64" > dist/checksums.txt
+          cat dist/checksums.txt
 
       - name: Upload the darwin artifact
         uses: actions/upload-artifact@v4
         with:
           name: darwin-universal
-          path: dist/beadle-*-darwin-universal.tar.gz
+          path: ${{ steps.artifacts.outputs.darwin_universal }}
           if-no-files-found: error
 
       - name: Upload the linux-amd64 artifact
         uses: actions/upload-artifact@v4
         with:
           name: linux-amd64
-          path: dist/beadle-*-linux-amd64.tar.gz
+          path: ${{ steps.artifacts.outputs.linux_amd64 }}
           if-no-files-found: error
 
       - name: Upload the linux-arm64 artifact
         uses: actions/upload-artifact@v4
         with:
           name: linux-arm64
-          path: dist/beadle-*-linux-arm64.tar.gz
+          path: ${{ steps.artifacts.outputs.linux_arm64 }}
           if-no-files-found: error
 
       - name: Upload the checksums
@@ -243,11 +256,12 @@ jobs:
           mkdir -p unpack
           tar -xzf "$tarball" -C unpack
           test -x unpack/beadle || { echo "::error::the tarball has no executable beadle at its root"; exit 1; }
-          # The page must be IN the platform tarball, not only in the separate
-          # beadle-man archive: brew installs the platform tarball, so this is
-          # the check that decides whether a brew user actually gets a manpage.
-          # Listing the archive first, then the unpacked tree, catches both a
-          # tarball that never had it and one that has it at the wrong depth.
+          # The page must be IN the platform tarball: that tarball is the only
+          # place the pages are packed, and brew installs the platform tarball,
+          # so this is the check that decides whether a brew user actually gets
+          # a manpage. Listing the archive first, then the unpacked tree, catches
+          # both a tarball that never had it and one that has it at the wrong
+          # depth.
           tar -tzf "$tarball" | grep -qx 'man/beadle.1' \
             || { echo "::error::${{ matrix.asset }} tarball has no man/beadle.1 at its expected path"; tar -tzf "$tarball"; exit 1; }
           test -s unpack/man/beadle.1 \
