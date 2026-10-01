@@ -180,7 +180,13 @@ jobs:
           # sha256sum at all. The publish job on ubuntu keeps using sha256sum -
           # the two agree byte for byte, which is why the formula's digests and
           # the checksums file cannot drift apart.
-          shasum -a 256 "$DARWIN_UNIVERSAL" "$LINUX_AMD64" "$LINUX_ARM64" > dist/checksums.txt
+          # BARE names, not "dist/<name>". Release v0.5.0 wrote the dist/ prefix
+          # into every line, and a user running the documented verification
+          # command beside the assets they downloaded got "FAILED open or read"
+          # on all three: a browser or `gh release download` puts the files
+          # there as bare names and never recreates a dist/ directory. Summing
+          # from inside dist is what makes the manifest describe the download.
+          ( cd dist && shasum -a 256 "$(basename "$DARWIN_UNIVERSAL")" "$(basename "$LINUX_AMD64")" "$(basename "$LINUX_ARM64")" > checksums.txt )
           cat dist/checksums.txt
 
       - name: Upload the darwin artifact

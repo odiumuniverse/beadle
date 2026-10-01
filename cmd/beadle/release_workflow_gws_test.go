@@ -139,7 +139,8 @@ func TestTheChecksumsCoverExactlyThePublishedArtifacts(t *testing.T) {
 
 		built := builtArchives(doc)
 		declared := declaredOutputNames(doc)
-		checksummed := resolveReferences(doc, checksumOperands(doc), built)
+		ops, workDirs := checksumOperands(doc)
+		checksummed := rebaseToWorkDirs(resolveReferences(doc, ops, built), workDirs)
 		published := resolveReferences(doc, uploadPaths(doc), built)
 
 		// checksums.txt is published alongside the artifacts and is the one file
@@ -224,6 +225,14 @@ var (
 	// the workflow exports, and a produced name has to normalise to the same
 	// placeholder as the declaration that claims it.
 	versionVarRe = regexp.MustCompile(`\$\{?[Vv][Ee][Rr][Ss][Ii][Oo][Nn]\}?`)
+
+	// `$(basename "$VAR")`: how a checksum step names an operand when the line
+	// has already cd'd into the directory the file lives in. The capture is the
+	// whole `$VAR`, so unwrapping is a plain reinsertion of group 1.
+	basenameWrapRe = regexp.MustCompile(`\$\(\s*basename\s+"?(\$\{?[A-Za-z_][A-Za-z0-9_]*\}?)"?\s*\)`)
+	// A leading `cd <dir> &&` on a run line: the working directory the rest of
+	// that line runs in, and therefore the directory an operand is named inside.
+	cdDirRe = regexp.MustCompile(`^\s*\(?\s*cd\s+("[^"]+"|'[^']+'|\S+)\s*&&`)
 )
 
 // versionPlaceholder stands in for the release version. Every side of every
@@ -378,8 +387,8 @@ func sortedValues(m map[string]string) []string {
 // checksumOperands is the set of operands the workflow's checksum step feeds
 // into checksums.txt: the arguments of the shasum/sha256sum invocation that
 // writes it, with the options and the redirect target removed.
-func checksumOperands(doc releaseWorkflow) []string {
-	var out []string
+func checksumOperands(doc releaseWorkflow) ([]string, []string) {
+	var out, workDirs []string
 
 	for _, step := range doc.steps() {
 		for line := range strings.SplitSeq(step.Run, "\n") {
@@ -395,11 +404,20 @@ func checksumOperands(doc releaseWorkflow) []string {
 				continue
 			}
 
-			out = append(out, operands(line[loc[1]:])...)
+			// `$(basename "$VAR")` is unwrapped before splitting: the summation
+			// runs from inside dist, so an operand names itself by basename
+			// there, and a plain field splitter would otherwise read
+			// "$(basename" as a file to checksum and leave a stray ")" on the
+			// variable name.
+			out = append(out, operands(basenameWrapRe.ReplaceAllString(line[loc[1]:], "$1"))...)
+
+			if m := cdDirRe.FindStringSubmatch(line); m != nil {
+				workDirs = append(workDirs, strings.Trim(m[1], `"'`))
+			}
 		}
 	}
 
-	return out
+	return out, workDirs
 }
 
 func operands(command string) []string {
@@ -423,6 +441,39 @@ func operands(command string) []string {
 		}
 
 		out = append(out, strings.Trim(f, `"'`))
+	}
+
+	return out
+}
+
+// rebaseToWorkDirs strips a working directory a checksum-writing step cd'd
+// into from the names it resolved. `cd dist && shasum … > checksums.txt`
+// records "beadle-x.tar.gz" in checksums.txt, and that bare name is what a user
+// compares against the file they downloaded - so it is the name the invariant
+// has to compare, on the same footing as the upload side.
+//
+// Only a directory such a step actually cd'd into is stripped, and nothing here
+// ever adds a prefix: an operand that is not inside a declared working
+// directory keeps its path and is compared as written. The invariant is
+// unchanged by this - both sides are still exactly the published archives, and
+// one extra or one missing archive still fails it.
+func rebaseToWorkDirs(names, workDirs []string) []string {
+	if len(workDirs) == 0 {
+		return names
+	}
+
+	out := make([]string, 0, len(names))
+
+	for _, name := range names {
+		rebased := name
+
+		for _, dir := range workDirs {
+			if trimmed, ok := strings.CutPrefix(name, dir+"/"); ok {
+				rebased = trimmed
+			}
+		}
+
+		out = append(out, rebased)
 	}
 
 	return out
@@ -518,4 +569,129 @@ func resolveReferences(doc releaseWorkflow, refs, built []string) []string {
 
 func isGlob(name string) bool {
 	return strings.ContainsAny(name, "*?[")
+}
+
+// Release v0.5.0 shipped a checksums.txt whose lines were "dist/<name>  <digest>".
+// A user downloads the release assets - which land as bare names, because a
+// browser or `gh release download` does not recreate a dist/ directory - and
+// runs `shasum -c checksums.txt` beside them, and gets "FAILED open or read"
+// on every line. The files verify only if you first cd into a directory that
+// does not exist on the user's machine.
+//
+// So this runs the checksum step the way a runner runs it, then lays the
+// artifacts out the way a download lays them out, and requires that the
+// published verification command works there. Local only: shasum, a temp
+// directory, no network.
+func TestTheChecksumsFileVerifiesBesideTheDownloadedAssets(t *testing.T) {
+	Convey("Given the release workflow and a finished dist", t, func() {
+		doc := readReleaseWorkflow(t, "../../.github/workflows/release.yml")
+
+		step, ok := doc.step("Checksum the artifacts")
+		So(ok, ShouldBeTrue)
+
+		// The three archives the step sums, as a runner would have them: real
+		// paths under a dist directory, sitting in a repository-shaped root.
+		root := t.TempDir()
+		So(os.MkdirAll(filepath.Join(root, "dist"), 0o750), ShouldBeNil)
+
+		// Relative, exactly as steps.artifacts.outputs hands them over
+		// ("dist/<name>"), with cmd.Dir = root below. Absolute paths here
+		// would make the test verify nothing: shasum -c would resolve them
+		// back to the dist directory still on disk and pass for a user who
+		// has no such directory at all.
+		env := map[string]string{}
+
+		for _, name := range []string{"darwin_universal", "linux_amd64", "linux_arm64"} {
+			rel := filepath.Join("dist", artifactFileName(name))
+			So(os.WriteFile(filepath.Join(root, rel), []byte("archive "+name+"\n"), 0o600), ShouldBeNil)
+			env[strings.ToUpper(name)] = rel
+		}
+
+		script := checksumStepScript(step.Run)
+
+		Convey("When the checksum step runs", func() {
+			//nolint:noctx // t.Context() so a stuck shasum is cancelled with the test, not left behind
+			cmd := exec.CommandContext(t.Context(), "sh", "-c", script) //nolint:gosec // G204: script is this test's own literal
+			cmd.Dir = root
+
+			cmd.Env = append(os.Environ(), envSlice(env)...)
+			mustRun(t, cmd, "checksum step")
+
+			Convey("Then the user can verify the release where they downloaded it", func() {
+				downloads := t.TempDir()
+
+				for _, name := range []string{"darwin_universal", "linux_amd64", "linux_arm64"} {
+					body, err := os.ReadFile(filepath.Join(root, "dist", artifactFileName(name))) //nolint:gosec // G304: the temp file this test wrote
+					So(err, ShouldBeNil)
+					//nolint:gosec // G703: artifactFileName joins a fixed literal prefix to one of three constants above; the result cannot leave downloads
+					So(os.WriteFile(filepath.Join(downloads, artifactFileName(name)), body, 0o600), ShouldBeNil)
+				}
+
+				manifest, err := os.ReadFile(filepath.Join(root, "dist", "checksums.txt")) //nolint:gosec // G304: the temp file the step just wrote
+				So(err, ShouldBeNil)
+				//nolint:gosec // G703: a fixed literal under t.TempDir(), nothing is interpolated into it
+				So(os.WriteFile(filepath.Join(downloads, "checksums.txt"), manifest, 0o600), ShouldBeNil)
+
+				// The exact command from the release notes, run where a user's
+				// downloaded files are: bare names, no dist/ directory.
+				verify := exec.CommandContext(t.Context(), "shasum", "-a", "256", "-c", "checksums.txt") //nolint:gosec // G204: fixed argv, temp cwd
+				verify.Dir = downloads
+				mustRun(t, verify, "shasum -c beside the downloaded assets; manifest was:\n"+string(manifest))
+			})
+		})
+	})
+}
+
+// artifactFileName is the release asset a build step produces, derived from the
+// workflow's own declaration so the test cannot drift from the real names.
+func artifactFileName(output string) string {
+	return "beadle-0.0.0-" + strings.ReplaceAll(output, "_", "-") + ".tar.gz"
+}
+
+// checksumStepScript is the checksum step with its comments and its `cat` drop-
+// proof removed, leaving the commands that produce the file under test.
+func checksumStepScript(run string) string {
+	var kept []string
+
+	for line := range strings.SplitSeq(run, "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case trimmed == "" || strings.HasPrefix(trimmed, "#"):
+			continue
+		case strings.HasPrefix(trimmed, "cat "):
+			continue
+		}
+
+		kept = append(kept, line)
+	}
+
+	return strings.Join(kept, "\n")
+}
+
+func envSlice(env map[string]string) []string {
+	keySet := map[string]struct{}{}
+	for key := range env {
+		keySet[key] = struct{}{}
+	}
+
+	keys := sortedNames(keySet)
+
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		out = append(out, key+"="+env[key])
+	}
+
+	return out
+}
+
+// mustRun runs a command and fails with its output when it does not succeed.
+// GoConvey's So takes no message for ShouldBeNil, and the output is the whole
+// point here: "FAILED open or read" is the symptom this test exists to catch.
+func mustRun(t *testing.T, cmd *exec.Cmd, what string) {
+	t.Helper()
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s: %v\n%s", what, err, out)
+	}
 }
