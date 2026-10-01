@@ -106,12 +106,13 @@ jobs:
       #
       # `-W error`, not `-W warning`, and the reason is a known gap rather than
       # a shrug: beadle's cmd/gendocs does not yet rewrite the header cobra
-      # renders through go-md2man, so all 69 pages carry the same two warnings
+      # renders through go-md2man, so every page carries the same two warnings
       # verger's pages used to — an unparseable .TH date and a tab in filled
-      # text (549 warnings between them at warning level). verger fixed it in
-      # cmd/gendocs; beadle has not. Error level is the check that catches a
-      # genuinely broken page and it passes. Raising this to warning is one
-      # change to beadle/cmd/gendocs away and belongs with it, not here.
+      # text. Measured 2026-10-01: 70 pages, 556 lines at warning level, 0 at
+      # error level. verger fixed it in cmd/gendocs; beadle has not. Error level
+      # is the check that catches a genuinely broken page and it passes. Raising
+      # this to warning is one change to beadle/cmd/gendocs away and belongs with
+      # it, not here.
       - name: Smoke the man pages
         run: |
           mandoc -T lint -W error dist/man/*.1
@@ -159,7 +160,12 @@ jobs:
       - name: Checksum the artifacts
         run: |
           cd dist
-          sha256sum ./*.tar.gz > checksums.txt
+          # shasum, not sha256sum: this step runs on the macOS runner, and a
+          # stock macOS ships perl's shasum in /usr/bin and no coreutils
+          # sha256sum at all. The publish job on ubuntu keeps using sha256sum -
+          # the two agree byte for byte, which is why the formula's digests and
+          # the checksums file cannot drift apart.
+          shasum -a 256 ./*.tar.gz > checksums.txt
           cat checksums.txt
 
       - name: Upload the darwin artifact
@@ -358,6 +364,13 @@ jobs:
           sha_amd64="$(sha256sum "dist/beadle-${version}-linux-amd64.tar.gz" | cut -d' ' -f1)"
           sha_arm64="$(sha256sum "dist/beadle-${version}-linux-arm64.tar.gz" | cut -d' ' -f1)"
           git clone -q "https://x-access-token:${TAP_TOKEN}@github.com/odiumuniverse/homebrew-tap.git" tap
+          # Into the clone, and this line is load-bearing: the publish job never
+          # checks the repository out, so the workspace is NOT a git repo. The
+          # formula was being written to $GITHUB_WORKSPACE/Formula/beadle.rb and
+          # `git add` was failing with "not a git repository" - which is exactly
+          # the kind of break that survives to the first tag because nothing runs
+          # publish until one.
+          cd tap
           ruby - "$base" "$version" "$sha_darwin" "$sha_amd64" "$sha_arm64" <<'RB'
           require "fileutils"
           base, version, sha_darwin, sha_amd64, sha_arm64 = ARGV
@@ -413,7 +426,13 @@ jobs:
               test do
                 # beadle has no `version` subcommand; the flag is the only
                 # surface that prints the version, so `brew test` must use it.
-                assert_match version.to_s, shell_output("\#{bin}/beadle --version")
+                # No backslash before #{bin}: both heredocs here are quoted
+                # (<<'RB' and <<~'FORMULA'), so nothing expands the template on
+                # its way to disk and a "\#{bin}" would ship a literal backslash
+                # into the formula. In the formula's own double-quoted string
+                # that is an escaped '#', so `brew test` would run the command
+                # "#{bin}/beadle --version" - a path that does not exist.
+                assert_match version.to_s, shell_output("#{bin}/beadle --version")
                 # `brew test` is the only place a missing man1.install shows up
                 # as a failure rather than as a user typing `man beadle` and
                 # getting nothing.
