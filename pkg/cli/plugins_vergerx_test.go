@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -240,6 +242,81 @@ func TestPluginsEjectMovesHome(t *testing.T) {
 
 			Convey("Then the verger home exists", func() {
 				So(c.Home(), ShouldEqual, vergerHome)
+			})
+		})
+	})
+}
+
+// TestPluginsEjectLeavesNoEmptyHome pins the last step of the move. The library
+// takes the contents of the plugin home and leaves the directory it emptied, and
+// that directory is not a neutral leftover: verger resolves the plugin home
+// inside the vault before ~/.verger, so a bare `verger status` after an eject
+// finds an empty home where every package used to be and reports no cells.
+//
+// The empty directory is the whole defect on this side. The other half — verger
+// finding ~/.verger when the vault has none — is the library's Discover, and it
+// has its own owner; what beadle owes the user is a vault that no longer claims a
+// plugin home it gave away.
+func TestPluginsEjectLeavesNoEmptyHome(t *testing.T) {
+	Convey("Given a vault whose plugin home beadle created", t, func() {
+		vault := t.TempDir()
+		home := t.TempDir()
+
+		// The ejected home is os.UserHomeDir()/.verger, so the machine's own
+		// home is never the one this test moves a home into.
+		t.Setenv("HOME", home)
+
+		ctx := context.Background()
+
+		c, err := vergerx.Open(ctx, vergerx.Config{
+			VaultRoot: vault,
+			Logger:    embedlog.NewDevLogger(),
+		})
+		So(err, ShouldBeNil)
+
+		defer func() { _ = c.Close() }()
+
+		vaultHome, target := filepath.Join(vault, "verger"), filepath.Join(home, ".verger")
+
+		// The plugin home exists because an install created it: the client opens
+		// lazily and does not make the directory by itself, and eject is a move
+		// of a home that is already there.
+		So(os.MkdirAll(vaultHome, 0o700), ShouldBeNil)
+
+		Convey("When plugins eject runs", func() {
+			out := &bytes.Buffer{}
+			So(pluginsEjectFrom(c, out, io.Discard), ShouldBeNil)
+
+			Convey("Then the emptied plugin home is gone from the vault", func() {
+				_, statErr := os.Stat(vaultHome)
+				So(os.IsNotExist(statErr), ShouldBeTrue)
+			})
+
+			Convey("And nothing of it is left anywhere in the vault", func() {
+				entries, readErr := os.ReadDir(vault)
+				So(readErr, ShouldBeNil)
+				So(entries, ShouldBeEmpty)
+			})
+
+			Convey("And the packages are at the standalone home instead", func() {
+				So(target, ShouldStartWith, home)
+				_, statErr := os.Stat(target)
+				So(statErr, ShouldBeNil)
+			})
+
+			Convey("And a later beadle plugin command does not bring it back", func() {
+				again, err := vergerx.Open(ctx, vergerx.Config{
+					VaultRoot: vault,
+					Logger:    embedlog.NewDevLogger(),
+				})
+				So(err, ShouldBeNil)
+
+				defer func() { _ = again.Close() }()
+
+				So(pluginsList(again, out), ShouldBeNil)
+
+				_, statErr := os.Stat(vaultHome)
+				So(os.IsNotExist(statErr), ShouldBeTrue)
 			})
 		})
 	})

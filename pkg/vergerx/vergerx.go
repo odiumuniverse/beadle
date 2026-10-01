@@ -20,6 +20,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/state"
 	"github.com/odiumuniverse/verger/pkg/apply"
 	"github.com/odiumuniverse/verger/pkg/digest"
+	"github.com/odiumuniverse/verger/pkg/home"
 	"github.com/odiumuniverse/verger/pkg/host"
 	"github.com/odiumuniverse/verger/pkg/spec"
 	"github.com/odiumuniverse/verger/pkg/verger"
@@ -60,19 +61,50 @@ type Confirmer = verger.Confirmer
 // YesConfirmer answers every question yes; beadle maps its -y flag to it.
 func YesConfirmer() Confirmer { return verger.YesConfirmer() }
 
-// Open creates the verger home inside the vault and opens the client.
+// Open opens the plugin client on the one plugin home, found by the library's
+// own rule rather than by a path beadle assumes.
+//
+// The rule is home.Discover: $VERGER_HOME, then $BEADLE_HOME/verger when that
+// directory is there, then ~/.verger. beadle used to decide this itself and
+// always pointed at <vault>/verger, which is right only until `plugins eject`
+// moves the home to ~/.verger — after that beadle kept recreating an empty
+// <vault>/verger, and verger resolved that empty directory first and reported
+// no cells while every package sat in the real home.
+//
+// Creating the vault home stays, but only when the rule found no home at all:
+// that is a fresh machine, where the vault home is the first one and must show
+// up the way every other vault directory does. Once a home exists somewhere,
+// beadle joins it and never makes a second one.
+//
+// The vault beadle was handed is injected as BEADLE_HOME so the library sees
+// the same candidate the caller meant, whether or not the environment agrees.
 func Open(ctx context.Context, cfg Config) (*Client, error) {
-	vergerHome := filepath.Join(cfg.VaultRoot, "verger")
+	vaultHome := filepath.Join(cfg.VaultRoot, "verger")
+
+	h, err := home.Discover(home.WithEnv(func(key string) string {
+		if key == home.EnvBeadleHome {
+			return cfg.VaultRoot
+		}
+
+		return os.Getenv(key)
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("vergerx: find the plugin home: %w", err)
+	}
 
 	opts := []verger.Option{
-		verger.WithHome(vergerHome),
+		verger.WithHome(h.Root()),
 		verger.WithLogger(cfg.Logger),
 	}
 
-	// The home is beadle's to create: it lives in the vault, so a fresh vault
-	// must show it the way every other vault directory appears after init.
-	if err := os.MkdirAll(vergerHome, 0o700); err != nil {
-		return nil, fmt.Errorf("vergerx: create %s: %w", vergerHome, err)
+	// No home anywhere yet: this is the first run on this machine, and the
+	// vault is where it goes.
+	if h.Source() == home.SourceDefault && !h.Exists() {
+		if err := os.MkdirAll(vaultHome, 0o700); err != nil {
+			return nil, fmt.Errorf("vergerx: create %s: %w", vaultHome, err)
+		}
+
+		opts[0] = verger.WithHome(vaultHome)
 	}
 
 	if cfg.Secrets != nil {
