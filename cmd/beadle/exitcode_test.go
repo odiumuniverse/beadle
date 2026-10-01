@@ -341,24 +341,7 @@ func TestUninitializedVaultIsUsageAndNamesTheFix(t *testing.T) {
 // of errors.As stops seeing the type at all.
 func TestHandsOffIsAConflictThroughEveryWrapping(t *testing.T) {
 	Convey("Given verger's hands-off refusal in each shape a command produces", t, func() {
-		handsOff := &verger.HandsOffError{Cells: []string{"acme/tool@claude"}}
-
-		for _, shape := range []struct {
-			name string
-			err  error
-		}{
-			{"bare", handsOff},
-			{"wrapped by fmt", fmt.Errorf("plugins install: %w", handsOff)},
-			{"wrapped twice", fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", handsOff))},
-			{"joined with another error", errors.Join(errors.New("a second failure"), handsOff)},
-			{"joined the other way round", errors.Join(handsOff, errors.New("a second failure"))},
-		} {
-			Convey("Then "+shape.name+" is a conflict, not a bug", func() {
-				So(classify(shape.err), ShouldEqual, exitcode.Conflict)
-				So(exitcode.Name(classify(shape.err)), ShouldEqual, "conflict")
-				So(classify(shape.err), ShouldNotEqual, exitcode.Unexpected)
-			})
-		}
+		throughEveryWrapping(t, &verger.HandsOffError{Cells: []string{"acme/tool@claude"}}, exitcode.Conflict)
 	})
 
 	Convey("Given the message a user reads", t, func() {
@@ -368,4 +351,53 @@ func TestHandsOffIsAConflictThroughEveryWrapping(t *testing.T) {
 			So(err.Error(), ShouldContainSubstring, "--force")
 		})
 	})
+}
+
+// v0.1.2's PendingConsentError reaches class 5 through the existing
+// apply.ErrConfirmationRequired arm, not through a type check of its own: the
+// error carries an Is method that reports itself equal to that sentinel
+// (pkg/verger/exec.go). An explicit arm naming the type was written, sat below
+// the sentinel arm, and could never fire, so it was removed — this test is
+// what keeps the class instead.
+//
+// It matters because the number is the contract. Consent is the one class a
+// script can act on for this run ("ask again, or pass -y"), and Unexpected (1)
+// would tell it the tool has a bug. If a later verger drops that alias, this
+// goes red rather than the failure reaching a user as a wrong exit code.
+func TestPendingConsentIsConsentThroughEveryWrapping(t *testing.T) {
+	Convey("Given verger's unanswered-consent refusal in each shape a command produces", t, func() {
+		throughEveryWrapping(t, &verger.PendingConsentError{Packages: []string{"acme/tool"}}, exitcode.Consent)
+	})
+
+	Convey("Given the sentinel alone, with no typed error behind it", t, func() {
+		Convey("Then it is still consent, so the two routes cannot disagree", func() {
+			So(classify(apply.ErrConfirmationRequired), ShouldEqual, exitcode.Consent)
+		})
+	})
+}
+
+// throughEveryWrapping drives one refusal through each shape a command
+// actually produces on the way out and asserts the class it lands on. The
+// shapes are the same for every typed refusal, so the list lives here once: a
+// second copy in each test is a second place for the list to drift, and
+// golangci-lint's dupl is right to object to it.
+func throughEveryWrapping(t *testing.T, subject error, want int) {
+	t.Helper()
+
+	for _, shape := range []struct {
+		name string
+		err  error
+	}{
+		{"bare", subject},
+		{"wrapped by fmt", fmt.Errorf("plugins install: %w", subject)},
+		{"wrapped twice", fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", subject))},
+		{"joined with another error", errors.Join(errors.New("a second failure"), subject)},
+		{"joined the other way round", errors.Join(subject, errors.New("a second failure"))},
+	} {
+		Convey("Then "+shape.name+" is "+exitcode.Name(want)+", not a bug", func() {
+			So(classify(shape.err), ShouldEqual, want)
+			So(exitcode.Name(classify(shape.err)), ShouldEqual, exitcode.Name(want))
+			So(classify(shape.err), ShouldNotEqual, exitcode.Unexpected)
+		})
+	}
 }

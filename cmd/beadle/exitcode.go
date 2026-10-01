@@ -67,17 +67,21 @@ func classify(err error) int {
 	// or pass -y, and calling it a conflict told a script the run had failed
 	// for a reason it cannot act on. Matching that mapping is the point of
 	// sharing the table, so the sentinel beadle had no name for is named here.
+	// v0.1.2's PendingConsentError arrives here on that last arm, and it is
+	// worth being exact about how, because the obvious reading is wrong.
+	// *verger.PendingConsentError carries an Is method that reports itself
+	// equal to apply.ErrConfirmationRequired (pkg/verger/exec.go), so errors.Is
+	// matches it above. A second arm naming the type explicitly would sit below
+	// this one and could never fire — dead code in a switch whose whole promise
+	// is that a script can branch on the number. Such an arm was written here,
+	// and removed for exactly that reason.
 	//
-	// The third kind arrived with v0.1.2: the library's own
-	// PendingConsentError, raised when hooks were delivered for nobody because
-	// no question was answered. Without it here the refusal fell through to
-	// Unexpected — "a bug: something the tool did not anticipate" — for a run
-	// whose entire answer is that the user did not reply. verger classifies it
-	// as consent for the same reason as the other two.
+	// What stops the class from being lost if the library ever drops that alias
+	// is the test, not the branch: TestPendingConsentIsConsentThroughEvery
+	// Wrapping asserts the number directly and goes red when the alias goes.
 	case errors.Is(err, secret.ErrKeyringUnavailable),
 		errors.Is(err, secret.ErrKeyringUnsupported),
-		errors.Is(err, apply.ErrConfirmationRequired),
-		isPendingConsent(err):
+		errors.Is(err, apply.ErrConfirmationRequired):
 		return exitcode.Consent
 
 	// 3 — conflict. Another beadle process holds the vault. That is ordinary,
@@ -173,15 +177,6 @@ func isOpenConflicts(err error) bool {
 // message, so a rewording cannot change the class.
 func isHandsOffConflict(err error) bool {
 	_, ok := errors.AsType[*verger.HandsOffError](err)
-
-	return ok
-}
-
-// isPendingConsent reports whether err is, or wraps, verger's v0.1.2 refusal
-// for hooks nobody was asked about. It reads the type for the same reason
-// isHandsOffConflict does: a rewording must not be able to change the class.
-func isPendingConsent(err error) bool {
-	_, ok := errors.AsType[*verger.PendingConsentError](err)
 
 	return ok
 }
