@@ -25,6 +25,19 @@ const (
 	casBackoff  = 20 * time.Millisecond
 )
 
+// BeforeGuardedWrite is a seam into the one window where a concurrent writer
+// can win: after the base read and before the guarded write. It is nil in
+// production and nothing in the product sets it.
+//
+// It exists because that window is the whole question and nothing could reach
+// it. A test that wants to prove a concurrent host write is not lost has to put
+// a write there *at that moment*; free-running writers only collide by luck, and
+// a test built on luck is either slow or flaky, which are the same defect. The
+// seam makes the collision a fact instead of a probability, and it fires once
+// per CAS attempt, so a test that performs its write on the first call gets
+// exactly one interleaving to reason about.
+var BeforeGuardedWrite func(path string)
+
 func readFile(path string) ([]byte, bool, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // G304: agent config paths are resolved by the agent definitions
 	if errors.Is(err, fs.ErrNotExist) {
@@ -112,6 +125,13 @@ func updateFileMode(path string, defaultPerm fs.FileMode, build func(data []byte
 
 		if !changed {
 			return nil
+		}
+
+		// The seam sits here, not one line earlier: after the base read that
+		// build() just merged, and before the guarded write. That is the window
+		// in which the guard below can find the file has moved under us.
+		if BeforeGuardedWrite != nil {
+			BeforeGuardedWrite(path)
 		}
 
 		check := func() error {

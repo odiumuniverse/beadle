@@ -8,24 +8,45 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
 
+	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
 )
 
-const (
-	agentWriterIterations = 4
-	agentWriterPause      = 8 * time.Millisecond
-	agentWriterAttempts   = 10
-	agentWriterSettle     = time.Second
-)
+// agentWriterAttempts bounds the fake agent's own retry on a lost race, so it
+// cannot spin forever against a writer that keeps winning.
+const agentWriterAttempts = 10
 
 var errWriterStale = errors.New("writer state is stale")
 
+// A host agent editing its own config while sync runs loses nothing — not the
+// agent's bytes, not sync's, and nothing temporary left behind.
+//
+// This test used to chase the collision with a clock: it slept between the
+// agent's writes, then waited for sync to deliver v2 under a one-second budget
+// whose result it discarded, so a timeout was indistinguishable from success.
+// Under -race with four packages competing a single sync can outlast that
+// budget, and the test then failed with "Expected v2, Actual v1" for a run that
+// had never been given the chance to write v2 at all. run5 caught it; fifty
+// clean runs on an idle machine could not, which is the signature of a test that
+// is measuring the scheduler.
+//
+// Removing the sleeps did not fix it, it moved it. An agent that writes as fast
+// as it can starves the very CAS loop that protects it: sync loses five times in
+// a row and refuses with "file changed concurrently (after 5 attempts)", so the
+// test traded one flake for another.
+//
+// So the collision is now a fact rather than a probability. agent.BeforeGuarded-
+// Write fires inside the CAS window — after the base read, before the guarded
+// write — which is the only place a concurrent writer can win, and it is not
+// reachable from a test without help. The fake agent performs its write there,
+// once, on demand. Sync's guard then finds the file has moved, retries, re-reads,
+// and merges: the interleaving that used to be hoped for is now the one the test
+// asked for, and it happens on the first attempt of every run.
 func TestSyncKeepsConcurrentAgentWrites(t *testing.T) {
-	Convey("Given a fixture with an agent writing concurrently with sync", t, func() {
+	Convey("Given a fixture where a host agent writes during sync", t, func() {
 		t.Setenv("XDG_CONFIG_HOME", "")
 
 		f := newFixture(t)
@@ -37,71 +58,72 @@ func TestSyncKeepsConcurrentAgentWrites(t *testing.T) {
 
 		f.sync(t)
 
-		claude := read(t, f.claudeConfig())
-		So(claude, ShouldContainSubstring, `"alpha"`)
-		So(claude, ShouldContainSubstring, `"agentBookkeeping":   {"kept":  true}`)
-
+		// The agent's change, in the opencode host. Carrying it to claude is
+		// sync's half of the race, and KEY is the value that used to go missing.
 		write(t, f.openCodeConfig(), `{"mcp": {"alpha": {"type": "local", "command": ["a"], "environment": {"KEY": "v2"}}}}`)
 
-		stop := make(chan struct{})
+		Convey("Then the agent's write lands inside that window and both survive", func() {
+			var (
+				once  sync.Once
+				fired bool
+			)
 
-		var (
-			stopOnce sync.Once
-			wg       sync.WaitGroup
-		)
+			restore := func(path string) {
+				if path != f.claudeConfig() {
+					return
+				}
 
-		stopWriter := func() {
-			stopOnce.Do(func() { close(stop) })
+				once.Do(func() {
+					// Exactly one interleaving per run. Every extra collision
+					// would make the test a race again, and this one is already
+					// the worst case sync has to survive.
+					if err := writeWriterCounter(path, 1); err == nil {
+						fired = true
+					}
+				})
+			}
 
-			wg.Wait()
-		}
+			prev := agent.BeforeGuardedWrite
+			agent.BeforeGuardedWrite = restore
 
-		t.Cleanup(stopWriter)
+			t.Cleanup(func() { agent.BeforeGuardedWrite = prev })
 
-		wg.Go(func() {
-			runConcurrentAgent(f, stop)
-		})
+			f.sync(t)
 
-		f.sync(t)
+			Convey("And the window was really entered", func() {
+				// Without this the test passes even if the seam is never called,
+				// which is the failure mode a test written around a hook is most
+				// prone to: the hook moves, the assertions stay, the proof is gone.
+				So(fired, ShouldBeTrue)
+			})
 
-		stopWriter()
+			doc := readClaudeDoc(t, f.claudeConfig())
+			env := nestedMap(t, doc, "mcpServers", "alpha", "env")
 
-		f.sync(t)
-
-		doc := readClaudeDoc(t, f.claudeConfig())
-		env := nestedMap(t, doc, "mcpServers", "alpha", "env")
-
-		Convey("When both writers finish", func() {
-			Convey("Then both the pulled change and the agent key survive with no temp files", func() {
+			Convey("And sync's change survived the agent's", func() {
 				So(env["KEY"], ShouldEqual, "v2")
+			})
+
+			Convey("And the agent's change survived sync's", func() {
+				// If sync ever wrote from a stale read without comparing first,
+				// this key is what disappears.
 				So(doc, ShouldContainKey, "writerCounter")
+			})
+
+			Convey("And neither writer dropped a key it did not come for", func() {
 				So(doc, ShouldContainKey, "agentBookkeeping")
+			})
+
+			Convey("And no temporary file outlived either of them", func() {
 				So(claudeTempFiles(t, f.home), ShouldBeEmpty)
 			})
 		})
 	})
 }
 
-func runConcurrentAgent(f *fixture, stop <-chan struct{}) {
-	for i := range agentWriterIterations {
-		select {
-		case <-stop:
-			return
-		default:
-		}
-
-		if err := writeWriterCounter(f.claudeConfig(), i+1); err != nil {
-			return
-		}
-
-		time.Sleep(agentWriterPause)
-	}
-
-	waitForAlphaKey(f.claudeConfig(), "v2", agentWriterSettle)
-
-	_ = writeWriterCounter(f.claudeConfig(), agentWriterIterations+1)
-}
-
+// writeWriterCounter is the fake agent's whole job: read its own document, add a
+// key of its own, and write it back. Its own CAS is what makes the agent a fair
+// opponent — an agent that clobbered blindly would be testing the wrong thing.
 func writeWriterCounter(path string, counter int) error {
 	for range agentWriterAttempts {
 		err := tryWriteWriterCounter(path, counter)
@@ -147,49 +169,6 @@ func tryWriteWriterCounter(path string, counter int) error {
 
 		return nil
 	})
-}
-
-func waitForAlphaKey(path, want string, timeout time.Duration) {
-	deadline := time.Now().Add(timeout)
-
-	for time.Now().Before(deadline) {
-		if alphaKey(path) == want {
-			return
-		}
-
-		time.Sleep(time.Millisecond)
-	}
-}
-
-func alphaKey(path string) string {
-	data, err := os.ReadFile(path) //nolint:gosec // G304: test reads its own temp file
-	if err != nil {
-		return ""
-	}
-
-	var doc map[string]any
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return ""
-	}
-
-	servers, ok := doc["mcpServers"].(map[string]any)
-	if !ok {
-		return ""
-	}
-
-	alpha, ok := servers["alpha"].(map[string]any)
-	if !ok {
-		return ""
-	}
-
-	env, ok := alpha["env"].(map[string]any)
-	if !ok {
-		return ""
-	}
-
-	key, _ := env["KEY"].(string)
-
-	return key
 }
 
 func readClaudeDoc(t *testing.T, path string) map[string]any {
