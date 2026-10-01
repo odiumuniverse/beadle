@@ -12,6 +12,8 @@ import (
 	"time"
 
 	. "github.com/smartystreets/goconvey/convey"
+
+	"github.com/odiumuniverse/beadle/pkg/vault"
 )
 
 func configFilePath(home string) string {
@@ -326,7 +328,7 @@ func TestStatusKeepsMissingVault(t *testing.T) {
 
 			Convey("Then it stays uninitialized and creates nothing", func() {
 				So(out, ShouldContainSubstring, "state: not initialized")
-				So(vaultDirExists(filepath.Join(home, ".beadle")), ShouldBeFalse)
+				So(vaultLooksInitialized(vault.New(filepath.Join(home, ".beadle"))), ShouldBeFalse)
 			})
 		})
 	})

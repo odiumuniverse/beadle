@@ -40,7 +40,12 @@ func (a *app) newStatusCmd() *cobra.Command {
 				fmt.Fprintf(out, "vault: %s\n", v.Root())
 			}
 
-			if !vaultDirExists(v.Root()) {
+			// The same question, the same answer: a vault that travelled as its
+			// tracked canon is a vault, and a directory that is neither is not.
+			// `status` reports that state and exits 0, which is why this is not
+			// resolveVault: a report about a machine with no vault yet is an
+			// answer, not a failure.
+			if !vaultLooksInitialized(v) {
 				fmt.Fprintln(out, "state: not initialized (run beadle init)")
 
 				return nil

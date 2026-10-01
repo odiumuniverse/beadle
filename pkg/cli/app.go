@@ -91,7 +91,7 @@ func (a *app) resolveVault() (*vault.Vault, error) {
 	}
 
 	v := vault.New(root)
-	if !vaultDirExists(root) {
+	if !vaultLooksInitialized(v) {
 		return nil, fmt.Errorf("vault %s: %w (run beadle init)", root, ErrVaultNotInitialized)
 	}
 
@@ -99,17 +99,53 @@ func (a *app) resolveVault() (*vault.Vault, error) {
 		return nil, err
 	}
 
+	// The vault's .gitignore is a dotfile, so a copy by a tool that skips
+	// dotfiles, or a checkout of the tracked files, arrives without it — and a
+	// vault with no rules in it keeps the guide's promise that credential
+	// values stay out of git only until the user types `git init && git add -A`,
+	// which is what a user does with a vault somebody sent them.
+	//
+	// Here, on the accepted path, and only here: a directory that is not a
+	// vault was refused two lines above, and nothing is created in it. The file
+	// is written only when it is missing or missing rules, the user's own lines
+	// are kept, and a vault that already carries every rule is read and not
+	// rewritten (vault_test.go:96 pins that for `init`).
+	if err := v.EnsureGitIgnore(); err != nil {
+		return nil, err
+	}
+
 	return v, nil
 }
 
-func vaultDirExists(root string) bool {
-	info, err := os.Stat(root) //nolint:gosec // G703: root is the resolved vault path, not request taint
-	if err != nil || !info.IsDir() {
-		return false
+// vaultLooksInitialized reports whether a vault is a vault, and the answer is
+// the one that survives travelling.
+//
+// It used to look for .gitignore, state/ or objects/ — a marker chosen from
+// the inside: a dotfile that a copy by any tool skipping dotfiles drops, and two
+// entries the vault's own .gitignore refuses to let leave the machine. So the
+// shape guide/humans.md promises travels, the tracked canon plus config.json
+// and no machine-local state at all, was the one shape refused with "vault is
+// not initialized (run beadle init)".
+//
+// config.json is the marker: it is the vault's own description of itself, it is
+// tracked, and it is the one file present in every shape a vault arrives in. The
+// layout entries stay in the set, because a vault that LOST its config is still
+// a vault and is repaired with defaults (ensureConfig, pinned by
+// config_gws_test.go), and refusing it would turn a recoverable accident into a
+// dead end. Nothing here reads the contents: a config.json from a newer beadle
+// passes this test and is then refused by config.Load with the schema-newer
+// error, which is the message that means something to a user.
+//
+// A free function and not a method: it reads nothing of the app, and both
+// callers — resolveVault and `status` — are asking the same question about the
+// same thing.
+func vaultLooksInitialized(v *vault.Vault) bool {
+	if v.Initialized() {
+		return true
 	}
 
 	for _, marker := range []string{".gitignore", "state", "objects"} {
-		if _, err := os.Stat(filepath.Join(root, marker)); err == nil { //nolint:gosec // G703: root is the resolved vault path, marker names are constants
+		if _, err := os.Stat(filepath.Join(v.Root(), marker)); err == nil { //nolint:gosec // G703: root is the resolved vault path, marker names are constants
 			return true
 		}
 	}

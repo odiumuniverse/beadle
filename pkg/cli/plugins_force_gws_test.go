@@ -35,11 +35,17 @@ import (
 // only on the forward-write path. So a re-install of an edited file is
 // refused whatever beadle passes.
 //
-// That is `pkg/apply` in verger, not beadle. The fix is one branch in
+// That is `pkg/apply` in verger, not beadle, and the fix was one branch in
 // `undoMismatch`: when `r.opts.Force && r.opts.BackupsRoot != ""`, take the
-// same backup the forward path takes and let the write proceed. Until it
-// lands, this test fails at the force step and the failure is the honest
-// report of that gap — which is why it is written here rather than deleted.
+// same backup the forward path takes and let the write proceed. That branch is
+// in the verger beadle builds against now, and the force step of this test
+// passes — it is the guard that keeps it passing, so the description above is
+// history rather than the current state.
+// Pins guide/humans.md:71-73 and guide/ai-agents.md:240-242: a plugin file the
+// human edited is not overwritten silently — the run refuses, `--force` is the
+// only way past it, what it wrote first is kept under
+// `<vault>/state/backups/<timestamp>/` with the path printed, and `-y` does not
+// imply `--force`.
 func TestPluginsForceKeepsTheEditedFile(t *testing.T) {
 	// One leaf, four steps in sequence. GoConvey re-runs the body of an outer
 	// block once per leaf, and the vault path is resolved from HOME once per
