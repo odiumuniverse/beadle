@@ -33,21 +33,24 @@ bundles/
 projects/
 `
 
-// vergerStateFiles are the paths under the library's home that record what one
-// machine did, and the files a vault in git must not carry. The directory
-// entries above already cover a fresh vault; these name the files for a vault
-// that was committed before the rules, so the migration can untrack them by
-// name instead of guessing.
-var vergerStateFiles = []string{
-	"verger/state/receipts",
-	"verger/state/journal.jsonl",
-	"verger/state/tombstones.json",
-	"verger/state/consent.json",
-	"verger/state/secrets.json",
-	"verger/state/trust.json",
-	"verger/state/watch.lease",
-	"verger/state/.lock",
-	"verger/store",
+// machineLocalRules are the paths a vault must never track, read from the
+// .gitignore the vault writes. One source on purpose: the promise that file
+// makes and the migration that enforces it (UntrackMachineLocal) cannot drift
+// apart if they are the same list, and a rule that reached one and not the
+// other would be a secret somebody can commit.
+var machineLocalRules = gitIgnoreRules()
+
+// gitIgnoreRules are the non-comment lines of the .gitignore, in file order.
+func gitIgnoreRules() []string {
+	rules := make([]string, 0, 12)
+
+	for line := range strings.SplitSeq(gitIgnore, "\n") {
+		if entry := strings.TrimSpace(line); entry != "" && !strings.HasPrefix(entry, "#") {
+			rules = append(rules, entry)
+		}
+	}
+
+	return rules
 }
 
 const (
@@ -349,17 +352,10 @@ func missingGitIgnoreLines(data []byte) []string {
 
 	var missing []string
 
-	for line := range strings.SplitSeq(gitIgnore, "\n") {
-		entry := strings.TrimSpace(line)
-		if entry == "" || strings.HasPrefix(entry, "#") {
-			continue
+	for _, entry := range machineLocalRules {
+		if _, ok := present[entry]; !ok {
+			missing = append(missing, entry)
 		}
-
-		if _, ok := present[entry]; ok {
-			continue
-		}
-
-		missing = append(missing, entry)
 	}
 
 	return missing

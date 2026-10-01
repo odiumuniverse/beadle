@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 )
 
@@ -21,7 +22,11 @@ func WriteFileAtomic(path string, data []byte, perm fs.FileMode) error {
 	return WriteFileAtomicChecked(path, data, perm, nil)
 }
 
+var Writes atomic.Int64
+
 func WriteFileAtomicChecked(path string, data []byte, perm fs.FileMode, check func() error) error {
+	Writes.Add(1)
+
 	dir := filepath.Dir(path)
 
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")

@@ -371,17 +371,18 @@ func (e *Engine) runSyncMigrations(ctx context.Context, st *state.State, report 
 
 	// A vault in git carries what another machine needs and nothing that is
 	// true of this one. A vault committed before those rules still tracks the
-	// library's machine-local state, and `.gitignore` alone cannot untrack a
-	// path - so the migration does it, once, and says what it stopped
-	// tracking. Nothing is committed and nothing is deleted: the files stay on
-	// this machine.
+	// machine-local state and the secrets file, and `.gitignore` alone cannot
+	// untrack a path - so the migration does it, once, and says what it
+	// stopped tracking. Nothing is committed and nothing is deleted: the files
+	// stay on this machine, and the history is the user's to deal with (the
+	// doctor says so, and names the command).
 	if !opts.DryRun && fullForwardSync(opts) {
-		untracked, err := e.vault.UntrackVergerState(ctx)
+		untracked, err := e.vault.UntrackMachineLocal(ctx)
 		if err != nil {
 			report.Warnings = append(report.Warnings, err.Error())
 		} else if len(untracked) > 0 {
 			report.Notes = append(report.Notes, fmt.Sprintf(
-				"stopped tracking %d machine-local verger file(s) (they stay on this machine): %s",
+				"stopped tracking %d machine-local file(s) (they stay on this machine): %s",
 				len(untracked), strings.Join(untracked, ", ")))
 		}
 	}

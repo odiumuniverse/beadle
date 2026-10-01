@@ -50,6 +50,12 @@ const maxObjectIssues = 5
 // command starts with it.
 const beadleName = "beadle"
 
+// syncCommand is the subcommand a finding names when the repair is beadle's own
+// to run. A constant because a printed command a user pastes has to be the same
+// command everywhere it appears, and because goconst is right that four copies
+// of a string a user will type is four places to fix a typo.
+const syncCommand = "sync"
+
 // Finding is what every doctor check reports (W7-UX §3.1). A check that passes
 // returns nothing: only findings are reported, so a clean run is one line.
 type Finding struct {
@@ -195,6 +201,7 @@ func (e *Engine) Doctor(ctx context.Context) ([]Issue, error) {
 	issues = append(issues, e.adoptionIssues(st)...)
 	issues = append(issues, e.canonSkillValidityIssues(st)...)
 	issues = append(issues, e.secretIssues()...)
+	issues = append(issues, e.secretHistoryIssues(ctx)...)
 	issues = append(issues, e.projectScopeIssues(ctx, active)...)
 	issues = append(issues, e.projectPolicyIssues(active)...)
 	issues = append(issues, e.claudeUserRulesIssues(active)...)
@@ -440,7 +447,7 @@ func (e *Engine) memorySecretIssues() []Issue {
 			Severity: SeverityError, Kind: kind.Memory,
 			Message: fmt.Sprintf("memory notes with plaintext secrets are not ignored by git: %s; run beadle sync",
 				strings.Join(plaintexts, ", ")),
-			Fix: [][]string{{beadleName, "sync"}},
+			Fix: [][]string{{beadleName, syncCommand}},
 		})
 	}
 
@@ -682,7 +689,7 @@ func planIssues(plan *Report) []Issue {
 				Severity: SeverityWarn, Kind: kr.Kind, Agent: agentID,
 				Message: fmt.Sprintf("%d change(s) are not in the vault yet; run beadle sync",
 					pending[agentID]),
-				Fix: [][]string{{beadleName, "sync"}},
+				Fix: [][]string{{beadleName, syncCommand}},
 			})
 		}
 

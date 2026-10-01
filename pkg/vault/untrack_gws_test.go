@@ -14,7 +14,11 @@ import (
 // A vault committed before the rules carries the machine-local files with it.
 // `.gitignore` does not untrack a path, so the migration has to do it - and a
 // second run must find nothing left to do and say nothing.
-func TestUntrackVergerState(t *testing.T) {
+//
+// The list is the vault's own .gitignore, so this case is also the one that
+// pins the widening: the library's receipts and the vault's own state/ and
+// secrets file are the same claim, and the file they come from is the promise.
+func TestUntrackMachineLocal(t *testing.T) {
 	Convey("Given a vault committed with the library's machine-local state", t, func() {
 		home := t.TempDir()
 		root := filepath.Join(home, "vault")
@@ -26,13 +30,20 @@ func TestUntrackVergerState(t *testing.T) {
 		So(os.MkdirAll(filepath.Join(root, "verger", "state", "receipts"), 0o700), ShouldBeNil)
 		So(os.WriteFile(filepath.Join(root, "verger", "state", "receipts", "claude.json"), []byte("{}"), 0o600), ShouldBeNil)
 		So(os.WriteFile(filepath.Join(root, "verger", "verger.lock"), []byte("{}"), 0o600), ShouldBeNil)
+
+		// The vault's own machine-local trees and the credential file, which
+		// the rules promise and the migration used to know nothing about.
+		So(os.MkdirAll(filepath.Join(root, "state"), 0o700), ShouldBeNil)
+		So(os.WriteFile(filepath.Join(root, "state", "journal.jsonl"), []byte("{}\n"), 0o600), ShouldBeNil)
+		So(os.MkdirAll(filepath.Join(root, "mcp"), 0o700), ShouldBeNil)
+		So(os.WriteFile(filepath.Join(root, "mcp", "secrets.json"), []byte("{}"), 0o600), ShouldBeNil)
 		git(t, root, "init")
 		// -f, because a vault committed before the rules tracked these files
 		// even though today's .gitignore would not.
 		git(t, root, "add", "-A", "-f")
 
 		Convey("When the migration runs", func() {
-			untracked, err := v.UntrackVergerState(t.Context())
+			untracked, err := v.UntrackMachineLocal(t.Context())
 			So(err, ShouldBeNil)
 
 			Convey("Then the receipt is no longer tracked", func() {
@@ -49,8 +60,17 @@ func TestUntrackVergerState(t *testing.T) {
 				So(tracked(t, root), ShouldContain, "verger/verger.lock")
 			})
 
+			Convey("Then the vault's own machine-local files leave the index too", func() {
+				So(untracked, ShouldContain, "state/journal.jsonl")
+				So(untracked, ShouldContain, "mcp/secrets.json")
+
+				names := tracked(t, root)
+				So(names, ShouldNotContain, "state/journal.jsonl")
+				So(names, ShouldNotContain, "mcp/secrets.json")
+			})
+
 			Convey("Then a second run has nothing to do", func() {
-				again, err := v.UntrackVergerState(t.Context())
+				again, err := v.UntrackMachineLocal(t.Context())
 				So(err, ShouldBeNil)
 				So(again, ShouldBeEmpty)
 			})
@@ -63,7 +83,7 @@ func TestUntrackVergerState(t *testing.T) {
 		So(v.Init(), ShouldBeNil)
 
 		Convey("Then the migration is a no-op, not an error", func() {
-			untracked, err := v.UntrackVergerState(t.Context())
+			untracked, err := v.UntrackMachineLocal(t.Context())
 			So(err, ShouldBeNil)
 			So(untracked, ShouldBeEmpty)
 		})

@@ -2,6 +2,8 @@ package engine_test
 
 import (
 	"fmt"
+
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -104,7 +106,10 @@ func isolatedTestBinDir() (dir, path string, err error) {
 }
 
 func TestMain(m *testing.M) {
-	os.Exit(isolateTestHome(m))
+	code := isolateTestHome(m)
+
+	fmt.Fprintf(os.Stderr, "ZZCOUNTER atomicWrites=%d\n", fsutil.Writes.Load())
+	os.Exit(code)
 }
 
 func TestSuiteHomeIsolation(t *testing.T) {

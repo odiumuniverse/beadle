@@ -121,6 +121,7 @@ beadle conflicts                 # list what is open
 beadle conflicts <id> --json     # values (secret-redacted) + patch
 beadle resolve <id> --take vault # keep the vault value
 beadle resolve <id> --take agent # take the agent value
+beadle resolve <id> --take file  # keep what you wrote in the conflict file
 # or resolve with your own merged content:
 beadle resolve <id> --from merged.md \
   --expect-base <base> --expect-vault <vault> --expect-agent <agent>
