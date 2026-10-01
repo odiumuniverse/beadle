@@ -15,6 +15,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/state"
 	"github.com/odiumuniverse/beadle/pkg/vault"
 	"github.com/odiumuniverse/verger/pkg/digest"
@@ -90,7 +91,7 @@ func (m *recordingManager) Owns(path string) (string, bool) {
 	m.ownsCalls++
 
 	for _, claim := range m.claims {
-		if strings.HasPrefix(path, claim) {
+		if fsutil.Under(claim, path) {
 			return "verger", true
 		}
 	}

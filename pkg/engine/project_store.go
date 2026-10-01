@@ -702,7 +702,7 @@ func (e *Engine) projectSurfacesByRel(rel string) []agent.Surface {
 func projectKeyMatches(key, id, rel string) bool {
 	prefix := id + "/" + rel
 
-	return key == prefix || strings.HasPrefix(key, prefix+"/")
+	return fsutil.Under(prefix, key)
 }
 
 func (e *Engine) projectRels() []string {

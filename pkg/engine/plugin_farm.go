@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/text/unicode/norm"
 
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/skill"
 )
@@ -234,7 +235,7 @@ func (e *Engine) scanPluginSkills(key, target, dir, root string) ([]string, bool
 }
 
 func underDir(path, root string) bool {
-	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
+	return fsutil.Under(root, path)
 }
 
 func (e *Engine) canonSkillNames() (map[string]struct{}, []string) {

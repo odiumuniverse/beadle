@@ -13,6 +13,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/cas"
 	"github.com/odiumuniverse/beadle/pkg/config"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/mcp"
 	"github.com/odiumuniverse/beadle/pkg/rulings"
@@ -616,7 +617,17 @@ func (e *Engine) vergerOwns(v *view, key string) (string, bool) {
 
 	root := v.surface.Path()
 
-	for candidate := filepath.Join(root, key); ; {
+	candidate := filepath.Join(root, key)
+
+	// The containment check comes BEFORE the first question, not after it. A
+	// key that climbs out of the surface must not be handed to the ownership
+	// predicate even once — asking first is precisely how the neighbour's vault
+	// got queried, and a guard that runs only after the ask has already lost.
+	if !fsutil.Under(root, candidate) {
+		return "", false
+	}
+
+	for {
 		if owner, foreign := e.owns(candidate); foreign {
 			if owner == "" {
 				owner = "verger"
@@ -630,10 +641,7 @@ func (e *Engine) vergerOwns(v *view, key string) (string, bool) {
 		}
 
 		parent := filepath.Dir(candidate)
-		if parent == candidate || !strings.HasPrefix(candidate, root) {
-			// A key that climbs out of the surface is not a path the manager
-			// could own, and asking above the surface root would hand the
-			// predicate a path the user would not recognise.
+		if parent == candidate {
 			return "", false
 		}
 

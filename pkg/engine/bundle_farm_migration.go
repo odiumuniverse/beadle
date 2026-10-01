@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/odiumuniverse/beadle/pkg/bundle"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/hooks"
 	"github.com/odiumuniverse/beadle/pkg/state"
 )
@@ -464,7 +465,7 @@ func (m *bundleFarm) pruneEmptyDirs(root string, removed []string) {
 
 	for _, rel := range removed {
 		dir := filepath.Dir(filepath.Join(root, rel))
-		for dir != root && strings.HasPrefix(dir, root) {
+		for dir != root && fsutil.Under(root, dir) {
 			dirs[dir] = true
 
 			dir = filepath.Dir(dir)

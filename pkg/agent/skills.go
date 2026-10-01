@@ -9,8 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/skill"
 )
@@ -441,7 +441,7 @@ func (s *skillsSurface) skillRootAt(dir string, entry fs.DirEntry) (string, stri
 func (s *skillsSurface) ignored(target string) bool {
 	for _, dir := range s.ignoreUnder {
 		resolved := RealPath(dir)
-		if target == resolved || strings.HasPrefix(target, resolved+string(filepath.Separator)) {
+		if fsutil.Under(resolved, target) {
 			return true
 		}
 	}

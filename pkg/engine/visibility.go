@@ -12,6 +12,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/bundle"
 	"github.com/odiumuniverse/beadle/pkg/cas"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/skill"
 	"github.com/odiumuniverse/beadle/pkg/state"
@@ -887,5 +888,5 @@ func isUnder(path, root string) bool {
 		return true
 	}
 
-	return strings.HasPrefix(path, root+string(filepath.Separator))
+	return fsutil.Under(root, path)
 }

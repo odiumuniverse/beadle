@@ -8,6 +8,7 @@ import (
 
 	. "github.com/smartystreets/goconvey/convey"
 
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/vault"
 )
 
@@ -41,7 +42,7 @@ func TestTheVaultIgnoresMachineLocalState(t *testing.T) {
 		// ignored reports whether some rule covers the path, the way git does.
 		ignored := func(path string) bool {
 			for _, rule := range rules {
-				if strings.HasPrefix(path, strings.TrimSuffix(rule, "/")) {
+				if fsutil.Under(strings.TrimSuffix(rule, "/"), path) {
 					return true
 				}
 			}
