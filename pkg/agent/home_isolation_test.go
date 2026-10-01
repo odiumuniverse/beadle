@@ -99,7 +99,51 @@ func isolateTestHome(m *testing.M) int {
 	isolatedHome = home
 	isolatedBinDir = path
 
-	return m.Run()
+	code := m.Run()
+
+	// The suite is over, so this is the only moment at which the real home can
+	// be weighed against the snapshot taken before the pin. Inside a test the
+	// check runs in file order, and in pkg/engine alone 93 test files sort
+	// after this one: it would report a clean home while two thirds of the
+	// suite had yet to run.
+	if !realHomeUnchanged() {
+		code = 1
+	}
+
+	return code
+}
+
+// realHomeUnchanged reports whether the suite left the machine's real home as it
+// found it. A run with no HOME has nothing to weigh against; the pin is still in
+// place, so there is nothing to guard.
+func realHomeUnchanged() bool {
+	if realHome == "" {
+		return true
+	}
+
+	after, err := os.ReadDir(realHome)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "read the real home", realHome+":", err)
+
+		return false
+	}
+
+	clean := true
+
+	for _, entry := range after {
+		if slices.Contains(realBefore, entry.Name()) {
+			continue
+		}
+
+		// Every offender is named, not just the first: one run that leaves
+		// three entries should say so once, rather than send the reader back
+		// for the other two.
+		fmt.Fprintln(os.Stderr, "the suite created", filepath.Join(realHome, entry.Name()))
+
+		clean = false
+	}
+
+	return clean
 }
 
 func TestMain(m *testing.M) {
@@ -136,6 +180,9 @@ func isolatedTestBinDir() (dir, path string, err error) {
 }
 
 func TestSuiteHomeIsolation(t *testing.T) {
+	// Only the pins are checked here. Whether the suite left the machine's real home
+	// untouched is realHomeUnchanged, run by TestMain after m.Run(): a check made
+	// in a test would only weigh the files that happen to sort before it.
 	Convey("Given the isolated test suite", t, func() {
 		Convey("When a test reads the environment", func() {
 			Convey("Then every pinned home-shaped variable points into the temp isolation dir", func() {
@@ -190,25 +237,6 @@ func TestSuiteHomeIsolation(t *testing.T) {
 					So(path, ShouldBeEmpty)
 				}
 			})
-		})
-
-		Convey("And the machine's real home gained nothing", func() {
-			// A suite run with no HOME has nothing to compare against; the pin is
-			// still in place, so there is nothing to guard.
-			if realHome == "" {
-				return
-			}
-
-			after, readErr := os.ReadDir(realHome)
-			So(readErr, ShouldBeNil)
-
-			for _, entry := range after {
-				// Named here rather than in an assertion message: the matcher
-				// takes none, and a bare false would not say which entry or where.
-				if !slices.Contains(realBefore, entry.Name()) {
-					t.Errorf("the suite created %s in the real home %s", entry.Name(), realHome)
-				}
-			}
 		})
 	})
 }

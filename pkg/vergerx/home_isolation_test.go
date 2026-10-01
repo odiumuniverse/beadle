@@ -1,6 +1,7 @@
 package vergerx_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -62,7 +63,51 @@ func isolateTestHome(m *testing.M) int {
 
 	isolatedHome = home
 
-	return m.Run()
+	code := m.Run()
+
+	// The suite is over, so this is the only moment at which the real home can
+	// be weighed against the snapshot taken before the pin. Inside a test the
+	// check runs in file order, and in pkg/engine alone 93 test files sort
+	// after this one: it would report a clean home while two thirds of the
+	// suite had yet to run.
+	if !realHomeUnchanged() {
+		code = 1
+	}
+
+	return code
+}
+
+// realHomeUnchanged reports whether the suite left the machine's real home as it
+// found it. A run with no HOME has nothing to weigh against; the pin is still in
+// place, so there is nothing to guard.
+func realHomeUnchanged() bool {
+	if realHome == "" {
+		return true
+	}
+
+	after, err := os.ReadDir(realHome)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "read the real home", realHome+":", err)
+
+		return false
+	}
+
+	clean := true
+
+	for _, entry := range after {
+		if slices.Contains(realBefore, entry.Name()) {
+			continue
+		}
+
+		// Every offender is named, not just the first: one run that leaves
+		// three entries should say so once, rather than send the reader back
+		// for the other two.
+		fmt.Fprintln(os.Stderr, "the suite created", filepath.Join(realHome, entry.Name()))
+
+		clean = false
+	}
+
+	return clean
 }
 
 // TestSuiteHomeIsolation is the guard the whole arrangement exists for: after a
@@ -70,6 +115,9 @@ func isolateTestHome(m *testing.M) int {
 // only checked "HOME is pinned" would pass with the suite happily writing to
 // ~/.verger through a home it resolved before the pin.
 func TestSuiteHomeIsolation(t *testing.T) {
+	// Only the pins are checked here. Whether the suite left the machine's real home
+	// untouched is realHomeUnchanged, run by TestMain after m.Run(): a check made
+	// in a test would only weigh the files that happen to sort before it.
 	Convey("Given a suite that pinned the home", t, func() {
 		Convey("Then the process is running inside the pin", func() {
 			So(isolatedHome, ShouldNotBeEmpty)
@@ -80,29 +128,6 @@ func TestSuiteHomeIsolation(t *testing.T) {
 
 			for _, name := range []string{"VERGER_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"} {
 				So(os.Getenv(name), ShouldBeEmpty)
-			}
-		})
-
-		Convey("And the machine's real home gained nothing", func() {
-			if realHome == "" {
-				return
-			}
-
-			after, err := os.ReadDir(realHome)
-			So(err, ShouldBeNil)
-
-			names := make([]string, 0, len(after))
-			for _, entry := range after {
-				names = append(names, entry.Name())
-			}
-
-			for _, name := range names {
-				// A suite that created an entry in the real home is named here
-				// rather than in an assertion message: the matcher takes none,
-				// and a bare false here would not say which entry or where.
-				if !slices.Contains(realBefore, name) {
-					t.Errorf("the suite created %s in the real home %s", name, realHome)
-				}
 			}
 		})
 	})
