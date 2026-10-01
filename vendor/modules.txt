@@ -29,7 +29,7 @@ github.com/lmittmann/tint
 # github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822
 ## explicit
 github.com/munnerz/goautoneg
-# github.com/odiumuniverse/verger v0.1.2
+# github.com/odiumuniverse/verger v0.1.4
 ## explicit; go 1.27.1
 github.com/odiumuniverse/verger/pkg/apply
 github.com/odiumuniverse/verger/pkg/consent

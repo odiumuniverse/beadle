@@ -5,7 +5,7 @@ go 1.27.1
 require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/gofrs/flock v0.13.1
-	github.com/odiumuniverse/verger v0.1.2
+	github.com/odiumuniverse/verger v0.1.4
 	github.com/pelletier/go-toml v1.9.5
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/samber/lo v1.53.0
