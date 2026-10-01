@@ -5,12 +5,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
 	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	. "github.com/smartystreets/goconvey/convey"
+
+	"github.com/odiumuniverse/beadle/pkg/homescan"
 )
 
 // isolatedHome is the temp home TestMain pins the environment to, and
@@ -18,7 +19,7 @@ import (
 // git and nothing else.
 var (
 	realHome       string
-	realBefore     []string
+	realBefore     homescan.Snapshot
 	isolatedHome   string
 	isolatedBinDir string
 )
@@ -77,13 +78,9 @@ func isolateTestHome(m *testing.M) int {
 	// developer's ~/.verger: a root that does not exist in a temporary vault
 	// falls through to the standalone home, and the standalone home is the
 	// real one.
-	realHome = os.Getenv("HOME")
+	realHome = homescan.GuardHome()
 
-	if entries, readErr := os.ReadDir(realHome); readErr == nil {
-		for _, entry := range entries {
-			realBefore = append(realBefore, entry.Name())
-		}
-	}
+	realBefore = homescan.Take(realHome)
 
 	home, err := os.MkdirTemp("", "beadle-test-home") //nolint:usetesting // TestMain has no *testing.T to hang t.TempDir on
 	if err != nil {
@@ -142,44 +139,9 @@ func isolateTestHome(m *testing.M) int {
 	// check runs in file order, and in pkg/engine alone 93 test files sort
 	// after this one: it would report a clean home while two thirds of the
 	// suite had yet to run.
-	if !realHomeUnchanged() {
-		code = 1
-	}
+	code = reportRealHome(realBefore.Changed(realBefore.Recheck()), code)
 
 	return code
-}
-
-// realHomeUnchanged reports whether the suite left the machine's real home as it
-// found it. A run with no HOME has nothing to weigh against; the pin is still in
-// place, so there is nothing to guard.
-func realHomeUnchanged() bool {
-	if realHome == "" {
-		return true
-	}
-
-	after, err := os.ReadDir(realHome)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "read the real home", realHome+":", err)
-
-		return false
-	}
-
-	clean := true
-
-	for _, entry := range after {
-		if slices.Contains(realBefore, entry.Name()) {
-			continue
-		}
-
-		// Every offender is named, not just the first: one run that leaves
-		// three entries should say so once, rather than send the reader back
-		// for the other two.
-		fmt.Fprintln(os.Stderr, "the suite created", filepath.Join(realHome, entry.Name()))
-
-		clean = false
-	}
-
-	return clean
 }
 
 // isolatedTestBinDir builds the PATH the suite runs with: the suite's own bin
@@ -239,6 +201,64 @@ func TestSuiteHomeIsolation(t *testing.T) {
 					So(os.Getenv(name), ShouldBeEmpty)
 				}
 			})
+		})
+	})
+}
+
+// reportRealHome turns what the guard found in the machine's own home into the
+// suite's exit code, and says out loud which of the two answers it is giving.
+//
+// The weighing stays in TestMain rather than moving into a test file. A test
+// runs in file order, and -run or -shuffle can leave a real-home test as the
+// only one that runs at all — which would report a clean home over a suite of
+// zero, the one case where a guard must not be trusted. Here the snapshot is
+// taken before the first test and weighed after the last, so a filtered run is
+// weighed too.
+//
+// It is stderr and not t.Log because a TestMain has no *testing.T. That is the
+// one point of the design that could not be built as written, and nothing is
+// lost by the channel: every change is printed, not summarised.
+func reportRealHome(changes []string, code int) int {
+	switch homescan.Judge(changes) {
+	case homescan.Clean:
+		return code
+	case homescan.Warn:
+		homescan.WarnAbout(changes)
+
+		return code
+	case homescan.Fail:
+		homescan.FailAbout(changes)
+
+		return 1
+	default:
+		return code
+	}
+}
+
+// The pin is the primary defence and the strict one: it holds in every mode,
+// and neither CI nor BEADLE_TEST_GUARD relaxes it. The guard above is
+// deliberately lenient on a developer machine, so if this ever stopped being
+// true there would be nothing left to notice.
+func TestTheSuiteIsPinnedToATemporaryHome(t *testing.T) {
+	Convey("Given the home this suite runs against", t, func() {
+		envHome := os.Getenv("HOME")
+
+		Convey("Then both ways of asking for a home name it", func() {
+			// os.UserHomeDir is not a synonym for $HOME on every platform, and
+			// code that derives a home does not always go through the
+			// environment. Both are asked, because both are ways out.
+			dir, err := os.UserHomeDir()
+			So(err, ShouldBeNil)
+			So(dir, ShouldEqual, envHome)
+			So(envHome, ShouldEqual, isolatedHome)
+		})
+
+		Convey("And it is a temporary directory rather than a home on this machine", func() {
+			So(envHome, ShouldNotEqual, realHome)
+
+			rel, err := filepath.Rel(os.TempDir(), envHome)
+			So(err, ShouldBeNil)
+			So(rel, ShouldNotStartWith, "..")
 		})
 	})
 }

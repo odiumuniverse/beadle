@@ -5,6 +5,18 @@ on:
     branches: [master, main]
   pull_request:
 
+# The real-home guard is strict on CI, where nothing else runs on the runner and
+# anything that moved under the runner's home was this suite.
+#
+# GitHub sets CI=true in every job on its own — docs.github.com, "Variables
+# reference", default environment variables: "CI — Always set to true." The same
+# page adds that overwriting CI "is not guaranteed that this will always be
+# possible", so the default and the ability to restate it are two different
+# promises. Setting it here costs one line and makes the guard's strictness a
+# property of this repository rather than of the platform's current mood.
+env:
+  CI: true
+
 jobs:
   test:
     strategy:

@@ -41,11 +41,34 @@ var hostResolutionEnv = []string{
 // envReadsThatDoNotResolveAnything are the variables the product reads that
 // cannot redirect a host to a developer's files: a test toggle or a credential
 // the caller supplies deliberately. Any other read must be pinned.
+//
+// The real-home guard's two knobs belong here and NOT in hostResolutionEnv, and
+// the reason is load-bearing rather than a matter of taste. That list is not
+// only a declaration: TestHostResolutionEnvIsPinned walks it and requires every
+// name to be EMPTY, so declaring CI there does not describe it, it demands
+// pinning CI="" — which on a runner would switch the guard off, silently, in the
+// one place the guard has no neighbour to be confused with a leak. Measured:
+// with CI declared in hostResolutionEnv, `CI=true go test ./pkg/cli/` is red at
+// env_leak_test.go:100.
+//
+// BEADLE_TEST_GUARD is declared before anything reads it as a literal. The scan
+// only sees os.Getenv("literal") — pkg/homescan reads both knobs through
+// constants, so neither appears to it — and an unlisted name that later grows a
+// literal breaks the build for a reader who had no way to know the name was
+// known. Pre-declaring turns that break into a no-op.
 var envReadsThatDoNotResolveAnything = []string{
-	"BEADLE_BUNDLE_CANARY",
+	"BEADLE_BUNDLE_CANTRY",
 	"BEADLE_DSH_E2E",
 	"BEADLE_GIT_ORACLE",
 	"BEADLE_KEYRING_E2E",
+	// CI decides whether the real-home guard fails a run or only warns, and
+	// BEADLE_TEST_GUARD=strict asks for the same on one machine. Neither can
+	// send a host to a developer's files, which is what this list is for. CI is
+	// read from the shell rather than from a runner, so a developer who exports
+	// it has opted into a strict guard by accident; the failure message names the
+	// knob for that reason (homescan.FailAbout).
+	"BEADLE_TEST_GUARD",
+	"CI",
 	"DEEPSEEK_API_KEY",
 	"TMPDIR",
 }
