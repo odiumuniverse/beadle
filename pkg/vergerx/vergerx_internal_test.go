@@ -83,9 +83,47 @@ func TestOpenCreatesTheHomeDirectory(t *testing.T) {
 		client, err := Open(context.Background(), Config{VaultRoot: root, Logger: embedlog.NewDevLogger()})
 		So(err, ShouldBeNil)
 
-		Convey("Then the home exists inside the vault", func() {
+		defer func() { _ = client.Close() }()
+
+		Convey("Then the home beadle works on is the one inside the vault", func() {
+			// Resolution, not creation. Discovery is read-only and names a
+			// directory that does not exist yet — naming it is neither a write
+			// nor a risk, and the subdirectory is the library's to create the
+			// first time something needs it. A test that pinned EAGER creation
+			// was pinning a moment that is not the contract: the contract is
+			// WHICH home, and that it is a real directory once there is
+			// anything to put in it.
+			So(client.Home(), ShouldEqual, filepath.Join(root, "verger"))
+		})
+
+		Convey("And it is a real directory in the vault as soon as beadle writes", func() {
+			// The premise restated at the moment it holds: an adoption is the
+			// cheapest write the client has, and after it the home is a
+			// directory with state in it — not a path the library tolerates.
+			// A minimal local package, the same shape the e2e builds: a
+			// manifest and one skill. This is the first thing beadle does that
+			// writes into the plugin home, which is the moment the directory
+			// has to exist.
+			pkg := filepath.Join(t.TempDir(), "pkg")
+			So(os.MkdirAll(filepath.Join(pkg, ".claude-plugin"), 0o750), ShouldBeNil)
+			So(os.MkdirAll(filepath.Join(pkg, "skills", "alpha"), 0o750), ShouldBeNil)
+			So(os.WriteFile(filepath.Join(pkg, ".claude-plugin", "plugin.json"),
+				[]byte(`{"name":"vw-pkg","version":"1.0.0"}`), 0o600), ShouldBeNil)
+			So(os.WriteFile(filepath.Join(pkg, "skills", "alpha", "SKILL.md"),
+				[]byte("---\nname: alpha\ndescription: alpha probe\n---\n\nb\n"), 0o600), ShouldBeNil)
+
+			client.SetConfirmer(YesConfirmer())
+
+			_, err := client.InstallFor(context.Background(),
+				planFor(t, client, pkg), false, false)
+			So(err, ShouldBeNil)
+
 			So(client.Home(), ShouldEqual, filepath.Join(root, "verger"))
 			So(dirExists(client.Home()), ShouldBeTrue)
+
+			entries, readErr := os.ReadDir(client.Home())
+			So(readErr, ShouldBeNil)
+			So(entries, ShouldNotBeEmpty)
 		})
 	})
 }
@@ -129,4 +167,15 @@ func TestTheClientRunsOnBeadlesSecretStore(t *testing.T) {
 			So(client.SecretsInForce(), ShouldBeFalse)
 		})
 	})
+}
+
+// planFor plans one local package with no host filter, which is what
+// `beadle plugins install ./pkg --yes` reaches.
+func planFor(t *testing.T, c *Client, ref string) *verger.Plan {
+	t.Helper()
+
+	plan, err := c.PlanFor(context.Background(), []string{ref}, false, verger.HostFilter{})
+	So(err, ShouldBeNil)
+
+	return plan
 }

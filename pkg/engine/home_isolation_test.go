@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,6 +16,8 @@ import (
 // isolatedBinDir the PATH it pins: a bin directory of the suite's own holding
 // git and no agent CLI.
 var (
+	realHome       string
+	realBefore     []string
 	isolatedHome   string
 	isolatedBinDir string
 )
@@ -30,6 +33,20 @@ var (
 // The XDG location points at the same <home>/.config a fallback would resolve
 // to, so tests that compute the path from HOME keep matching.
 func isolateTestHome(m *testing.M) int {
+	// The machine's real home, recorded BEFORE the pin, so the suite can be
+	// asked afterwards whether it left anything there. These packages resolve
+	// host roots, which is how a suite with no pin ends up writing into the
+	// developer's ~/.verger: a root that does not exist in a temporary vault
+	// falls through to the standalone home, and the standalone home is the
+	// real one.
+	realHome = os.Getenv("HOME")
+
+	if entries, readErr := os.ReadDir(realHome); readErr == nil {
+		for _, entry := range entries {
+			realBefore = append(realBefore, entry.Name())
+		}
+	}
+
 	home, err := os.MkdirTemp("", "beadle-engine-test-home") //nolint:usetesting // TestMain has no *testing.T to hang t.TempDir on
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "create test home:", err)
@@ -49,9 +66,13 @@ func isolateTestHome(m *testing.M) int {
 	defer func() { _ = os.RemoveAll(dir) }()
 
 	for name, value := range map[string]string{
-		"HOME":                   home,
-		"XDG_CONFIG_HOME":        filepath.Join(home, ".config"),
-		"BEADLE_HOME":            filepath.Join(home, ".beadle"),
+		"HOME":            home,
+		"XDG_CONFIG_HOME": filepath.Join(home, ".config"),
+		"BEADLE_HOME":     filepath.Join(home, ".beadle"),
+		// VERGER_HOME is discovery's FIRST rule, so a developer who has it
+		// set would otherwise have the whole suite read and write their own
+		// plugin home while every test passes.
+		"VERGER_HOME":            "",
 		"DSH_HOME":               filepath.Join(home, ".dsh"),
 		"DSH_AGENTS_HOME":        "",
 		"PI_CONFIG_DIR":          "",
@@ -141,6 +162,25 @@ func TestSuiteHomeIsolation(t *testing.T) {
 				// host CLI installed on this machine can be detected.
 				So(os.Getenv("PATH"), ShouldEqual, isolatedBinDir)
 			})
+		})
+
+		Convey("And the machine's real home gained nothing", func() {
+			// A suite run with no HOME has nothing to compare against; the pin is
+			// still in place, so there is nothing to guard.
+			if realHome == "" {
+				return
+			}
+
+			after, readErr := os.ReadDir(realHome)
+			So(readErr, ShouldBeNil)
+
+			for _, entry := range after {
+				// Named here rather than in an assertion message: the matcher
+				// takes none, and a bare false would not say which entry or where.
+				if !slices.Contains(realBefore, entry.Name()) {
+					t.Errorf("the suite created %s in the real home %s", entry.Name(), realHome)
+				}
+			}
 		})
 	})
 }

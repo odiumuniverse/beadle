@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
@@ -160,6 +161,44 @@ func TestIdentityNoRemoteFallsBackToCommonDir(t *testing.T) {
 				So(err, ShouldBeNil)
 				So(matched, ShouldBeTrue)
 			})
+		})
+	})
+}
+
+// `resolve` decides "this repository is the user's own home" with
+// `root == home`, and the home comes from the environment while the root comes
+// from git. macOS hands TMPDIR over with a trailing separator, so a doubled one
+// is the ordinary spelling of a path and not a contrived one:
+//
+//	HOME=/var/folders/s8/…/T//t-XXXX      clean: /var/folders/s8/…/T/t-XXXX
+//
+// Compared raw, `root == home` is false for one directory, and the user's own
+// repository is published as somebody else's project.
+//
+// The assertion is `Slugs: true`, which is the shape of "recognised as the home":
+// a repository at the home root is not publishable as a project, because there is
+// no project there to publish. Asserting the opposite would have passed for a
+// reason that has nothing to do with the home at all.
+func TestResolveRecognisesTheHomeSpelledWithADoubledSeparator(t *testing.T) {
+	Convey("Given the user's home spelled with a doubled separator", t, func() {
+		repo := t.TempDir()
+		git(t, repo, "init", "-q")
+
+		// The home IS the repository, spelled with a real doubled separator:
+		// parent + "//" + base, which cleans back to the repository itself.
+		spelled := filepath.Dir(repo) + string(filepath.Separator) +
+			string(filepath.Separator) + filepath.Base(repo)
+
+		So(filepath.Clean(spelled), ShouldEqual, repo)
+		So(strings.Contains(spelled, string(filepath.Separator)+string(filepath.Separator)), ShouldBeTrue)
+
+		t.Setenv("HOME", spelled)
+
+		Convey("Then the repository at that home is recognised as the home", func() {
+			id := project.Resolve(repo)
+
+			So(id.Slugs, ShouldBeTrue)
+			So(id.Publishable(), ShouldBeFalse)
 		})
 	})
 }

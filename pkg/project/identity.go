@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/memory"
 )
 
@@ -64,7 +65,16 @@ func resolve(abs string) Identity {
 		return slugIdentity(abs)
 	}
 
+	// Cleaned first, and on purpose rather than as a side effect: EvalSymlinks
+	// resolves symlinks, and it fails on a path that does not exist, so a home
+	// that is missing at that moment kept whatever spelling the environment
+	// gave it. A TMPDIR with a trailing separator hands the home a doubled one,
+	// and then `root == home` below compares two spellings of the same
+	// directory and is false — the user's own home looks like somebody else's
+	// repository and gets an identity slug instead of being recognised.
 	home, _ := os.UserHomeDir()
+	home = fsutil.Root(home)
+
 	if home != "" {
 		if resolved, err := filepath.EvalSymlinks(home); err == nil {
 			home = resolved

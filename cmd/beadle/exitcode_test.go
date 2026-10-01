@@ -327,3 +327,45 @@ func TestUninitializedVaultIsUsageAndNamesTheFix(t *testing.T) {
 		})
 	})
 }
+
+// verger's HandsOffError is the class that is easiest to lose and hardest to
+// notice losing: a cell the run refused to write because the file on disk is the
+// user's own. Without the mapping it falls through to Unexpected (1), and
+// Unexpected is the one number a script cannot act on — it says "a bug", and the
+// user's next move is `--force`, not a bug report.
+//
+// Driven through every shape a command actually produces on the way out: bare,
+// wrapped by fmt, and joined by errors.Join. The last one is the reason this is a
+// test and not a line in the classifier — a hand-built type is found by any
+// errors.As, but a join is where a classifier written with a type switch instead
+// of errors.As stops seeing the type at all.
+func TestHandsOffIsAConflictThroughEveryWrapping(t *testing.T) {
+	Convey("Given verger's hands-off refusal in each shape a command produces", t, func() {
+		handsOff := &verger.HandsOffError{Cells: []string{"acme/tool@claude"}}
+
+		for _, shape := range []struct {
+			name string
+			err  error
+		}{
+			{"bare", handsOff},
+			{"wrapped by fmt", fmt.Errorf("plugins install: %w", handsOff)},
+			{"wrapped twice", fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", handsOff))},
+			{"joined with another error", errors.Join(errors.New("a second failure"), handsOff)},
+			{"joined the other way round", errors.Join(handsOff, errors.New("a second failure"))},
+		} {
+			Convey("Then "+shape.name+" is a conflict, not a bug", func() {
+				So(classify(shape.err), ShouldEqual, exitcode.Conflict)
+				So(exitcode.Name(classify(shape.err)), ShouldEqual, "conflict")
+				So(classify(shape.err), ShouldNotEqual, exitcode.Unexpected)
+			})
+		}
+	})
+
+	Convey("Given the message a user reads", t, func() {
+		err := fmt.Errorf("plugins install: %w", &verger.HandsOffError{Cells: []string{"acme/tool@claude"}})
+
+		Convey("Then the command it names is the user's next move", func() {
+			So(err.Error(), ShouldContainSubstring, "--force")
+		})
+	})
+}

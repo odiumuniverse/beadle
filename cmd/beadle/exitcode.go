@@ -85,6 +85,16 @@ func classify(err error) int {
 	case isOpenConflicts(err):
 		return exitcode.Conflict
 
+	// 3 — conflict, the kind v0.1.2 made explicit. verger's HandsOffError is a
+	// cell it refused to write because the file on disk is the user's own: the
+	// package is fine, nothing is broken, and the way out is theirs to choose
+	// (`--force` keeps their copy and overwrites). The library classifies it as a
+	// conflict for the same reason beadle does here — a script that reads "done"
+	// over a file that was deliberately left alone is the failure this number
+	// exists to prevent, so it must not fall through to Unexpected.
+	case isHandsOffConflict(err):
+		return exitcode.Conflict
+
 	// 6 — host unavailable. ErrNotFound means the host CLI is not installed.
 	case errors.Is(err, hostcli.ErrNotFound):
 		return exitcode.HostUnavailable
@@ -145,6 +155,16 @@ func isSchemaNewer(err error) bool {
 // isOpenConflicts reports whether err is, or wraps, open conflicts.
 func isOpenConflicts(err error) bool {
 	_, ok := engine.IsOpenConflicts(err)
+
+	return ok
+}
+
+// isHandsOffConflict reports whether err is, or wraps, verger's hands-off
+// refusal: a cell the run left alone because the file on disk is the user's own.
+// It is a conflict and not a failure, and the type is read rather than the
+// message, so a rewording cannot change the class.
+func isHandsOffConflict(err error) bool {
+	_, ok := errors.AsType[*verger.HandsOffError](err)
 
 	return ok
 }
