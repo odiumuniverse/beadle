@@ -11,6 +11,7 @@ import (
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/secret"
+	"github.com/odiumuniverse/beadle/pkg/testhost"
 	"github.com/odiumuniverse/verger/pkg/verger"
 )
 
@@ -80,19 +81,27 @@ func TestOpenCreatesTheHomeDirectory(t *testing.T) {
 	Convey("Given a vault with no verger directory", t, func() {
 		root := t.TempDir()
 
+		// No ~/.verger anywhere on this machine: that is what puts the first
+		// home in the vault. beadle's own branch is conditioned on the
+		// standalone home NOT existing, and TestOpenKeepsAnExistingStandaloneHome
+		// pins the other half of that condition.
 		client, err := Open(context.Background(), Config{VaultRoot: root, Logger: embedlog.NewDevLogger()})
 		So(err, ShouldBeNil)
 
 		defer func() { _ = client.Close() }()
 
 		Convey("Then the home beadle works on is the one inside the vault", func() {
-			// Resolution, not creation. Discovery is read-only and names a
-			// directory that does not exist yet — naming it is neither a write
-			// nor a risk, and the subdirectory is the library's to create the
-			// first time something needs it. A test that pinned EAGER creation
-			// was pinning a moment that is not the contract: the contract is
-			// WHICH home, and that it is a real directory once there is
-			// anything to put in it.
+			// Resolution. Discovery finds no standalone home on this machine
+			// (see the Given) and no vault home either — verger's vaultAt only
+			// answers for a directory that exists — so it is beadle's own
+			// first-run branch that places this home inside the vault.
+			//
+			// What this does NOT pin, and cannot yet: that Open creates nothing.
+			// Under the vendored verger v0.1.1 the home is already a directory
+			// when Open returns, measured — so the opposite assertion would be
+			// red today. pR-30 makes discovery read-only and hands creation to
+			// the first write; when that lands, the missing half belongs here as
+			// `So(dirExists(client.Home()), ShouldBeFalse)`.
 			So(client.Home(), ShouldEqual, filepath.Join(root, "verger"))
 		})
 
@@ -124,6 +133,42 @@ func TestOpenCreatesTheHomeDirectory(t *testing.T) {
 			entries, readErr := os.ReadDir(client.Home())
 			So(readErr, ShouldBeNil)
 			So(entries, ShouldNotBeEmpty)
+		})
+	})
+}
+
+// TestOpenKeepsAnExistingStandaloneHome pins the other half of the condition
+// TestOpenCreatesTheHomeDirectory relies on. beadle puts the first plugin home
+// in the vault only while there is no standalone home to lose; the moment
+// ~/.verger exists it keeps working there.
+//
+// The condition is worth pinning from both sides. Drop the `!h.Exists()` and a
+// machine with packages already in ~/.verger grows a second, empty home inside
+// its vault — and an empty directory inside the vault is a home as far as
+// discovery is concerned, which is the same trap an eject once fell into. Drop
+// the `h.Exists()` and beadle migrates a populated home into the vault behind
+// the user's back.
+func TestOpenKeepsAnExistingStandaloneHome(t *testing.T) {
+	Convey("Given a machine that already has a standalone plugin home", t, func() {
+		root := t.TempDir()
+		userHome := t.TempDir()
+		t.Setenv("HOME", userHome)
+
+		standalone := filepath.Join(userHome, ".verger")
+		So(os.MkdirAll(standalone, 0o700), ShouldBeNil)
+		So(os.WriteFile(filepath.Join(standalone, "spec.yaml"), []byte("{}\n"), 0o600), ShouldBeNil)
+
+		client, err := Open(context.Background(), Config{VaultRoot: root, Logger: embedlog.NewDevLogger()})
+		So(err, ShouldBeNil)
+
+		defer func() { _ = client.Close() }()
+
+		Convey("Then the home beadle works on is still the one the user has", func() {
+			So(client.Home(), ShouldEqual, standalone)
+		})
+
+		Convey("And no empty home appears in the vault beside it", func() {
+			So(dirExists(filepath.Join(root, "verger")), ShouldBeFalse)
 		})
 	})
 }
@@ -173,6 +218,15 @@ func TestTheClientRunsOnBeadlesSecretStore(t *testing.T) {
 // `beadle plugins install ./pkg --yes` reaches.
 func planFor(t *testing.T, c *Client, ref string) *verger.Plan {
 	t.Helper()
+
+	// The hosts have to look installed before a plan can name one. beadle
+	// decides that with `exec.LookPath` on each host's own CLI, so on a
+	// developer box the real CLIs answer and under `env -i` — which is what CI
+	// runs, and what this repository's hermetic gate runs — the adapter list
+	// comes back empty and the plan refuses with "--hosts: no available
+	// adapter". That is a fact about the machine, not about the code under
+	// test, so the test states the machine it needs instead of inheriting one.
+	testhost.Stubs(t)
 
 	plan, err := c.PlanFor(context.Background(), []string{ref}, false, verger.HostFilter{})
 	So(err, ShouldBeNil)
