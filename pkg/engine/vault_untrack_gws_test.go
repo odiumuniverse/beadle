@@ -1,6 +1,7 @@
 package engine_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -100,7 +101,88 @@ func TestSyncOnAVaultThatIsNotInGitDoesNothingAndSaysNothing(t *testing.T) {
 			_, statErr := os.Stat(filepath.Join(f.vault.Root(), ".git"))
 			So(os.IsNotExist(statErr), ShouldBeTrue)
 		})
+
+		Convey("When sync runs, git is asked whether there is a repository and nothing else", func() {
+			// The guard IS this case, and the report cannot see it: with the
+			// guard deleted the migration still returns two nils, because
+			// trackedMachineLocal swallows git's error and finds nothing
+			// tracked. Both versions look identical from outside, which is why
+			// the leaf above could not pin the guard (VERIFY-CP-beadle-pC-8-
+			// untrack, M1). What does differ is the question beadle puts to
+			// git. A directory that is not a repository has no index to read
+			// and nothing to untrack, so the only call that belongs there is
+			// the one asking whether it is a repository at all — and asking
+			// git to read an index that does not exist is a command whose
+			// failure the code is about to ignore.
+			log := gitSpy(t)
+
+			report, err := f.engine.Sync(t.Context(), engine.SyncOptions{})
+			So(err, ShouldBeNil)
+			So(report.Warnings, ShouldBeEmpty)
+
+			// Scoped to the vault root on purpose: the sync also asks git
+			// about the repository beadle itself is running in, and those
+			// calls belong to other code. Exactly one call, and it is the
+			// guard's, pins both halves at once — the guard ran, and nothing
+			// followed it. A future read-only call added here would fail this
+			// leaf by name, which is the right way to find out.
+			So(gitCallsIn(t, log, f.vault.Root()), ShouldResemble, []string{"rev-parse --is-inside-work-tree"})
+		})
 	})
+}
+
+// gitSpy puts a `git` at the front of PATH that records every invocation and
+// then hands over to the real one. It must delegate: a shim that answered for
+// itself would decide the test's own premise, and the guard turns on git
+// failing where a repository would succeed.
+func gitSpy(t *testing.T) string {
+	t.Helper()
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("git on PATH: %v", err)
+	}
+
+	dir, log := t.TempDir(), ""
+	log = filepath.Join(dir, "invocations")
+	shim := fmt.Sprintf("#!/usr/bin/env bash\nprintf '%%s\\t%%s\\n' \"$PWD\" \"$*\" >> %q\nexec %s \"$@\"\n", log, realGit)
+
+	// 0o700, not 0o600: PATH only finds an executable, and a shim nobody can
+	// execute would make this leaf pass without ever being called.
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(shim), 0o700); err != nil { //nolint:gosec // G306: it must be executable to be found on PATH
+		t.Fatalf("write git shim: %v", err)
+	}
+
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	return log
+}
+
+// gitCallsIn returns the arguments git was invoked with while its working
+// directory was dir, in the order they happened. Keying on the directory is
+// what separates the vault's own conversation with git from the one beadle has
+// with the repository it is running inside.
+func gitCallsIn(t *testing.T, log, dir string) []string {
+	t.Helper()
+
+	raw, err := os.ReadFile(log) //nolint:gosec // G304: the shim wrote this path
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+
+		t.Fatalf("read git spy log: %v", err)
+	}
+
+	var calls []string
+
+	for line := range strings.SplitSeq(strings.TrimRight(string(raw), "\n"), "\n") {
+		if where, args, ok := strings.Cut(line, "\t"); ok && where == dir {
+			calls = append(calls, args)
+		}
+	}
+
+	return calls
 }
 
 // The credential case is the one the migration exists for, and it is the only
