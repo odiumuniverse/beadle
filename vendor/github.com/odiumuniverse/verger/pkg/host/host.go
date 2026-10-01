@@ -84,6 +84,10 @@ type Delivery struct {
 	// is ignored at user scope. Empty means "no project", which leaves a
 	// project-scope delivery unsupported rather than guessing a root.
 	Project string
+	// Note is why this delivery was silenced, when it was. The ladder writes it
+	// from the adapter's own words, so the reason reaches the user unchanged
+	// rather than being re-derived here from a decision made elsewhere.
+	Note string
 }
 
 // Result reports what one delivery or uninstall did.
@@ -223,6 +227,22 @@ func deliverByStrategy(
 		stratum = func() (Result, error) { return install(ctx, home, d, true) }
 	case Loose:
 		stratum = func() (Result, error) { return loose(ctx, home, d) }
+	case Silenced:
+		// Silenced is a decision the ladder made, not a failure. It becomes an
+		// error only if a caller asks for a strategy it cannot have, which is
+		// what the default below still is: a strategy nobody chose, naming a
+		// host that cannot produce it, is a bug in the plan and says so.
+		//
+		// The reason travels in Notes, so the cell can be recorded as delivered-
+		// to-nothing with the explanation attached, and the user is told what
+		// would have to change rather than receiving an error from a stratum
+		// that was never going to be asked to do the work.
+		note := d.Note
+		if note == "" {
+			note = "the host has no surface for this package"
+		}
+
+		return Result{Strategy: Silenced, Notes: []string{"silenced: " + note}}, nil
 	default:
 		return Result{}, &UnsupportedStrategyError{Host: id, Strategy: d.Strategy}
 	}
@@ -245,6 +265,29 @@ type PathOwner interface {
 // removed and re-added (NF-2).
 type ArtifactDigests interface {
 	ArtifactDigest(path string) (digest.Hash, bool)
+}
+
+// RunDelivered is an optional PathOwner extension: it reports what THIS run has
+// already written, lets the run record a new write, and names the one host that
+// writes a path several hosts share.
+//
+// Four adapters resolve skills under one shared root — agy, codex, dsh and omp
+// all read ~/.agents/ — so one package names the same physical file once per
+// host. Ownership is otherwise answered from receipts on disk, and receipts are
+// written when the run ends, so the second host cannot see the first host's
+// write and reports a stranger's file. With this seam the planner can tell
+// "already delivered in this run" from "belongs to someone else", record the
+// artifact against the existing file instead of writing the same bytes twice,
+// and leave the physical file to the host that created it.
+type RunDelivered interface {
+	DeliveredThisRun(path string) (pkg string, sum digest.Hash, ok bool)
+	RecordDelivered(path, pkg string, sum digest.Hash)
+	// SharedWriter names the host the PLAN chose to write path. The executor
+	// runs that host's delivery alone, before any other host starts, so the
+	// decision does not depend on which goroutine reached the path first —
+	// every host looking the path up before any of them had written it is how
+	// one shared file came to be written three times over.
+	SharedWriter(path string) (hostID ID, ok bool)
 }
 
 // DefaultOracleWait bounds one service-backed oracle call: the OpenCode

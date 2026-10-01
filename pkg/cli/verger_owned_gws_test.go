@@ -77,6 +77,14 @@ func TestVergerOwnedFileSurvivesBeadleSync(t *testing.T) {
 			_, syncErr := runCLI(t, "sync")
 
 			Convey("Then the run succeeds — a verger file the user edited is not a conflict", func() {
+				// Re-observed under v0.1.2, so this nil is measured rather than
+				// inherited: `beadle sync` is beadle's own engine path
+				// (pkg/cli/sync.go) and raised nothing here. Where v0.1.2 does
+				// raise is the direct library install below — verger's
+				// deliveryVerdict turns a refused cell into
+				// *verger.HandsOffError — and that assertion is the one updated
+				// for the new contract, together with the `plugins install`
+				// one in TestPluginsForceKeepsTheEditedFile.
 				So(syncErr, ShouldBeNil)
 			})
 
@@ -122,10 +130,17 @@ func TestVergerOwnedFileSurvivesBeadleSync(t *testing.T) {
 					verger.HostFilter{Only: []string{"claude"}})
 				So(planErr, ShouldBeNil)
 
-				// force=false is the caller's `--force` withheld, which is
-				// the whole point: verger is asked to write, and declines.
+				// force=false is the caller's `--force` withheld, which is the
+				// whole point: verger is asked to write, and declines. Under
+				// v0.1.2 declining is a conflict, not a nil error, and the
+				// report still comes back with it — the error names the
+				// situation, the report names the cells. Asserting nil here
+				// is the answer the library now prohibits.
 				report, applyErr := client.InstallFor(t.Context(), plan, false, false)
-				So(applyErr, ShouldBeNil)
+				So(applyErr, ShouldNotBeNil)
+				So(applyErr.Error(), ShouldContainSubstring, "your edit left alone in")
+				So(applyErr.Error(), ShouldContainSubstring, "rerun with --force")
+				So(report, ShouldNotBeNil)
 
 				Convey("Then verger leaves the cell alone rather than writing it", func() {
 					var statuses []apply.Status

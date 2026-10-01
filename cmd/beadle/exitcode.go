@@ -67,9 +67,17 @@ func classify(err error) int {
 	// or pass -y, and calling it a conflict told a script the run had failed
 	// for a reason it cannot act on. Matching that mapping is the point of
 	// sharing the table, so the sentinel beadle had no name for is named here.
+	//
+	// The third kind arrived with v0.1.2: the library's own
+	// PendingConsentError, raised when hooks were delivered for nobody because
+	// no question was answered. Without it here the refusal fell through to
+	// Unexpected — "a bug: something the tool did not anticipate" — for a run
+	// whose entire answer is that the user did not reply. verger classifies it
+	// as consent for the same reason as the other two.
 	case errors.Is(err, secret.ErrKeyringUnavailable),
 		errors.Is(err, secret.ErrKeyringUnsupported),
-		errors.Is(err, apply.ErrConfirmationRequired):
+		errors.Is(err, apply.ErrConfirmationRequired),
+		isPendingConsent(err):
 		return exitcode.Consent
 
 	// 3 — conflict. Another beadle process holds the vault. That is ordinary,
@@ -165,6 +173,15 @@ func isOpenConflicts(err error) bool {
 // message, so a rewording cannot change the class.
 func isHandsOffConflict(err error) bool {
 	_, ok := errors.AsType[*verger.HandsOffError](err)
+
+	return ok
+}
+
+// isPendingConsent reports whether err is, or wraps, verger's v0.1.2 refusal
+// for hooks nobody was asked about. It reads the type for the same reason
+// isHandsOffConflict does: a rewording must not be able to change the class.
+func isPendingConsent(err error) bool {
+	_, ok := errors.AsType[*verger.PendingConsentError](err)
 
 	return ok
 }

@@ -76,12 +76,15 @@ func TestPluginsForceKeepsTheEditedFile(t *testing.T) {
 		// The user edits the file the tool delivered.
 		So(os.WriteFile(installed, []byte("my own copy\n"), 0o600), ShouldBeNil)
 
-		// Step one: a plain re-install must not touch the user's bytes, and
-		// must not quietly take a backup either — `-y` accepts defaults and
-		// never resolves a destructive conflict, so an overwrite here would
-		// be authorised by a flag that promises the opposite.
+		// Under v0.1.2 a hands-off cell is a conflict, not a quiet success:
+		// returning nil here would be the library's prohibited answer, and
+		// would tell a script the install completed when the user's file was
+		// left alone. The refusal is asserted by message, because the message
+		// is what names the cells and the way out.
 		plainOut, _, err := runCLISplit(t, "plugins", "install", pkg, "--yes")
-		So(err, ShouldBeNil)
+		So(err, ShouldNotBeNil)
+		So(err.Error(), ShouldContainSubstring, "your edit left alone in")
+		So(err.Error(), ShouldContainSubstring, "rerun with --force")
 
 		afterPlain, err := os.ReadFile(installed) //nolint:gosec // G304: the test reads a path it created
 		So(err, ShouldBeNil)

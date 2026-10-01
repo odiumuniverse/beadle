@@ -400,6 +400,24 @@ func pluginsInstallWith(c *vergerx.Client, out *bytes.Buffer, refs []string, fla
 	}
 
 	report, err := c.InstallFor(ctx, plan, flags.dryRun, flags.force)
+
+	// A package whose hooks this run delivered nothing for is not a finished
+	// install, and the library names them in the result. The note is built
+	// before the error is returned, not after: the library hands the report
+	// back alongside the refusal precisely so the names can be printed, and a
+	// note appended only on the path that succeeds would be the one path the
+	// situation never reaches. It goes into Notes — the channel the table
+	// already prints and --json already carries — rather than into a second
+	// output stream the library knows nothing about, which would be invisible
+	// to both.
+	if report != nil {
+		for _, pkg := range report.PendingConsent {
+			report.Notes = append(report.Notes, fmt.Sprintf(
+				"hooks not delivered, nobody answered the question: %s; rerun without -y to be asked, or approve the hooks yourself",
+				pkg))
+		}
+	}
+
 	if err != nil {
 		return fmt.Errorf("plugins install: %w", err)
 	}

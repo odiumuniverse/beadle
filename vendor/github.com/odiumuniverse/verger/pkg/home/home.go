@@ -98,8 +98,8 @@ func Discover(opts ...Option) (*Home, error) {
 			return nil, err
 		}
 
-		if vault := vaultAt(beadle); vault != "" {
-			return &Home{root: vault, source: SourceBeadleVault}, nil
+		if home, ok := resolveVaultHome(cfg, beadle); ok {
+			return home, nil
 		}
 	}
 
@@ -109,23 +109,148 @@ func Discover(opts ...Option) (*Home, error) {
 	}
 
 	if explicitBeadle == "" {
-		if vault := vaultAt(filepath.Join(userHome, BeadleDirName)); vault != "" {
-			return &Home{root: vault, source: SourceBeadleVault}, nil
+		if home, ok := resolveVaultHome(cfg, filepath.Join(userHome, BeadleDirName)); ok {
+			return home, nil
 		}
 	}
 
 	return &Home{root: filepath.Join(userHome, DirName), source: SourceDefault}, nil
 }
 
-// vaultAt returns <beadle>/verger when it is an existing directory, "" when it
-// is missing or not a directory.
-func vaultAt(beadle string) string {
-	candidate := filepath.Join(beadle, BeadleSubdir)
-	if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-		return candidate
+// resolveVaultHome resolves the home when a beadle VAULT exists, and reports
+// false when there is no vault to speak of. Three clauses, in order, and the
+// order is the whole point:
+//
+//  1. the vault's own home, when it HOLDS one — that is this machine's home;
+//  2. otherwise ~/.verger, when it HOLDS one;
+//  3. otherwise the vault home — a fresh machine.
+//
+// Clause 2 is the eject case, and it is why this is not "does the vault home
+// exist". `beadle plugins eject` moves the state to ~/.verger, and beadle pS-17
+// then REMOVES the vault's home directory instead of leaving it empty. So the
+// directory is ABSENT — not empty, absent — and any rule phrased in terms of
+// emptiness stops firing and hands the machine back to clause 3, which then names
+// a directory that does not exist. Every command afterwards runs against it and
+// reports no cells on a machine that is full of them.
+//
+// "Holds one" means not EMPTY, deliberately, with no marker file. A marker check
+// couples discovery to a file layout, so a home whose contents move on reads as
+// fresh — and that coupling is what made this rule fragile in the first place.
+// The subdirectory is still not required to be a directory verger can use before
+// clause 3 will name it: discovery is read-only, so naming a directory that does
+// not exist yet is neither a write nor a risk.
+func resolveVaultHome(cfg config, beadle string) (*Home, bool) {
+	info, err := os.Stat(beadle)
+	if err != nil || !info.IsDir() {
+		return nil, false
 	}
 
-	return ""
+	candidate := filepath.Join(beadle, BeadleSubdir)
+
+	// A FILE where the home goes is neither a home nor a vault to descend into.
+	// That is a beadle home somebody else put there, and delivering into it
+	// would fail later and less clearly than refusing it now.
+	if sub, subErr := os.Stat(candidate); subErr == nil && !sub.IsDir() {
+		return nil, false
+	}
+
+	if holdsFiles(candidate) {
+		return &Home{root: candidate, source: SourceBeadleVault}, true
+	}
+
+	// The vault home holds nothing, so the state may be in ~/.verger. A user
+	// home that cannot be resolved is not a failure here: clause 3 still names
+	// a home, and a machine with a vault and no user home has never had a
+	// ~/.verger to find.
+	if userHome, homeErr := cfg.resolveUserHome(); homeErr == nil {
+		defaultHome := filepath.Join(userHome, DirName)
+		if holdsFiles(defaultHome) {
+			return &Home{root: defaultHome, source: SourceDefault}, true
+		}
+	}
+
+	return &Home{root: candidate, source: SourceBeadleVault}, true
+}
+
+// holdsFiles reports whether dir holds anything at all.
+//
+// An absent directory holds nothing, and neither does an empty one: the
+// difference is not one this rule acts on, and conflating them is what let a
+// removed vault home look like a fresh machine.
+func holdsFiles(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+
+	return len(entries) > 0
+}
+
+// CompetingHome reports a second home on this machine that discovery did NOT
+// choose, so a caller can tell the user about it.
+//
+// Two real homes is the state this product refuses to create: two locks, two
+// receipt trees, and the vault and the CLI stopping on what is installed. The
+// vault still wins — that is unchanged — but it wins silently, and a user who
+// has ended up here needs to be told which other directory is the one to look
+// at.
+//
+// An emptied directory is not reported: it is not a home, and warning about it
+// would be a false alarm about a directory nothing will use.
+//
+// The caller renders the warning. verger has no doctor of its own — the finding
+// is printed by `beadle doctor`, which is the surface a user already runs when
+// something looks wrong.
+func CompetingHome(opts ...Option) (string, bool) {
+	cfg := config{lookup: os.Getenv}
+
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	if cfg.lookup == nil {
+		cfg.lookup = os.Getenv
+	}
+
+	// $VERGER_HOME is the user saying where the home is. There is nothing to
+	// compete with it.
+	if value := strings.TrimSpace(cfg.lookup(EnvHome)); value != "" {
+		return "", false
+	}
+
+	chosen, err := Discover(opts...)
+	if err != nil {
+		return "", false
+	}
+
+	if chosen.Source() != SourceBeadleVault {
+		return "", false
+	}
+
+	explicitBeadle := strings.TrimSpace(cfg.lookup(EnvBeadleHome))
+
+	beadle := explicitBeadle
+
+	if beadle == "" {
+		userHome, homeErr := cfg.resolveUserHome()
+		if homeErr != nil {
+			return "", false
+		}
+
+		beadle = filepath.Join(userHome, BeadleDirName)
+	}
+
+	// beadle is <user home>/.beadle, so its parent IS the user home.
+	defaultHome, err := resolvePath(filepath.Join(filepath.Dir(beadle), DirName))
+	if err != nil || !holdsFiles(defaultHome) {
+		return "", false
+	}
+
+	if defaultHome == chosen.Root() {
+		return "", false
+	}
+
+	return defaultHome, true
 }
 
 // resolveUserHome returns the injected user home or os.UserHomeDir.

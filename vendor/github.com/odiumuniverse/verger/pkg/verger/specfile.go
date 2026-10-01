@@ -44,16 +44,18 @@ func SaveSpec(path string, doc *spec.Spec) error {
 	return doc.Save(path)
 }
 
-// AddSpecPackage inserts a package entry when absent and reports whether the
-// spec changed.
-func AddSpecPackage(doc *spec.Spec, id, version string) bool {
-	for _, pkg := range doc.Packages {
-		if pkg.ID == id {
+// AddSpecPackage records one package entry when the spec does not carry its id
+// yet, and reports whether the spec changed. Every path that writes an entry —
+// install, adopt, import — goes through it, so they all leave the same file the
+// same way.
+func AddSpecPackage(doc *spec.Spec, pkg spec.Package) bool {
+	for _, existing := range doc.Packages {
+		if existing.ID == pkg.ID {
 			return false
 		}
 	}
 
-	doc.Packages = append(doc.Packages, spec.Package{ID: id, Version: version})
+	doc.Packages = append(doc.Packages, pkg)
 
 	return true
 }
@@ -128,6 +130,17 @@ func AddSpecSourceAt(doc *spec.Spec, ref source.Ref, specDir string) bool {
 // addSpecSource is the shared body; an empty specDir disables the rewrite.
 func addSpecSource(doc *spec.Spec, ref source.Ref, specDir string) bool {
 	raw, _ := portableSourceURL(ref, specDir)
+
+	// A ref that names no place of its own — a bare `owner/name`, which the
+	// grammar reads as GitHub and which the spec's own sources may well have
+	// answered instead — has no address to write down. Recording its id as a
+	// url produced a source pointing at itself (`url = 'acme/caveman'`): a
+	// second false address for a package that already had a real one, and one
+	// more on every install.
+	if !refNamesAPlace(ref) {
+		return false
+	}
+
 	name := SourceName(ref)
 
 	for _, src := range doc.Sources {
@@ -144,6 +157,13 @@ func addSpecSource(doc *spec.Spec, ref source.Ref, specDir string) bool {
 	doc.Sources = append(doc.Sources, spec.Source{Name: name, URL: raw})
 
 	return true
+}
+
+// refNamesAPlace reports whether a ref carries a location that can be written
+// into a spec. A local path, a git or url specifier and an npm name all do; a
+// bare `owner/name` does not — it is an id, and an id is not an address.
+func refNamesAPlace(ref source.Ref) bool {
+	return ref.Kind != source.KindGitHub || ref.Raw != ref.ID
 }
 
 // NonPortableSources returns the spec's local sources that will not resolve
@@ -230,12 +250,29 @@ func RemoveSpecSource(doc *spec.Spec, name string) int {
 // what is on this disk, so both status and sync have to look.
 func ReceiptFilesPresent(record receipt.Receipt) bool {
 	for _, artifact := range record.Artifacts {
+		// Not every artifact names a place. A CLI-managed MCP server is
+		// recorded under its identity address (`<host>://mcp/<name>`): the
+		// host owns it and there is nothing to stat. Stat'ing it made a
+		// delivery whose every file was on disk read as missing — which is
+		// what the gemini e2e reported, with `.gemini/` full.
+		if !onDisk(artifact.Path) {
+			continue
+		}
+
 		if _, err := os.Stat(artifact.Path); err != nil {
 			return false
 		}
 	}
 
 	return true
+}
+
+// onDisk reports whether an artifact path names a filesystem location. An
+// absolute path never carries a URL scheme and an identity address always
+// does, which tells the two apart without asking each host about its own
+// naming.
+func onDisk(path string) bool {
+	return path != "" && !strings.Contains(path, "://")
 }
 
 // matchesID reports whether a stored package id answers a caller query: the

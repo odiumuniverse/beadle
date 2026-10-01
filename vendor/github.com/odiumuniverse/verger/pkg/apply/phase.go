@@ -137,6 +137,7 @@ type runner struct {
 	breakers    map[host.ID]CircuitState
 	notes       []string
 	recovered   map[cellKey]recoveredCell
+	refusals    []HostRefusedError
 	confirmErr  error
 }
 
@@ -545,6 +546,18 @@ func configOpFor(ops []receipt.Op, path string) (receipt.Op, bool) {
 	return receipt.Op{}, false
 }
 
+// recordRefusal remembers that a host declined an operation.
+//
+// It is kept on the runner rather than left in the cell's notes because the run's
+// exit class is decided from it, and a note is prose: nothing can read a
+// sentence and know it meant "the host said no".
+func (r *runner) recordRefusal(refusal HostRefusedError) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.refusals = append(r.refusals, refusal)
+}
+
 // markRecovered records the crash-replay verdict of one cell.
 func (r *runner) markRecovered(key cellKey, status Status, version, note string) {
 	r.mu.Lock()
@@ -553,10 +566,28 @@ func (r *runner) markRecovered(key cellKey, status Status, version, note string)
 	r.recovered[key] = recoveredCell{status: status, version: version, note: note}
 }
 
-// execute runs the plan: one goroutine per host, hosts bounded by Parallel,
-// actions sequential in plan order inside a host.
+// execute runs the plan in two phases: the shared writes first, one host at a
+// time, then every remaining cell with one goroutine per host bounded by
+// Parallel and actions sequential in plan order inside a host.
+//
+// The first phase is what makes a shared root safe. agy, codex, dsh and omp
+// resolve skills under one directory, so one package names one physical file
+// once per host. Left to the parallel phase, every one of those hosts decides
+// independently that the file must be written: they look it up before any of
+// them has written it, they all find nothing, and they all add a write for one
+// file. Whichever finishes last leaves the tree, and a host that trashes what
+// another host is mid-way through writing takes the file away from the run that
+// was about to succeed. That is how an install reported every host as current
+// with nothing on disk (NIGHT-pR-24).
+//
+// Running the writer's cell alone, before the others exist, makes it
+// impossible for two hosts to execute over one path.
 func (r *runner) execute() {
-	groups := groupByHost(r.plan.Actions)
+	writers, perHost := splitSharedWrites(groupByHost(r.plan.Actions), r.plan.Shared)
+
+	for _, group := range writers {
+		r.runHost(group)
+	}
 
 	limit := r.opts.Parallel
 	if limit <= 0 {
@@ -567,7 +598,7 @@ func (r *runner) execute() {
 
 	var wg sync.WaitGroup
 
-	for _, group := range groups {
+	for _, group := range perHost {
 		wg.Go(func() {
 			sem <- struct{}{}
 
@@ -578,6 +609,35 @@ func (r *runner) execute() {
 	}
 
 	wg.Wait()
+}
+
+// splitSharedWrites partitions the host groups into the ones that write a shared
+// target and the ones that do not. A host's whole group moves to the first
+// phase, because a host that writes one shared file writes its own files in the
+// same delivery and splitting a delivery across phases would be a second thing
+// to keep in order.
+func splitSharedWrites(groups []hostGroup, shared []SharedTarget) (writers, perHost []hostGroup) {
+	writing := map[host.ID]bool{}
+
+	for _, target := range shared {
+		writing[target.Writer] = true
+	}
+
+	if len(writing) == 0 {
+		return nil, groups
+	}
+
+	for _, group := range groups {
+		if writing[group.host] {
+			writers = append(writers, group)
+
+			continue
+		}
+
+		perHost = append(perHost, group)
+	}
+
+	return writers, perHost
 }
 
 // hostGroup is the ordered action indexes of one host.
@@ -731,6 +791,20 @@ func (r *runner) runInstall(action Action, cell CellResult) CellResult {
 		return r.installFailed(action, cell, planned, result, err)
 	}
 
+	// The delivery returned without an error, which is not the same as the file
+	// being there: a Result is the adapter's own account of itself, and a cell
+	// that reports "current" for an artifact the disk does not hold is the
+	// silent success — all hosts current, nothing written, exit 0. So the claim
+	// is checked against the disk before the receipt commits to it.
+	artifacts, ops := committed(planned, result)
+
+	if missing := undeliveredArtifacts(artifacts, ops); len(missing) > 0 {
+		return r.installFailed(action, cell, planned, result, &ArtifactsMissingError{
+			Host:  action.Host,
+			Paths: missing,
+		})
+	}
+
 	r.emit(action, stepVerify, pkg.ID+" "+pkg.Version+" verified")
 
 	if crash := crashAfterInstall; crash != nil {
@@ -740,6 +814,65 @@ func (r *runner) runInstall(action Action, cell CellResult) CellResult {
 	dropNotes := r.dropOld(action, result)
 
 	return r.commitInstall(action, cell, started, planned, result, dropNotes)
+}
+
+// ArtifactsMissingError reports a delivery that claimed files the disk does not
+// hold. It is its own type because "the run said it wrote this and did not" is a
+// different answer from any step failure: the caller has to treat the cell as
+// failed, not as delivered with a note.
+type ArtifactsMissingError struct {
+	Host  host.ID
+	Paths []string
+}
+
+// Error implements error.
+func (e *ArtifactsMissingError) Error() string {
+	return fmt.Sprintf("%s: delivered but not on disk: %s", e.Host, strings.Join(e.Paths, ", "))
+}
+
+// committed picks the artifacts and ops a receipt will record, which is what a
+// cell claims: the delivery's own result, or the plan it fell back on.
+func committed(planned, result host.Result) ([]receipt.Artifact, []receipt.Op) {
+	artifacts := result.Artifacts
+	if len(artifacts) == 0 {
+		artifacts = planned.Artifacts
+	}
+
+	ops := result.RMA
+	if len(ops) == 0 {
+		ops = planned.RMA
+	}
+
+	return artifacts, ops
+}
+
+// undeliveredArtifacts names the artifacts a cell claims that the disk does not
+// hold with the recorded bytes.
+//
+// A receipt records what the run PLANNED to write, so "the plan produced this
+// artifact" and "this file exists" are different claims, and only the second is
+// what the user gets. Checking it here closes the class: a report saying
+// `current` for a file that is not there is a failed cell from now on.
+//
+// Verification is the one crash replay uses, so an interrupted run and a
+// finished one agree on what a written artifact looks like. An artifact only the
+// host itself can confirm — an installed MCP server, a document the adapter owns
+// record by record — is not checkable here and is never counted as missing.
+func undeliveredArtifacts(artifacts []receipt.Artifact, ops []receipt.Op) []string {
+	claim := intentRecord{Artifacts: artifacts, RMA: ops}
+
+	var missing []string
+
+	for _, artifact := range artifacts {
+		ok, checkable := verifyArtifact(claim, artifact)
+		if checkable && !ok {
+			missing = append(missing, artifact.Path)
+		}
+	}
+
+	slices.Sort(missing)
+
+	return missing
 }
 
 // journalIntent appends the pre-write intent of one install or update.
@@ -910,6 +1043,43 @@ func (r *runner) runRemove(action Action, cell CellResult) CellResult {
 		return cell
 	}
 
+	// A host CLI that answers is not a host that agreed. When the receipt held
+	// registrations, the host's own list is re-read BEFORE the receipt is
+	// deleted: a plugin the host still names was not taken back, and finishing
+	// here would report a removal that never happened — the silent false
+	// success pS hit on the remote-archive leg.
+	if registrations(prev.RMA) {
+		listed, listErr := r.hostStillLists(action.Host, prev)
+
+		switch {
+		case listErr != nil:
+			cell.Status = StatusFailed
+			cell.Notes = append(cell.Notes, "remove: ask "+string(action.Host)+" what it still has: "+listErr.Error())
+
+			r.recordRefusal(HostRefusedError{
+				Host:    action.Host,
+				Package: prev.Package,
+				Action:  "remove",
+				Cause:   listErr,
+			})
+
+			return cell
+		case len(listed) > 0:
+			cell.Status = StatusFailed
+
+			refusal := HostRefusedError{
+				Host:    action.Host,
+				Package: prev.Package,
+				Action:  "remove",
+				Output:  listedFor(listed),
+			}
+			cell.Notes = append(cell.Notes, "remove: "+refusal.Error())
+			r.recordRefusal(refusal)
+
+			return cell
+		}
+	}
+
 	if err := r.finishRemove(action, outcome); err != nil {
 		cell.Status = StatusFailed
 		cell.Notes = append(cell.Notes, err.Error())
@@ -951,6 +1121,76 @@ func (r *runner) finishRemove(action Action, outcome rmaOutcome) error {
 	r.emit(action, stepReceipt, "removed "+prev.Package)
 
 	return nil
+}
+
+// registrations reports whether ops hold anything only a host CLI can take
+// back. A file op is undone on the disk and needs no second opinion; a
+// registration lives inside the host, and only the host can say it is gone.
+func registrations(ops []receipt.Op) bool {
+	return slices.ContainsFunc(ops, func(op receipt.Op) bool {
+		return op.Kind == receipt.OpHostInstall
+	})
+}
+
+// hostStillLists reports whether the host's own list still names this package
+// after its inverse ran.
+//
+// The plugin name is the package's last segment: a package is `market/plugin`
+// and that is what a host's list prints. An entry that names something else is
+// not counted — the same rule the delivery path uses when it decides an
+// artifact is not checkable against the disk.
+func (r *runner) hostStillLists(hostID host.ID, prev *receipt.Receipt) ([]host.Installed, error) {
+	adapter, ok := r.deps.Hosts[hostID]
+	if !ok {
+		return nil, nil
+	}
+
+	oracle := adapter.Oracle()
+	if oracle == nil {
+		return nil, nil
+	}
+
+	listed, err := oracle.List(r.ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	name := prev.Package
+	if idx := strings.LastIndex(name, "/"); idx >= 0 {
+		name = name[idx+1:]
+	}
+
+	// The entries come back rather than a bare yes, because the message has to
+	// show what the host said. A refusal that reports only "the host still has
+	// it" sends the user to the host's own CLI to find out which line, when the
+	// answer was already in hand.
+	var matched []host.Installed
+
+	for _, entry := range listed {
+		if entry.Name == name || entry.Name == prev.Package || entry.Source == name {
+			matched = append(matched, entry)
+		}
+	}
+
+	return matched, nil
+}
+
+// listedFor renders the entries a host's CLI printed that name this package. It
+// is the host's own words and not verger's paraphrase, so the user can paste it
+// back into the host's command and see the same line.
+func listedFor(entries []host.Installed) string {
+	lines := make([]string, 0, len(entries))
+
+	for _, entry := range entries {
+		line := entry.Name
+		if entry.Version != "" {
+			line += " " + entry.Version
+		}
+
+		lines = append(lines, line)
+	}
+
+	return strings.Join(lines, ", ")
 }
 
 // driftNotes compares the previous receipt against the disk and reports every
@@ -1284,8 +1524,18 @@ func (r *runner) undoEntry(ref rmaRef, op receipt.Op, cause string, mode rmaMode
 
 	if !op.Existed {
 		trashID, err := r.trash(ref, op.Path, cause, current)
+		if err != nil {
+			return "", "", false, err
+		}
 
-		return "", trashID, false, err
+		// A delivery that created a directory and filled it — a rendered
+		// plugin, a copied skill tree — must not leave the empty shell
+		// behind in the host's own config root. Only a directory this
+		// delivery emptied is removed, and never one that still holds
+		// anything.
+		r.pruneEmptiedParent(op.Path)
+
+		return "", trashID, false, nil
 	}
 
 	if op.Backup == "" {
@@ -1293,6 +1543,26 @@ func (r *runner) undoEntry(ref rmaRef, op receipt.Op, cause string, mode rmaMode
 	}
 
 	return r.undoRestore(ref, op, cause, current)
+}
+
+// pruneEmptiedParent removes the directory of a reversed file when the
+// reversal left it empty. A directory that still holds anything, and a
+// directory verger did not create, are both left alone: the emptiness is the
+// whole test.
+func (r *runner) pruneEmptiedParent(path string) {
+	dir := filepath.Dir(path)
+
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) > 0 {
+		return
+	}
+
+	_ = os.Remove(dir)
 }
 
 // undoMissing handles a target that is already gone: an idempotent no-op, or a
@@ -1941,7 +2211,12 @@ func (r *runner) report() Report {
 		}
 	}
 
-	return Report{Cells: cells, Notes: slices.Clone(r.notes), Breakers: breakers}
+	return Report{
+		Cells:    cells,
+		Notes:    slices.Clone(r.notes),
+		Breakers: breakers,
+		Refusals: slices.Clone(r.refusals),
+	}
 }
 
 // runErr is the run-level error, if any: cancellation wins over confirmation.

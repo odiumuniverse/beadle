@@ -28,6 +28,7 @@ import (
 
 	"github.com/vmkteam/embedlog"
 
+	"github.com/odiumuniverse/verger/pkg/digest"
 	"github.com/odiumuniverse/verger/pkg/home"
 	"github.com/odiumuniverse/verger/pkg/host"
 	"github.com/odiumuniverse/verger/pkg/lock"
@@ -43,6 +44,10 @@ const (
 	ActionInstall Kind = "install"
 	ActionUpdate  Kind = "update"
 	ActionRemove  Kind = "remove"
+	// ActionAdopt is a package taken over from a host's own list. It is a
+	// delivery like the others — the spec now declares it — and it is named
+	// separately because nothing was fetched to place it there.
+	ActionAdopt Kind = "adopt"
 )
 
 // Action is one explicit delivery or removal.
@@ -60,9 +65,29 @@ type Action struct {
 	Restored bool
 }
 
+// SharedTarget is one physical path several hosts of a plan resolve to the same
+// bytes. agy, codex, dsh and omp all read skills under ~/.agents, so one
+// package names the same file once per host.
+//
+// Writer is the ONE host whose delivery writes the file; Hosts names every host
+// whose receipt references it. The executor writes shared targets in their own
+// serialized phase, before any per-host delivery starts, so no two hosts ever
+// execute over one path. That is a property of the ORDER rather than of which
+// goroutine happened to reach the path first.
+type SharedTarget struct {
+	Path   string
+	Digest digest.Hash
+	Writer host.ID
+	Hosts  []host.ID
+}
+
 // Plan is the ordered set of actions one reconcile cycle executes.
 type Plan struct {
 	Actions []Action
+
+	// Shared are the paths several hosts resolve to one file; the executor
+	// writes them first, one host at a time, before the per-host phase.
+	Shared []SharedTarget
 }
 
 // Status is the outcome of one cell action.
@@ -122,6 +147,17 @@ type Report struct {
 	Cells    []CellResult
 	Notes    []string
 	Breakers []CircuitState
+	// PendingConsent names the packages whose hooks this run delivered nothing
+	// for, because nobody answered. It is part of the result rather than state on
+	// whoever ran it: a client outlives a run, and a record that outlived its run
+	// made every later run report a consent failure for a package it had never
+	// looked at.
+	PendingConsent []string
+	// Refusals names the operations a host declined to carry out. It is part
+	// of the result rather than buried in a cell's notes because the exit
+	// class is decided from it: a run that failed only because a host said no
+	// is a different answer for a script than a run verger could not finish.
+	Refusals []HostRefusedError
 }
 
 // Confirmer asks the user one question and reports the answer.
@@ -143,6 +179,28 @@ var ErrConfirmationRequired = errors.New("confirmation required")
 
 // defaultParallel bounds concurrent host execution when Options.Parallel is 0.
 const defaultParallel = 4
+
+// loadLockForRun reads the lock from disk under the flock, falling back to the
+// caller's snapshot when the document cannot be read.
+//
+// A missing file is a first install, and that is not an error. A BROKEN path is
+// not either: the run must reach commit so the save fails there and the caller
+// gets the *LockError with its durable receipt, which is the contract
+// TestRunLockSaveFailureIsFatal pins. Only a lock from a NEWER verger is fatal
+// here - silently carrying on would overwrite a document this build has never
+// understood, which is the one loss that cannot be undone.
+func loadLockForRun(path string, fallback *lock.Lock) (*lock.Lock, error) {
+	doc, err := lock.ParseFile(path)
+	if err != nil {
+		if _, newer := errors.AsType[*lock.SchemaNewerError](err); newer {
+			return nil, err
+		}
+
+		return fallback, nil
+	}
+
+	return doc, nil
+}
 
 // Deps are the run dependencies; every member but LockPath is required.
 type Deps struct {
@@ -215,6 +273,47 @@ func (e *ReceiptError) Unwrap() error {
 	return e.Cause
 }
 
+// HostRefusedError reports that the host did not carry out an operation verger
+// asked of it, so the run cannot honestly report the operation as done.
+//
+// It is a type of its own because "the host said no" is not any other failure.
+// The removal ran, the host answered, and the answer was that the thing is
+// still there — a condition the user can go and look at, on that host, with
+// that host's own CLI. Reporting it as an unexpected error sent the run out at
+// the code that means verger itself broke, which is the one answer nobody can
+// act on.
+//
+// Output is what the host's CLI printed, verbatim. It is carried rather than
+// summarised because the summary is the part the user already has: the point of
+// the message is to say which host, what it still lists, and let the host speak
+// for itself.
+type HostRefusedError struct {
+	Host    host.ID
+	Package string
+	Action  string
+	Output  string
+	Cause   error
+}
+
+// Error implements error.
+func (e *HostRefusedError) Error() string {
+	msg := fmt.Sprintf("%s did not %s %s", e.Host, e.Action, e.Package)
+	if e.Output != "" {
+		msg += ": " + e.Output
+	}
+
+	if e.Cause != nil {
+		msg += ": " + e.Cause.Error()
+	}
+
+	return msg
+}
+
+// Unwrap returns the underlying cause.
+func (e *HostRefusedError) Unwrap() error {
+	return e.Cause
+}
+
 // LockError reports a lock load or save failure.
 type LockError struct {
 	Path  string
@@ -258,6 +357,24 @@ func Run(ctx context.Context, deps Deps, plan Plan, opts Options) (Report, error
 	}
 
 	defer func() { _ = unlock() }()
+
+	// The lock is re-read HERE, inside the flock, not carried in from before it.
+	//
+	// deps.Lock was loaded before this process took the lock, so it is a snapshot
+	// from before every other writer finished. Two processes then each read {}, each
+	// took the flock in turn, and each SAVED ITS OWN SNAPSHOT plus its own cell -
+	// the second write silently erasing the first. Six concurrent installs left
+	// exactly one package in the lock while all six exited 0, because from the
+	// caller's side a lost update looks exactly like a success.
+	//
+	// Reading under the lock is what makes the read-modify-write atomic: the
+	// document read is the document no other writer has touched since it released.
+	fresh, err := loadLockForRun(deps.LockPath, deps.Lock)
+	if err != nil {
+		return Report{}, err
+	}
+
+	deps.Lock = fresh
 
 	r := newRunner(ctx, deps, plan, opts)
 

@@ -8,9 +8,11 @@ import (
 	"strings"
 
 	"github.com/odiumuniverse/verger/pkg/apply"
+	"github.com/odiumuniverse/verger/pkg/digest"
 	"github.com/odiumuniverse/verger/pkg/host"
 	"github.com/odiumuniverse/verger/pkg/source"
 	"github.com/odiumuniverse/verger/pkg/spec"
+	"github.com/odiumuniverse/verger/pkg/store"
 )
 
 // PlannedPackage is one fetched package of a plan.
@@ -27,6 +29,12 @@ type PlannedPackage struct {
 	// executor writes came from the lock, so it is a restore. The plan knows
 	// this; the executor only carries it.
 	Restored bool
+	// Skip is why this package was planned but not delivered, in the words a
+	// user would use to describe it. It is empty for a package that goes
+	// through, which is why it is a reason rather than a bool: a plan that
+	// skips something has to say which thing it skipped and why, and a bare
+	// "skipped" leaves the reader to guess between the reasons.
+	Skip string
 }
 
 // targets returns the adapters one planned package is delivered to.
@@ -67,6 +75,18 @@ type PlanOptions struct {
 // targets, the cells a caller renders before anything is written, and the
 // actions the executor will run (DESIGN §9.1). A caller renders Plan.Cells,
 // asks its own Confirmer, and hands the plan back to Apply.
+//
+// A Plan's values come from Client.Plan and the planning that follows it. A Plan
+// built by hand carries no pending consent, and Apply delivers that plan's hooks
+// exactly as its AllowHooks says — the caller has decided, and Apply does not
+// ask again or second-guess it. Hand-building a plan is the library caller's
+// equivalent of passing `--hooks yes`: an explicit choice, owned by whoever made
+// it.
+//
+// The one thing a hand-built plan cannot carry is the answer to a question nobody
+// was asked. That answer is produced where the question is actually put — inside
+// the planning that Install and Sync run — and it is readable afterwards through
+// PendingConsent.
 type Plan struct {
 	Paths    Paths            `json:"-"`
 	Cells    []Cell           `json:"cells"`
@@ -83,6 +103,28 @@ type Plan struct {
 	// Actions are the executor's operations. The operation that owns the plan
 	// (install, remove, sync) builds them; only Apply runs them.
 	Actions []apply.Action `json:"-"`
+	// pendingConsent names the packages this plan withholds hooks for because
+	// nobody answered. It is per-plan because it is a fact about this run, and it
+	// travels onto the Report so a caller reads it off the result it was handed
+	// rather than off the client that produced it.
+	pendingConsent []string
+
+	// shared are the paths several hosts resolve to one file. The executor
+	// writes them in their own phase, before any per-host delivery, so no two
+	// hosts ever execute over one path.
+	shared []apply.SharedTarget
+}
+
+// PendingConsent names the packages this plan withholds hooks for because nobody
+// answered. It is part of the plan's own value, and readable, so that a caller
+// holding a plan can see what the plan decided without running it and without
+// asking the client that built it.
+//
+// Every public route to a result goes through Apply, and Apply copies this onto
+// the report, so the report is a function of the plan: there is no way to run a
+// plan whose pending consent exists and then read a result that has forgotten it.
+func (p *Plan) PendingConsent() []string {
+	return slices.Clone(p.pendingConsent)
 }
 
 // AdoptPlan is one agent-installed package adopted into the spec and delivered
@@ -283,6 +325,117 @@ func refuseUnsupportedRefs(refs []source.Ref) error {
 	return nil
 }
 
+// specSourceFetcher resolves one ref through the sources the spec declares.
+// It returns nil, nil when no declared source offers the id, which is the
+// caller's cue to refuse the ref rather than look for it elsewhere.
+func specSourceFetcher(ctx context.Context, st *store.Store, sources []spec.Source, ref source.Ref) (*source.Fetched, []SourceOffer, error) {
+	fetcher, err := source.NewFetcher(source.WithStore(st))
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// What each source actually offered is kept, not discarded: a ref no source
+	// carries is otherwise a bare "not found", and the user has no way to tell a
+	// typo from a source simply pointed at the wrong place.
+	offered := make([]SourceOffer, 0, len(sources))
+
+	for _, src := range sources {
+		offers, offerErr := offerFromSource(ctx, fetcher, src, ref.ID)
+		if offerErr != nil {
+			return nil, nil, offerErr
+		}
+
+		offer := SourceOffer{Name: src.Name, URL: src.URL}
+
+		for _, got := range offers {
+			if got.Package.ID == ref.ID {
+				return got, nil, nil
+			}
+
+			// A source that offered something else is not the package the
+			// user named, and its cache entry must not outlive the probe.
+			offer.IDs = append(offer.IDs, got.Package.ID)
+			_ = got.Cleanup()
+		}
+
+		offered = append(offered, offer)
+	}
+
+	return nil, offered, nil
+}
+
+// offerFromSource asks one declared source what it offers. A source whose
+// location cannot be read offers nothing rather than failing the install: a
+// broken entry in the spec should not read as "this package is missing" when
+// a later source may well have it.
+func offerFromSource(ctx context.Context, fetcher *source.Fetcher, src spec.Source, id string) ([]*source.Fetched, error) {
+	if src.Name == "" || src.URL == "" {
+		return nil, nil
+	}
+
+	srcRef, err := source.ParseWithBase(src.URL, "")
+	if err != nil {
+		return nil, nil //nolint:nilerr // an unreadable source offers nothing
+	}
+
+	offers, err := fetcher.FetchLocalOffers(ctx, srcRef)
+	if err != nil {
+		return nil, nil //nolint:nilerr // see above
+	}
+
+	return offers, nil
+}
+
+// UndeclaredSourceError reports a ref that no declared source offers. The
+// install refuses it instead of falling back to a default registry: the spec
+// said where its packages come from, and going somewhere else — silently, and
+// over the network — is how a name the user controls turns into a name
+// somebody else publishes.
+type UndeclaredSourceError struct {
+	Ref     string
+	Sources []string
+	// Offered is what each declared source was asked for and what it had. A
+	// bare list of source names tells the user nothing they can act on: "not
+	// offered by a, b" says the same whether the sources are empty, hold
+	// different packages, or were never readable at all - and those are three
+	// different mistakes with three different fixes.
+	Offered []SourceOffer
+}
+
+// SourceOffer is what one declared source was asked for and what it carried.
+type SourceOffer struct {
+	Name string
+	URL  string
+	// IDs are the packages the source actually offered. Empty alongside a URL
+	// means the location could not be read, which reads differently from a URL
+	// that was read and held nothing.
+	IDs []string
+}
+
+// Error implements error.
+func (e *UndeclaredSourceError) Error() string {
+	if len(e.Sources) == 0 {
+		return "no source declares " + e.Ref
+	}
+
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "%s is not offered by any source the spec declares:", e.Ref)
+
+	for _, offer := range e.Offered {
+		switch {
+		case len(offer.IDs) > 0:
+			fmt.Fprintf(&b, "\n  %s (%s) offers: %s", offer.Name, offer.URL, strings.Join(offer.IDs, ", "))
+		case offer.URL == "":
+			fmt.Fprintf(&b, "\n  %s offers: nothing (the spec gives it no url)", offer.Name)
+		default:
+			fmt.Fprintf(&b, "\n  %s (%s) offers: nothing readable", offer.Name, offer.URL)
+		}
+	}
+
+	return b.String()
+}
+
 // fetchPackages fetches every ref into one host package.
 func (c *Client) fetchPackages(ctx context.Context, refs []source.Ref, opts PlanOptions, adapters []host.Host) ([]PlannedPackage, error) {
 	fetcher, err := source.NewFetcher(source.WithStore(c.Store()))
@@ -290,10 +443,22 @@ func (c *Client) fetchPackages(ctx context.Context, refs []source.Ref, opts Plan
 		return nil, err
 	}
 
+	sources := declaredSources(opts.Paths)
+
+	// The channel must be on the ref before resolve fetches it. This is the one
+	// point every install, update and plan goes through, so wiring it here
+	// covers all three paths rather than three times.
+	sp, _, err := LoadSpec(opts.Paths.SpecPath)
+	if err != nil {
+		return nil, err
+	}
+
+	applyChannels(sp, refs)
+
 	var packages []PlannedPackage
 
 	for _, ref := range refs {
-		fetched, err := fetcher.Fetch(ctx, ref)
+		fetched, err := c.resolve(ctx, fetcher, sources, ref)
 		if err != nil {
 			return nil, err
 		}
@@ -314,11 +479,89 @@ func (c *Client) fetchPackages(ctx context.Context, refs []source.Ref, opts Plan
 	return packages, nil
 }
 
+// declaredSources reads the sources a spec declares. A spec that cannot be
+// read declares nothing, which leaves ref resolution exactly as it was.
+func declaredSources(paths Paths) []spec.Source {
+	doc, _, err := LoadSpec(paths.SpecPath)
+	if err != nil {
+		return nil
+	}
+
+	return doc.Sources
+}
+
+// resolve fetches one ref, going through the spec's declared sources first.
+//
+// A bare `owner/name` is the one ref shape that has to guess: the grammar
+// reads it as GitHub, and that guess sent an install to github.com for a
+// package the spec had already said lived somewhere else. When the spec
+// declares sources, the guess is replaced by them, and a ref none of them
+// offers is refused rather than fetched from the default registry — a name
+// the user controls must not turn into somebody else's package.
+func (c *Client) resolve(ctx context.Context, fetcher *source.Fetcher, sources []spec.Source, ref source.Ref) (*source.Fetched, error) {
+	if len(sources) == 0 || !bareID(ref) {
+		return fetchResolved(ctx, fetcher, ref)
+	}
+
+	got, offered, err := specSourceFetcher(ctx, c.Store(), sources, ref)
+	if err != nil {
+		return nil, err
+	}
+
+	if got == nil {
+		names := make([]string, 0, len(sources))
+
+		for _, src := range sources {
+			names = append(names, src.Name)
+		}
+
+		return nil, &UndeclaredSourceError{Ref: ref.ID, Sources: names, Offered: offered}
+	}
+
+	return got, nil
+}
+
+// bareID reports whether ref is an unqualified `owner/name`, the shape that
+// parses as GitHub but names nothing about where it lives. An explicit
+// `github:` prefix, a URL, a path and an npm specifier all say where they
+// come from, so they keep their own kind.
+func bareID(ref source.Ref) bool {
+	if ref.Kind != source.KindGitHub || ref.ID == "" || ref.Raw != ref.ID {
+		return false
+	}
+
+	// `owner/name` and nothing else. A colon means the ref names a scheme of
+	// its own — `github:owner/name`, and the canonical `local:name` id verger
+	// gives a locally installed package, which is a fact about the package
+	// rather than a place to fetch it from. Both are self-describing and both
+	// must reach their own kind.
+	if strings.Contains(ref.Raw, ":") {
+		return false
+	}
+
+	owner, name, ok := strings.Cut(ref.Raw, "/")
+
+	return ok && owner != "" && name != "" && !strings.Contains(name, "/")
+}
+
 // Apply executes one plan (DESIGN §9.1). It is the single entry point a second
 // front end codes against: the trust gate, the executor and the progress events
 // all live here, so `Install`, `Remove` and `Adopt` differ only in what they put
 // in the plan and what they record around it.
+//
+// The result repeats whatever the plan decided: Apply copies the plan's pending
+// consent onto the report unconditionally, so a caller reading the report is
+// reading the plan's own answer and not a fresh judgement. A plan built by hand
+// carries none, and that is the caller's choice — Apply delivers such a plan's
+// hooks exactly as its AllowHooks says, because the caller has already decided
+// and is not being asked again.
 func (c *Client) Apply(ctx context.Context, plan *Plan, opts ApplyOptions) (*apply.Report, error) {
+	// The run-scoped ownership layer starts empty on every run. A client can
+	// outlive many runs — beadle's watch loop holds one and reconciles with it
+	// repeatedly — and a stale entry would let today's run claim yesterday's
+	// write and skip a file it never wrote.
+	c.runOwner().BeginRun()
+
 	if err := c.RequireTrust(plan.Paths); err != nil {
 		return nil, err
 	}
@@ -348,7 +591,7 @@ func (c *Client) Apply(ctx context.Context, plan *Plan, opts ApplyOptions) (*app
 	execOpts := c.execOptions(opts)
 	execOpts.Events = source
 
-	report, err := apply.Run(ctx, deps, apply.Plan{Actions: plan.Actions}, execOpts)
+	report, err := apply.Run(ctx, deps, apply.Plan{Actions: plan.Actions, Shared: plan.shared}, execOpts)
 
 	if stop != nil {
 		stop()
@@ -359,6 +602,11 @@ func (c *Client) Apply(ctx context.Context, plan *Plan, opts ApplyOptions) (*app
 	}
 
 	report.Notes = append(report.Notes, plan.Notes...)
+	// The run's answer to the hooks question travels with the run's result, so a
+	// caller holding this Report can tell what this delivery left out without
+	// asking the client that produced it — and without being told about a run it
+	// did not ask for.
+	report.PendingConsent = append(report.PendingConsent, plan.pendingConsent...)
 
 	return &report, nil
 }
@@ -458,7 +706,42 @@ func (c *Client) Install(ctx context.Context, plan *Plan, opts ApplyOptions) (*a
 		}
 	}
 
+	// Every path that delivers packages ends here, so the verdict lives in one
+	// place: an error Install raises for a reason Sync also has to raise is a
+	// reason Sync silently does not raise. See Client.deliveryVerdict.
+	if err := c.deliveryVerdict(report); err != nil {
+		return report, err
+	}
+
 	return report, nil
+}
+
+// deliveryVerdict is the error a finished delivery owes its caller, or nil.
+//
+// Two situations are not a quiet success:
+//
+//   - a cell the executor refused, because the run printed "nothing was written"
+//     and a caller that reads only the exit code would call that a completed
+//     install;
+//   - a package whose hooks nobody consented to, because its files are on disk
+//     and working while its hooks are not, which is exactly the gap a caller
+//     reading only the exit code would miss.
+//
+// The report comes back alongside the error in both cases, because the error
+// names the situation and the report names the cells.
+func (c *Client) deliveryVerdict(report *apply.Report) error {
+	// Read off the report, not off the client: "did anyone answer?" has one
+	// answer per run, and a client that remembered the last run's answer would
+	// answer it wrongly for every run after it.
+	if pending := report.PendingConsent; len(pending) > 0 {
+		return &PendingConsentError{Packages: pending}
+	}
+
+	if refused := refusedCells(report); len(refused) > 0 {
+		return &HandsOffError{Cells: refused}
+	}
+
+	return nil
 }
 
 // installAdopted records the adopted spec and then delivers the plan the adopt
@@ -472,10 +755,12 @@ func (c *Client) installAdopted(ctx context.Context, plan *Plan, opts ApplyOptio
 	}
 
 	if len(plan.Packages) == 0 {
-		report := apply.Report{Notes: plan.Notes}
-		for _, adopt := range plan.Adopts {
-			report.Notes = append(report.Notes, adopt.Notes...)
-		}
+		// An adoption is a delivery, even when there is no other host to
+		// deliver to: the package is now the spec's, recorded with
+		// `adopted_from`. Reporting it as a silent spec edit returned a
+		// report with no cells, and `adopt --json` printed an empty matrix
+		// for a run that had taken a package over.
+		report := apply.Report{Notes: plan.Notes, Cells: adoptedCells(plan.Adopts)}
 
 		return &report, nil
 	}
@@ -487,6 +772,29 @@ func (c *Client) installAdopted(ctx context.Context, plan *Plan, opts ApplyOptio
 	return c.Apply(ctx, plan, applyOpts)
 }
 
+// adoptedCells renders the adoptions of a plan as report cells, so a run that
+// only adopted still says what it took over.
+func adoptedCells(adopts []AdoptPlan) []apply.CellResult {
+	if len(adopts) == 0 {
+		return nil
+	}
+
+	cells := make([]apply.CellResult, 0, len(adopts))
+
+	for _, adopt := range adopts {
+		cells = append(cells, apply.CellResult{
+			Package: adopt.ID,
+			Host:    host.ID(adopt.AdoptedFrom),
+			Scope:   string(User),
+			Status:  apply.StatusCurrent,
+			Kind:    apply.ActionAdopt,
+			Notes:   adopt.Notes,
+		})
+	}
+
+	return cells
+}
+
 // buildInstallActions resolves the hooks consent and builds one install action
 // per planned cell. It fills plan.Actions; only Apply runs them.
 func (c *Client) buildInstallActions(ctx context.Context, plan *Plan, opts ApplyOptions) error {
@@ -496,18 +804,53 @@ func (c *Client) buildInstallActions(ctx context.Context, plan *Plan, opts Apply
 	// installs, so a sync does not lose the removals it found.
 	actions := slices.Clone(plan.Actions)
 
+	// Discovery runs over EVERY package before any action is built, because a
+	// shared path can be wanted by two packages of one run and only the combined
+	// view can say so. Per package, each host renders the same bytes — which is
+	// exactly why the dedup works — and the disagreement is invisible.
+	shared, err := c.planSharedTargets(ctx, plan, opts)
+	if err != nil {
+		return err
+	}
+
+	plan.shared = shared
+
 	for i := range plan.Packages {
 		item := &plan.Packages[i]
 
-		allow, err := c.HooksDecision(item.Package, opts.Hooks, opts.Confirm, opts.DryRun)
+		allow, pending, err := c.HooksDecision(item.Package, opts.Hooks, opts.Confirm, opts.DryRun)
 		if err != nil {
 			return err
+		}
+
+		// Recorded on the plan, which is this run's own scratch: a client that
+		// remembered it would fail every later run on the same client, including
+		// runs that asked nothing.
+		if pending != "" && !slices.Contains(plan.pendingConsent, pending) {
+			plan.pendingConsent = append(plan.pendingConsent, pending)
 		}
 
 		item.allow = allow
 
 		allowed, origin := propagateTargets(plan, item, adapters)
 
+		// Learn where every host would write, BEFORE any of them runs.
+		//
+		// Four adapters resolve skills under one shared root — agy, codex and omp
+		// all read ~/.agents/skills — so one package names the same physical file
+		// once per host. Without this pass each host plans that write
+		// independently, the executor runs them concurrently, and three
+		// goroutines race for one file: the loser sees the path move under its own
+		// verification and the run rolls the file away.
+		//
+		// The dry run is the single source of truth here because it runs the same
+		// planning code the real delivery runs. An adapter that declared its
+		// targets through a new interface method would be a SECOND statement of
+		// the same rules, free to drift from the code that actually writes.
+		//
+		// It is safe because Deliver(DryRun) is proved to touch nothing: see
+		// TestADryRunTouchesNothing, which snapshots the whole home tree,
+		// byte for byte, around a dry run of all ten adapters.
 		for _, adapter := range allowed {
 			if !opts.Switches.HooksOn(adapter.ID()) {
 				allow = false
@@ -540,13 +883,21 @@ func (c *Client) buildInstallActions(ctx context.Context, plan *Plan, opts Apply
 	return nil
 }
 
-// propagateTargets narrows one planned package's hosts by the effective
-// [propagate] policy. "origin" keeps the package where the event happened and
-// writes nothing elsewhere; "ask" writes nothing unattended, because the
-// question belongs to a person and a plan is not a person. Without the spec
-// document the default is "all" and nothing is narrowed.
+// propagateTargets narrows one planned package's hosts by the spec package's own
+// `except` list and by the effective [propagate] policy. "origin" keeps the
+// package where the event happened and writes nothing elsewhere; "ask" writes
+// nothing unattended, because the question belongs to a person and a plan is
+// not a person. Without the spec document the default is "all" and nothing is
+// narrowed.
+//
+// This is the ONE place a package's host set is decided. buildInstallActions
+// calls it for every writing command — install, update, sync, import, adopt —
+// and discovery calls it too, so the shared-target grouping sees exactly the
+// hosts that will be written and not one more. `except` used to be applied
+// where a reconcile wrote its cells, an entirely different moment, and by the
+// time the actions were built the exclusion was gone.
 func propagateTargets(plan *Plan, item *PlannedPackage, adapters []host.Host) (allowed []host.Host, origin host.ID) {
-	candidates := item.targets(adapters)
+	candidates := item.targets(exceptTargets(plan.doc, item.Package.ID, adapters))
 	if len(candidates) == 0 || plan.doc == nil {
 		return candidates, ""
 	}
@@ -717,9 +1068,7 @@ func (c *Client) CommitAdopt(paths Paths, adopts []AdoptPlan, dryRun bool) error
 	}
 
 	for _, adopt := range adopts {
-		if !hasSpecPackageID(doc, adopt.ID) {
-			doc.Packages = append(doc.Packages, spec.Package{ID: adopt.ID, AdoptedFrom: adopt.AdoptedFrom})
-		}
+		AddSpecPackage(doc, spec.Package{ID: adopt.ID, AdoptedFrom: adopt.AdoptedFrom})
 	}
 
 	return SaveSpec(paths.SpecPath, doc)
@@ -794,4 +1143,219 @@ func (e *NotAvailableError) Error() string {
 	}
 
 	return message
+}
+
+// sharedTargets is what a planning-time dry run learned about one package: which
+// paths its hosts want, with which bytes, and who wants them.
+type sharedTargets struct {
+	// want maps a path to digest -> the hosts that want those bytes there. One
+	// digest with more than one host is a SHARED target; two digests on one
+	// path is a conflict no single package's pass can see.
+	want map[string]map[string][]host.ID
+	// unplanned names hosts that could not even plan. Their paths are unknown,
+	// so nothing may be claimed or deleted on their behalf.
+	unplanned []host.ID
+}
+
+// ContentConflictError reports two hosts of one run that would write different
+// bytes to the same path.
+//
+// It is deliberately not a CollisionError. A collision means "this file is not
+// yours", which is true of a stranger's file and FALSE here: the file does not
+// exist yet, and the disagreement is between two of the user's own hosts. Naming
+// the hosts is what makes it actionable, because the fix is to narrow the spec's
+// host list for that package — nothing else resolves it.
+type ContentConflictError struct {
+	Path   string
+	Hosts  []host.ID
+	Detail map[host.ID]string
+}
+
+// Error implements error.
+func (e *ContentConflictError) Error() string {
+	names := make([]string, 0, len(e.Hosts))
+	for _, id := range e.Hosts {
+		names = append(names, string(id))
+	}
+
+	slices.Sort(names)
+
+	return fmt.Sprintf("%s would be written by %s with different content; "+
+		"narrow the package's host list so one of them does not take this path",
+		e.Path, strings.Join(names, ", "))
+}
+
+// discoverTargets dry-runs every adapter's delivery and reports what paths
+// they would occupy and with which bytes. It decides nothing: the decision is
+// plan-wide, because a conflict is between two PACKAGES and no single package's
+// pass can see one.
+func (c *Client) discoverTargets(
+	ctx context.Context, pkg host.Package, adapters []host.Host, opts ApplyOptions, kind source.Kind,
+) (sharedTargets, error) {
+	out := sharedTargets{want: map[string]map[string][]host.ID{}}
+
+	for _, adapter := range adapters {
+		strategy, _ := PickStrategy(pkg, adapter.ID(), kind)
+
+		prepared, _, err := c.prepareDelivery(ctx, pkg, strategy)
+		if err != nil {
+			return out, err
+		}
+
+		// The home argument is empty for the same reason the executor passes an
+		// empty one (apply/phase.go:1602): the adapter resolves its own home from
+		// its configuration. Passing verger's home here instead would resolve
+		// every path under a root the real delivery never touches, and the claims
+		// would name paths that do not exist — a dedup that silently does nothing.
+		result, err := adapter.Deliver(ctx, "", host.Delivery{
+			Package: prepared, Strategy: strategy, DryRun: true, Project: opts.Scope,
+		})
+		if err != nil {
+			// A host that will not even plan is that host's own business, and the
+			// real delivery reports it with fuller context. Silence here would hide
+			// a host whose paths are therefore UNKNOWN — precisely the case this
+			// pass exists to learn about, so it is noted rather than trusted.
+			out.unplanned = append(out.unplanned, adapter.ID())
+
+			continue
+		}
+
+		for _, artifact := range result.Artifacts {
+			sum := artifact.Digest.String()
+			if sum == "" {
+				sum = "unknown"
+			}
+
+			if out.want[artifact.Path] == nil {
+				out.want[artifact.Path] = map[string][]host.ID{}
+			}
+
+			out.want[artifact.Path][sum] = append(out.want[artifact.Path][sum], adapter.ID())
+		}
+	}
+
+	return out, nil
+}
+
+// planSharedTargets dry-runs every planned package against every host it would
+// reach, groups what they want by path, and returns the paths several hosts
+// resolve to one file. It refuses the plan if two packages want one path with
+// different bytes.
+//
+// The pass is whole-plan on purpose. Per package it would miss the only conflict
+// that matters here: a package's hosts all render the same bytes, so within one
+// package there is nothing to disagree about. The disagreement is between two
+// packages of the same run landing on one shared path, and only the combined
+// view can see it.
+func (c *Client) planSharedTargets(ctx context.Context, plan *Plan, opts ApplyOptions) ([]apply.SharedTarget, error) {
+	adapters := plan.Adapters
+
+	// path -> digest -> the hosts that want those bytes there. Two packages
+	// agreeing on a digest for one path is not a conflict, it is a shared
+	// target; only DIFFERENT digests are a conflict.
+	want := map[string]map[string][]host.ID{}
+
+	for i := range plan.Packages {
+		item := &plan.Packages[i]
+
+		allowed, _ := propagateTargets(plan, item, adapters)
+
+		discovered, err := c.discoverTargets(ctx, item.Package, allowed, opts, item.Ref.Kind)
+		if err != nil {
+			return nil, err
+		}
+
+		for path, digests := range discovered.want {
+			if want[path] == nil {
+				want[path] = map[string][]host.ID{}
+			}
+
+			for sum, ids := range digests {
+				want[path][sum] = append(want[path][sum], ids...)
+			}
+		}
+	}
+
+	paths := make([]string, 0, len(want))
+	for path := range want {
+		paths = append(paths, path)
+	}
+
+	slices.Sort(paths)
+
+	var shared []apply.SharedTarget
+
+	// The plan tells the run which host writes each shared path, and the
+	// executor runs that host's cell alone before any other starts. The
+	// decision is installed in one step and never cleared by a later BeginRun:
+	// it is made while the plan is built and consumed while the run executes,
+	// and Apply calls BeginRun after planning.
+	writers := map[string]host.ID{}
+
+	for _, path := range paths {
+		digests := want[path]
+
+		if len(digests) > 1 {
+			return nil, conflictOn(path, digests)
+		}
+
+		for sum, ids := range digests {
+			refs := uniqHosts(ids)
+			if len(refs) < 2 {
+				continue
+			}
+
+			writer := refs[0]
+			writers[path] = writer
+
+			parsed, err := digest.Parse(sum)
+			if err != nil {
+				continue
+			}
+
+			shared = append(shared, apply.SharedTarget{
+				Path: path, Digest: parsed, Writer: writer, Hosts: refs,
+			})
+		}
+	}
+
+	c.runOwner().SetSharedTargets(writers)
+
+	return shared, nil
+}
+
+// uniqHosts returns the distinct hosts of one path's reference list, sorted.
+//
+// A host can reach the same path through more than one package of a run, and
+// counting it twice would make one physical file look like two references — so
+// "is this path shared at all" is a question about distinct hosts.
+func uniqHosts(ids []host.ID) []host.ID {
+	out := slices.Clone(ids)
+
+	slices.Sort(out)
+
+	return slices.Compact(out)
+}
+
+// conflictOn names two packages of one run that would write different bytes to
+// one shared path, and which hosts wanted each.
+func conflictOn(path string, digests map[string][]host.ID) error {
+	ids := make([]host.ID, 0, len(digests))
+	detail := map[host.ID]string{}
+
+	for sum, hosts := range digests {
+		slices.Sort(hosts)
+
+		for _, id := range hosts {
+			if _, seen := detail[id]; !seen {
+				ids = append(ids, id)
+			}
+
+			detail[id] = sum
+		}
+	}
+
+	slices.Sort(ids)
+
+	return &ContentConflictError{Path: path, Hosts: ids, Detail: detail}
 }
