@@ -17,6 +17,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/agent"
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/hostcli"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/state"
@@ -1899,7 +1900,10 @@ func TestBundlesEnableAntigravityNeedsLink(t *testing.T) {
 			So(report.Bundles[0].Registered, ShouldBeFalse)
 			So(report.Bundles[0].Tier, ShouldEqual, state.VerifyUnverifiable)
 			So(cli.calls, ShouldBeEmpty)
-			So(report.Bundles[0].Note, ShouldContainSubstring, f.home)
+			// Cleaned: beadle cleans a root where it reads it, so the note it
+			// builds carries the canonical spelling and f.home carries the one
+			// t.TempDir handed over under a TMPDIR with a trailing separator.
+			So(report.Bundles[0].Note, ShouldContainSubstring, fsutil.Root(f.home))
 			So(report.Bundles[0].Note, ShouldContainSubstring, "antigravity-cli/plugins")
 			So(report.Bundles[0].Note, ShouldContainSubstring, ".gemini/config/plugins")
 			So(f.config.ModeFor(agent.AntigravityCLIID, kind.MCP, config.ModeSync), ShouldEqual, config.ModeSync)

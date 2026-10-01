@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/vergerx"
 	"github.com/odiumuniverse/verger/pkg/apply"
 	"github.com/odiumuniverse/verger/pkg/verger"
@@ -502,6 +503,27 @@ func pluginsEjectFrom(c *vergerx.Client, out *bytes.Buffer, stdout io.Writer) er
 		return fmt.Errorf("plugins eject: %w", err)
 	}
 
+	// The library may take the directory with it — verger's Eject removes the
+	// home once it is empty — and it may leave it behind for beadle to take.
+	// Either way the rule is the same: after this call the vault must not hold
+	// an empty plugin home, because verger resolves the vault before ~/.verger
+	// and a bare `verger status` would find that empty directory and report no
+	// cells while every package sits at the standalone home.
+	//
+	// Nothing the user put in there can be lost: os.Remove refuses a directory
+	// that has anything in it, and a home that still holds files is reported
+	// instead of deleted.
+	switch {
+	case !fsutil.Exists(home):
+		// verger took the directory with it, which is the usual shape.
+	case !isEmptyDir(home):
+		fmt.Fprintf(out, "%s still holds files and was left in place; move or delete it by hand\n", home)
+	default:
+		if err := os.Remove(home); err != nil {
+			return fmt.Errorf("plugins eject: remove the emptied plugin home %s: %w", home, err)
+		}
+	}
+
 	fmt.Fprintf(out, "plugin home moved to %s; run the plugins commands from there\n", target)
 	_, _ = fmt.Fprintf(stdout, "")
 
@@ -512,12 +534,21 @@ func pluginsEjectFrom(c *vergerx.Client, out *bytes.Buffer, stdout io.Writer) er
 // standalone library's own location, so the packages keep working without
 // beadle.
 func defaultVergerHome() (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := fsutil.UserHome()
 	if err != nil {
 		return "", err
 	}
 
 	return filepath.Join(home, ".verger"), nil
+}
+
+// isEmptyDir reports whether path is a directory with nothing in it. A path that
+// cannot be read is not empty: the caller must not delete a directory it failed
+// to look inside.
+func isEmptyDir(path string) bool {
+	entries, err := os.ReadDir(path)
+
+	return err == nil && len(entries) == 0
 }
 
 func printPluginReport(out *bytes.Buffer, report *apply.Report, asJSON bool, name string) error {

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 
 	. "github.com/smartystreets/goconvey/convey"
 
@@ -121,7 +122,7 @@ func gwsRunIn(t *testing.T, stdin io.Reader, args ...string) (string, error) {
 func gwsHome(t *testing.T) string {
 	t.Helper()
 
-	home := t.TempDir()
+	home := fsutil.Root(t.TempDir())
 	t.Setenv("HOME", home)
 	isolateTestRoots(t)
 

@@ -10,6 +10,7 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/daemon"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 )
 
 // withDaemonRunner returns the suite's options with the install call replaced by
@@ -235,8 +236,8 @@ func TestInitDaemonPinsEnv(t *testing.T) {
 			Convey("Then the unit pins the home, the vault and PATH", func() {
 				env, err := daemon.UnitEnvFromFile(daemonUnitPath(t, home))
 				So(err, ShouldBeNil)
-				So(env["HOME"], ShouldEqual, home)
-				So(env["BEADLE_HOME"], ShouldEqual, filepath.Join(home, "vault-elsewhere"))
+				So(env["HOME"], ShouldEqual, fsutil.Root(home))
+				So(env["BEADLE_HOME"], ShouldEqual, fsutil.Root(home)+"/vault-elsewhere")
 				So(env["PATH"], ShouldNotBeEmpty)
 			})
 		})
@@ -248,7 +249,7 @@ func TestInitDaemonPinsEnv(t *testing.T) {
 			Convey("Then BEADLE_HOME stays implicit and HOME is pinned", func() {
 				env, err := daemon.UnitEnvFromFile(daemonUnitPath(t, home))
 				So(err, ShouldBeNil)
-				So(env["HOME"], ShouldEqual, home)
+				So(env["HOME"], ShouldEqual, fsutil.Root(home))
 				So(env, ShouldNotContainKey, "BEADLE_HOME")
 			})
 		})

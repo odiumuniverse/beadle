@@ -15,6 +15,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/daemon"
 	"github.com/odiumuniverse/beadle/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/secret"
 	"github.com/odiumuniverse/beadle/pkg/vault"
@@ -85,7 +86,7 @@ type app struct {
 //     enable the repository's own project files in every temp vault.
 
 func (a *app) resolveVault() (*vault.Vault, error) {
-	root, err := vault.ResolveRoot(a.vaultPath, os.Getenv(vault.EnvHome))
+	root, err := vault.ResolveRoot(a.vaultPath, fsutil.RootEnv(vault.EnvHome))
 	if err != nil {
 		return nil, err
 	}
@@ -293,7 +294,7 @@ func (a *app) engineWith(v *vault.Vault, cfg *config.Config, agents []*agent.Age
 }
 
 func homeAndCwd() (string, string, error) {
-	home, err := os.UserHomeDir()
+	home, err := fsutil.UserHome()
 	if err != nil {
 		return "", "", err
 	}

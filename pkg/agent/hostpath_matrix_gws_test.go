@@ -10,6 +10,7 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 )
 
@@ -106,7 +107,10 @@ var envKeys = []string{
 // resolver field moves its path and fails here.
 func TestHostPathMatrix(t *testing.T) {
 	Convey("Given a home and an empty environment", t, func() {
-		home := t.TempDir()
+		// The roots production cleans at the read: the matrix expectation is built
+		// from the same spelling beadle now hands hostpath, or it pins the doubled
+		// separator TMPDIR happens to carry into t.TempDir.
+		home := fsutil.Root(t.TempDir())
 		cwd := t.TempDir()
 		clearHostEnv(t)
 
@@ -131,7 +135,10 @@ func TestHostPathMatrix(t *testing.T) {
 // override is the case beadle did not have before the resolver took over.
 func TestHostPathMatrixEnv(t *testing.T) {
 	Convey("Given a home and a moved root", t, func() {
-		home := t.TempDir()
+		// Cleaned, like production: the expectation below is built from this
+		// home, so leaving the doubled separator TMPDIR carried into t.TempDir
+		// would pin the spelling the fix removed.
+		home := fsutil.Root(t.TempDir())
 		cwd := t.TempDir()
 		xdg := t.TempDir()
 		override := t.TempDir()
@@ -243,6 +250,13 @@ func allAgentsFor(t *testing.T, home, cwd string) map[string]*agent.Agent {
 }
 
 // expand substitutes the fixture directories into an expectation.
+// expand substitutes the three roots into a case's expectation, each one
+// cleaned: production cleans a root where it reads it, so an expectation built
+// from the raw spelling would pin the doubled separator TMPDIR carried into
+// t.TempDir rather than the path beadle actually uses.
 func expand(value, home, xdg, override string) string {
-	return substitute(substitute(substitute(value, "{home}", home), "{xdg}", xdg), "{override}", override)
+	value = substitute(value, "{home}", fsutil.Root(home))
+	value = substitute(value, "{xdg}", fsutil.Root(xdg))
+
+	return substitute(value, "{override}", fsutil.Root(override))
 }

@@ -75,14 +75,17 @@ func TestHostResolutionEnvIsPinned(t *testing.T) {
 			Convey("Then every variable that steers host resolution is pinned", func() {
 				home, err := os.UserHomeDir()
 				So(err, ShouldBeNil)
-				So(strings.HasPrefix(home, isolatedHome), ShouldBeTrue)
+				// Cleaned on both sides: os.UserHomeDir hands over the spelling the
+				// process environment carries, which under a TMPDIR with a trailing
+				// separator is not the spelling t.TempDir produced.
+				So(strings.HasPrefix(filepath.Clean(home), filepath.Clean(isolatedHome)), ShouldBeTrue)
 
 				for _, name := range hostResolutionEnv {
 					switch name {
 					case "PATH":
 						So(os.Getenv(name), ShouldEqual, isolatedBinDir)
 					case "HOME", "XDG_CONFIG_HOME", "BEADLE_HOME", "DSH_HOME":
-						So(os.Getenv(name), ShouldContainSubstring, isolatedHome)
+						So(filepath.Clean(os.Getenv(name)), ShouldContainSubstring, filepath.Clean(isolatedHome))
 					default:
 						// Pinned empty, so a developer's value cannot send a
 						// host somewhere outside the test home.

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	. "github.com/smartystreets/goconvey/convey"
 )
 
@@ -106,7 +107,11 @@ func isolateTestHome(m *testing.M) int {
 		}
 	}
 
-	isolatedHome = home
+	// Cleaned once, here, so every expectation built from this home speaks the
+	// same spelling production now uses: beadle cleans a root where it reads it,
+	// so a home handed over by a TMPDIR carrying a doubled separator would
+	// otherwise be the uncleaned half of every comparison in the suite.
+	isolatedHome = fsutil.Root(home)
 	isolatedBinDir = path
 
 	return m.Run()
@@ -149,10 +154,15 @@ func TestSuiteHomeIsolation(t *testing.T) {
 
 				home, err := os.UserHomeDir()
 				So(err, ShouldBeNil)
-				So(strings.HasPrefix(home, isolatedHome), ShouldBeTrue)
+				// Cleaned on both sides, for the same reason as the variables below:
+				// os.UserHomeDir hands over the spelling the process environment carries.
+				So(strings.HasPrefix(filepath.Clean(home), filepath.Clean(isolatedHome)), ShouldBeTrue)
 
 				for _, name := range []string{"HOME", "XDG_CONFIG_HOME", "BEADLE_HOME", "DSH_HOME"} {
-					So(os.Getenv(name), ShouldContainSubstring, isolatedHome)
+					// Cleaned on both sides: TMPDIR arrives from macOS with a trailing
+					// separator and a mktemp template doubles it, so the variable and
+					// the temp dir can spell the same directory two ways.
+					So(filepath.Clean(os.Getenv(name)), ShouldContainSubstring, filepath.Clean(isolatedHome))
 				}
 
 				So(os.Getenv("XDG_CONFIG_HOME"), ShouldEqual, filepath.Join(isolatedHome, ".config"))

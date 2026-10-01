@@ -1211,11 +1211,23 @@ func (e *Engine) pluginRefIssues(active []*agent.Agent) []Issue {
 }
 
 func displayHomePath(path, home string) string {
-	if home != "" && strings.HasPrefix(path, home+"/") {
-		return "~" + strings.TrimPrefix(path, home)
+	if home == "" {
+		return path
 	}
 
-	return path
+	// Decide and render from one spelling. Under cleans both sides before
+	// comparing, but a TrimPrefix on the next line runs on the raw strings, so a
+	// home written "/var/T//home" and a path written "/var/T/home/…" would agree
+	// on "inside" and then fail to strip — and the result is "~" followed by the
+	// whole absolute path, which resolves to nothing. filepath.Rel after Clean is
+	// one spelling end to end, and it also answers the case Under could not: a
+	// path equal to the home, which is "~" and not an unshortened path.
+	rel, err := filepath.Rel(fsutil.Root(home), fsutil.Root(path))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return path
+	}
+
+	return filepath.Join("~", rel)
 }
 
 func isDir(path string) bool {

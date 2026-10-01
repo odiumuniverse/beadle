@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"slices"
 	"strings"
 
@@ -12,6 +11,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/bundle"
 	"github.com/odiumuniverse/beadle/pkg/config"
 	"github.com/odiumuniverse/beadle/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/kind"
 	"github.com/odiumuniverse/beadle/pkg/state"
 	"github.com/odiumuniverse/beadle/pkg/vault"
@@ -26,7 +26,7 @@ func (a *app) newStatusCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out := cmd.OutOrStdout()
 
-			root, err := vault.ResolveRoot(a.vaultPath, os.Getenv(vault.EnvHome))
+			root, err := vault.ResolveRoot(a.vaultPath, fsutil.RootEnv(vault.EnvHome))
 			if err != nil {
 				return err
 			}

@@ -11,6 +11,7 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 )
 
 // The migration has to be visible: a vault that quietly stopped tracking files
@@ -177,7 +178,12 @@ func gitCallsIn(t *testing.T, log, dir string) []string {
 	var calls []string
 
 	for line := range strings.SplitSeq(strings.TrimRight(string(raw), "\n"), "\n") {
-		if where, args, ok := strings.Cut(line, "\t"); ok && where == dir {
+		// Cleaned on both sides: beadle cleans a root where it reads it, and a
+		// TMPDIR carrying a trailing separator puts a doubled one into
+		// t.TempDir, so the recorded directory and the vault root are the same
+		// path spelled two ways. An equality test across that gap reports no
+		// call where a call happened.
+		if where, args, ok := strings.Cut(line, "\t"); ok && fsutil.Root(where) == fsutil.Root(dir) {
 			calls = append(calls, args)
 		}
 	}

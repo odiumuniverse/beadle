@@ -9,6 +9,7 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 
 	"github.com/odiumuniverse/beadle/pkg/agent"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/state"
 	"github.com/odiumuniverse/beadle/pkg/vault"
 )
@@ -230,7 +231,7 @@ func TestTheUpgradeLeavesAFileTheFarmDidNotWrite(t *testing.T) {
 				// The one thing this may not lose: a file the farm did not
 				// write. It is copied before the directory is taken, and the
 				// report says where the copy is.
-				So(read(t, filepath.Join(backupsFor(t, f.vault)[0], strings.TrimPrefix(own, f.vault.Root()))),
+				So(read(t, filepath.Join(backupsFor(t, f.vault)[0], strings.TrimPrefix(own, fsutil.Root(f.vault.Root())))),
 					ShouldEqual, mineBody)
 				So(read(t, filepath.Join(backupsFor(t, f.vault)[0],
 					"bundles", "claude", "plugins", "beadle-canon", ".mcp.json")),

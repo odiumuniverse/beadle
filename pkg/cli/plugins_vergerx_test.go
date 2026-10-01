@@ -12,6 +12,7 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 	"github.com/vmkteam/embedlog"
 
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/vergerx"
 )
 
@@ -299,7 +300,9 @@ func TestPluginsEjectLeavesNoEmptyHome(t *testing.T) {
 			})
 
 			Convey("And the packages are at the standalone home instead", func() {
-				So(target, ShouldStartWith, home)
+				// Both spellings cleaned: filepath.Join inside defaultVergerHome produces
+				// the canonical form, and t.TempDir hands over the raw one.
+				So(target, ShouldStartWith, fsutil.Root(home))
 				_, statErr := os.Stat(target)
 				So(statErr, ShouldBeNil)
 			})

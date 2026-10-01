@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/verger/pkg/hostpath"
 )
 
@@ -11,7 +12,10 @@ import (
 // process environment, injected so the package stays pure and the host × env
 // matrix is assertable in-process.
 func hostEnv(home string) hostpath.Env {
-	return hostpath.Env{Home: home, GOOS: osGOOS, Lookup: os.LookupEnv}
+	// The home is cleaned here, once, because this is where every host root is
+	// derived: a home spelled with a doubled separator from a mktemp template
+	// would otherwise be the uncleaned half of every comparison made downstream.
+	return hostpath.Env{Home: fsutil.Root(home), GOOS: osGOOS, Lookup: os.LookupEnv}
 }
 
 // roots resolves one host's roots through verger's shared resolver (D-C). It

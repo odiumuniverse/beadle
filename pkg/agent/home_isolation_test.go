@@ -122,10 +122,18 @@ func TestSuiteHomeIsolation(t *testing.T) {
 
 				home, err := os.UserHomeDir()
 				So(err, ShouldBeNil)
-				So(strings.HasPrefix(home, isolatedHome), ShouldBeTrue)
+				// Cleaned on both sides, for the same reason as the variables below:
+				// os.UserHomeDir hands over the spelling the process environment carries.
+				So(strings.HasPrefix(filepath.Clean(home), filepath.Clean(isolatedHome)), ShouldBeTrue)
 
 				for _, name := range []string{"HOME", "BEADLE_HOME", "DSH_HOME"} {
-					So(os.Getenv(name), ShouldContainSubstring, isolatedHome)
+					// The variable is set with the isolation dir as the process handed it
+					// over, and the isolation dir is t.TempDir() of the same spelling —
+					// one may carry a doubled separator and the other need not, so the
+					// comparison is made on the canonical spelling of both. Production
+					// code does the same at the root it reads; this is the assertion
+					// that says so, not a second place with the rule.
+					So(filepath.Clean(os.Getenv(name)), ShouldContainSubstring, filepath.Clean(isolatedHome))
 				}
 
 				// DSH_AGENTS_HOME is pinned empty: the DSH adapter resolves

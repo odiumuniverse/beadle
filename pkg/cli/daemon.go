@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/odiumuniverse/beadle/pkg/daemon"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/secret"
 )
 
@@ -134,7 +135,7 @@ func (a *app) temporaryDaemonRefusal(spec daemon.Spec, vaultRoot, hint string) e
 
 // daemonSpec returns the service spec and the vault root it watches.
 func (a *app) daemonSpec() (daemon.Spec, string, error) {
-	home, err := os.UserHomeDir()
+	home, err := fsutil.UserHome()
 	if err != nil {
 		return daemon.Spec{}, "", err
 	}

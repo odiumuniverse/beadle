@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/odiumuniverse/beadle/pkg/agentplugins"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/mcp"
 	"github.com/odiumuniverse/beadle/pkg/skill"
 	"github.com/odiumuniverse/beadle/pkg/vault"
@@ -103,7 +104,7 @@ func (a *app) newExportAgentPluginsCmd() *cobra.Command {
 // not create or migrate the config, so a missing vault is an error with the
 // init hint, not an implicit initialization.
 func (a *app) resolveVaultReadOnly() (*vault.Vault, error) {
-	root, err := vault.ResolveRoot(a.vaultPath, os.Getenv(vault.EnvHome))
+	root, err := vault.ResolveRoot(a.vaultPath, fsutil.RootEnv(vault.EnvHome))
 	if err != nil {
 		return nil, err
 	}

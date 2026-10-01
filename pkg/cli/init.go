@@ -17,6 +17,7 @@ import (
 	"github.com/odiumuniverse/beadle/pkg/config"
 	daemonpkg "github.com/odiumuniverse/beadle/pkg/daemon"
 	"github.com/odiumuniverse/beadle/pkg/engine"
+	"github.com/odiumuniverse/beadle/pkg/fsutil"
 	"github.com/odiumuniverse/beadle/pkg/skills"
 	"github.com/odiumuniverse/beadle/pkg/vault"
 	"github.com/odiumuniverse/beadle/pkg/vergerx"
@@ -70,7 +71,7 @@ func (a *app) newInitCmd() *cobra.Command {
 }
 
 func (a *app) runInit(cmd *cobra.Command, agentIDs []string, forceDaemon, installDaemon bool, opts initOptions) error {
-	root, err := vault.ResolveRoot(a.vaultPath, os.Getenv(vault.EnvHome))
+	root, err := vault.ResolveRoot(a.vaultPath, fsutil.RootEnv(vault.EnvHome))
 	if err != nil {
 		return err
 	}
