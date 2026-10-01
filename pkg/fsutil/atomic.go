@@ -17,6 +17,37 @@ var ErrSymlinksUnsupported = errors.New("symlinks are not supported here")
 
 var symlinkLinker = os.Symlink
 
+// fileSync is the file barrier, a var so a test can count it. syncDir is the
+// directory barrier for the same reason: naming the seam means a new call site
+// cannot forget it by calling the underlying implementation directly.
+//
+// Neither is a behaviour change — the same syscalls, on the same paths, behind
+// one indirection.
+var fileSync = func(f *os.File) error { return f.Sync() }
+
+// syncDir is the directory barrier. syncDirDefault is the real one; nothing
+// calls it directly, so every directory sync in this package is countable.
+var syncDir = syncDirDefault
+
+// The call sites this seam does NOT pin, written down rather than asserted. The
+// test below proves the mechanism — which writer takes which barrier. It cannot
+// prove who calls which writer, and reading the source to assert that would test
+// the file instead of the behaviour. So the contract is here, next to the rule it
+// qualifies:
+//
+//	WriteFileAtomic    ← state.json (pkg/state/state.go:692), config.json
+//	                     (pkg/config/config.go:423), every host file
+//	WriteFileAtomicCAS ← pkg/cas/cas.go, the only caller — content-addressed
+//	                     objects, recoverable by hash, repaired by the next Put
+//	Store.Sync()       ← pkg/engine/engine.go:223, once per sync, under the lock
+//
+// If one of the first two migrates to the cheap writer it silently loses
+// durability for a file beadle cannot rebuild. If a caller outside pkg/cas starts
+// using the cheap writer, the guarantee in its name no longer holds, because
+// nothing about it says the data is recoverable. A lint rule forbidding
+// WriteFileAtomicCAS outside pkg/cas would enforce the second half; it is worth
+// its own task.
+
 func WriteFileAtomic(path string, data []byte, perm fs.FileMode) error {
 	return WriteFileAtomicChecked(path, data, perm, nil)
 }
@@ -98,7 +129,7 @@ func writeTempRename(path string, data []byte, perm fs.FileMode, check func() er
 	// CAS path: the object is immutable and hash-verified, so a lost write is a
 	// missing object, never a wrong one.
 	if durable {
-		if err = tmp.Sync(); err != nil {
+		if err = fileSync(tmp); err != nil {
 			_ = tmp.Close()
 
 			cleanup()
@@ -204,7 +235,7 @@ func classifySymlinkErr(err error) error {
 	return err
 }
 
-func syncDir(dir string) error {
+func syncDirDefault(dir string) error {
 	d, err := os.Open(dir) //nolint:gosec // G304: dir is the parent of the file being written, resolved by callers
 	if err != nil {
 		return err
