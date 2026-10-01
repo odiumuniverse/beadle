@@ -290,7 +290,15 @@ func buildBeadleIn(dir string) (string, error) {
 	// here is a literal; `bin` is the build's own output, not input.
 	// context.Background, not a subtest's: the build outlives the subtest that
 	// happened to ask for it first, and a cancelled context would abort it.
-	cmd := exec.CommandContext(context.Background(), goTool, "build", "-o", bin, "../../cmd/beadle") //nolint:gosec // G204: a path resolved at init, not input
+	// -modcacherw, because this build's GOPATH is a t.TempDir(): the callers
+	// above redirect HOME per machine, so `go` derives GOPATH from it and fills
+	// that machine's home with a module cache. Go writes cache files read-only
+	// on purpose, and on Linux a read-only file cannot be unlinked — so the
+	// machine's own cleanup failed with "permission denied" and took the test
+	// down after its body had passed. -mod=vendor is the better answer where a
+	// vendor tree exists, but this repository's vendor/ does not travel to the
+	// Linux snapshot, so the cache is real there and has to be removable.
+	cmd := exec.CommandContext(context.Background(), goTool, "build", "-modcacherw", "-o", bin, "../../cmd/beadle") //nolint:gosec // G204: a path resolved at init, not input
 
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("build beadle: %w\n%s", err, out)
