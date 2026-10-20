@@ -190,28 +190,28 @@ jobs:
           cat dist/checksums.txt
 
       - name: Upload the darwin artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: darwin-universal
           path: ${{ steps.artifacts.outputs.darwin_universal }}
           if-no-files-found: error
 
       - name: Upload the linux-amd64 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-amd64
           path: ${{ steps.artifacts.outputs.linux_amd64 }}
           if-no-files-found: error
 
       - name: Upload the linux-arm64 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: linux-arm64
           path: ${{ steps.artifacts.outputs.linux_arm64 }}
           if-no-files-found: error
 
       - name: Upload the checksums
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: checksums
           path: dist/checksums.txt
@@ -250,7 +250,7 @@ jobs:
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ matrix.asset }}
           path: dist
@@ -334,19 +334,19 @@ jobs:
           fi
           echo "VERSION=$version" >> "$GITHUB_ENV"
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: darwin-universal
           path: dist
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: linux-amd64
           path: dist
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: linux-arm64
           path: dist
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: checksums
           path: dist
